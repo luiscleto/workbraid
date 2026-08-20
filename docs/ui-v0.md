@@ -40,11 +40,11 @@ Project opening and setup are entry states, not permanent workspace chrome. Once
 
 On a normal desktop viewport, the workbench has:
 
-- a compact component index for navigation;
-- the accepted Architecture map as the primary canvas;
+- a compact project/Diagram navigator and Component index appropriate to the accepted format;
+- the accepted v1 implicit map or selected accepted v2 Diagram as the primary canvas;
 - one contextual working pane for the current task: accepted component documentation or structured authoring.
 
-The component index and map are projections of the same exact accepted Architecture revision. Pending title changes do not alter either surface before acceptance, and pending new components do not appear in them. Pending components remain reachable through **Changes in progress**.
+The Diagram tree, component index, map, and documentation are projections of the same exact accepted Architecture revision. Pending title, Diagram, membership, or hierarchy changes do not alter those normal surfaces before acceptance, and pending new Components or Diagrams do not appear in them. Pending work remains reachable through **Changes in progress**.
 
 The component index is not a management or dashboard surface. It selects components by stable identity and primarily shows their titles, plus only the minimal component-creation affordance needed. When titles collide, show the minimum filename or shortened-ID context needed to disambiguate them. Do not make IDs or paths general index chrome, and do not add status columns, per-component management controls, filters, or speculative controls.
 
@@ -61,7 +61,7 @@ The candidate view is the primary review canvas. A compact toggle switches the e
 - **With changes** shows the exact immutable reviewed candidate;
 - **Before changes** shows that review's exact bound base, not newly observed accepted Architecture.
 
-The component index, map, selected documentation/detail, titles, and relationship topology always switch together. Never show one snapshot's map beside another snapshot's index or documentation. If external authority moves after review, mark the review stale through the existing product language; do not relabel its bound base as current.
+The Diagram tree or v1 implicit-map context, selected Diagram, component index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology always switch together. Never show one snapshot's map beside another snapshot's tree, index, or documentation. If external authority moves after review, mark the review stale through the existing product language; do not relabel its bound base as current.
 
 In the candidate view:
 
@@ -70,6 +70,12 @@ In the candidate view:
 - changed existing components remain indicated when only their Title, Description, or documentation changed;
 - removed relationship facts are visibly distinct, such as ghosted or dashed;
 - selecting a changed component or relationship focuses its review context and the relevant region of the exact unified diff.
+
+For v2 candidates, the same review task also distinguishes added Diagrams, Diagram title changes, home/reference appearance changes, home moves, and detail-link changes. A Component home move is shown as Diagram-composition removal/addition. If composition alone makes a real Relationship change between ordinary and boundary presentation, do not describe that as an Architecture Relationship addition or removal. Selecting a Diagram or membership change focuses its Diagram context and corresponding canonical Diagram-file diff.
+
+During v1-to-v2 review, **Before changes** remains the real implicit v1 map and **With changes** shows the candidate Diagram tree. The UI does not fabricate a v1 Diagram identity.
+
+If the selected Diagram exists only in **With changes**, switching to **Before changes** selects the nearest ancestor which exists in the bound v2 base, or the bound base root when no ancestor survives. With a v1 base, it switches to the real implicit all-components map. Show a restrained note that the previously selected Diagram exists only with the changes. Never retain that candidate-only Diagram's composition, index, documentation context, boundary references, or topology on the base side. Restoring its exact focus when returning to **With changes** is optional UI behavior.
 
 The raw unified diff remains directly inspectable in the same Review changes surface. Basic added/removed line coloring may improve readability, but it does not become a semantic or rendered-Markdown diff. If the visual map fails to render, say so clearly and retain the validated candidate and complete unified diff review path.
 
@@ -82,6 +88,34 @@ Pending work whose accepted base is stale remains visible and read-only through 
 The application frame keeps the current project and Architecture context visible, with compact actions for explicit refresh and opening another project. Do not permanently display a positive current/accepted status merely because it exists. Make stale or non-current state conspicuous when relevant; otherwise let the workspace stay quiet.
 
 The same surfaces may collapse into one-at-a-time views on narrower layouts. Mobile-specific interaction remains deferred.
+
+### Diagram navigation and composition
+
+Format v1 retains its existing implicit all-components map and does not pretend to have a canonical Diagram identity. Format v2 opens at its root Diagram and adds a compact project-style Diagram tree plus breadcrumbs. The tree is navigation, not a Diagram-management dashboard.
+
+For the selected Diagram:
+
+- the index lists its canonical home and reference Component appearances using titles as the primary label;
+- the map shows those appearances, ordinary Relationships whose endpoints both appear, and derived boundary references for Relationships crossing the Diagram boundary;
+- selecting a Component from the tree/index/map opens the same canonical documentation in the contextual pane;
+- activating a home Component's detail affordance drills into its child Diagram;
+- back/breadcrumb navigation returns to the parent with the anchor Component identifiable;
+- activating a boundary reference opens the external Component in its home Diagram.
+
+For each absent external Component, the active Diagram shows at most one derived boundary reference. Every crossing Relationship occurrence connects to that one reference, retaining its own direction, label, and multiplicity.
+
+Normal product language distinguishes the two forms without requiring domain jargon:
+
+- a canonical reference appearance is **Also shown here**;
+- a derived boundary reference says the related Component **Lives in** its home Diagram.
+
+IDs, Diagram filenames, YAML roles, and hierarchy keys remain out of normal navigation chrome. Duplicate Diagram or Component titles receive only the minimum ancestor, anchor, filename, or shortened-ID context required to distinguish them.
+
+Diagram authoring reuses the contextual working pane. The first Diagram slice provides structured tasks to create and title a detail Diagram, move a Component's home, and also show or stop showing a Component by reference. Creating a Component inside an active Diagram places it there; root is the fallback only when no Diagram context exists. Diagram deletion and general hierarchy management are not shown.
+
+When the first Diagram action begins against format v1, WorkBraid clearly says that it will set up Diagrams as part of the requested change. This is a concise confirmation, not a migration/configuration form. Existing Changes in progress remain part of the same pending set, and pending-new Components receive homes in the resulting complete candidate. The v1 Architecture remains unchanged until that complete candidate is reviewed and deliberately accepted; cancel or discard leaves it untouched.
+
+Automatic Diagram layout remains disposable presentation. No drag position, route, bend point, size, shape, or view state is implied or persisted.
 
 ## Map references
 

@@ -17,7 +17,7 @@ Architecture remains the only WorkBraid vertical in scope here. Agent Control is
 - Exact canonical diff review and accepted-ref authority remain intact as richer visual review and diagram presentation are added.
 - Optional renderers may present approved diagram state differently without creating another canonical Architecture representation.
 
-## Phase 1 — Candidate-aware review workbench
+## Phase 1 — Candidate-aware review workbench — complete
 
 Improve the existing format-v1 review workflow without evolving the portable store:
 
@@ -33,9 +33,21 @@ The normal workspace map remains accepted-only. Persisted pending state, normal-
 
 ## Phase 2 — First-class Architecture Diagrams and nested navigation
 
-Introduce named Architecture Diagrams, one main/root diagram, nested/detail navigation, a diagram tree, component drill-down, and breadcrumbs only after a dedicated Diagram domain and portable-format decision.
+Introduce canonical format-v2 Architecture Diagrams while preserving Components and Relationships as the semantic Architecture facts.
 
-That decision must resolve component membership and reuse, hierarchy linkage, cross-diagram relationships, format evolution, and migration. This roadmap does not approve exclusive membership, reusable appearances, multiple parents, boundary connectors, a v2 schema, or migration mechanics.
+Approved domain direction:
+
+- every Diagram has an immutable stable ID and mutable human-readable title;
+- every v2 Architecture has exactly one manifest-identified root Diagram;
+- Diagrams form a strict rooted tree: every non-root has one parent anchor, every Diagram is reachable, and cycles are invalid;
+- every Component has exactly one home appearance and may additionally have reusable reference appearances in other Diagrams, at most once per Diagram;
+- only a parent Diagram's home appearance may own its one optional detail-Diagram link;
+- global Relationships crossing the active Diagram boundary use derived external references rather than copied facts or implicit membership;
+- automatic layout remains disposable and non-canonical;
+- valid v1 remains loadable without rewrite, while the first explicit Diagram operation creates one reviewed v1-to-v2 candidate preserving Component blobs, IDs, modes, paths, and Relationships exactly;
+- candidate-aware Diagram review extends the existing exact base/candidate snapshots, unified diff, binding, confirmation, and accepted-ref CAS path.
+
+The smallest useful product slice is root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
 
 ## Phase 3 — Durable rich diagram editing
 
@@ -53,14 +65,14 @@ Explore optional alternate presentations, including an isometric view, as render
 
 Phases 4A and 4B are not ordered relative to each other. Either may follow Phase 3 according to demonstrated product value.
 
-## Decisions deliberately deferred to Diagram design
+## Decisions deliberately deferred beyond the first Diagram slice
 
-- exclusive component membership versus reusable appearances;
-- multiple parents or general diagram reuse;
-- cross-diagram relationship presentation;
-- component-to-detail-diagram hierarchy linkage;
-- portable format-v2 schema and accepted-tree layout;
-- v1 migration behavior;
+- Diagram deletion and general hierarchy lifecycle;
+- multiple parents or reusable Diagram DAGs;
+- multiple appearances of one Component inside one Diagram;
+- multiple detail Diagrams per anchor;
 - canonical layout, routing, shape, and annotation fields;
-- diagram kinds and kind-specific semantic models;
+- Diagram-local presentation identity needed by later routing or repeated visual facts;
+- project-scoped persisted pending state for substantial spatial editing;
+- Diagram kinds and kind-specific semantic models;
 - any renderer-specific persisted presentation.

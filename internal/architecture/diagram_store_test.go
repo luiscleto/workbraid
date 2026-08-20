@@ -139,6 +139,13 @@ func TestLoadAcceptedV2RejectsBoundedInvalidMatrix(t *testing.T) {
 		{name: "unresolved appearance", manifest: manifest(rootID), diagrams: map[string]string{"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: home\n", rootID, componentID)}},
 		{name: "unknown appearance role", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: primary\n", rootID, componentID)}},
 		{name: "unresolved detail Diagram", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: home\n    detail_diagram: %q\n", rootID, componentID, childID)}},
+		{name: "home with explicitly empty detail Diagram", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{
+			"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: home\n    detail_diagram: \"\"\n", rootID, componentID),
+		}},
+		{name: "reference with explicitly empty detail Diagram", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{
+			"root.yaml":  fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: home\n    detail_diagram: %q\n", rootID, componentID, childID),
+			"child.yaml": fmt.Sprintf("id: %q\ntitle: Child\nappearances:\n  - component: %q\n    role: reference\n    detail_diagram: \"\"\n", childID, componentID),
+		}},
 		{name: "missing home", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: reference\n", rootID, componentID)}},
 		{name: "duplicate same-Diagram appearance", manifest: manifest(rootID), components: map[string]string{"one.md": component(componentID)}, diagrams: map[string]string{
 			"root.yaml": fmt.Sprintf("id: %q\ntitle: Root\nappearances:\n  - component: %q\n    role: home\n  - component: %q\n    role: home\n", rootID, componentID, componentID),

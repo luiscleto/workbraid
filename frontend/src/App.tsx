@@ -837,6 +837,7 @@ export function App() {
               components={mapComponents}
               selectedID={selectedComponentID}
               onSelect={selectMapNode}
+              emptyMessage={activeDiagram ? 'This diagram has no components.' : undefined}
               {...(review ? {
                 layoutComponentIDs,
                 reviewSide,

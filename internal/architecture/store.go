@@ -1862,6 +1862,9 @@ func validateDiagramAppearanceYAML(value *yaml.Node, position int) error {
 		if field.Kind != yaml.ScalarNode || field.ShortTag() != "!!str" {
 			return fmt.Errorf("Diagram appearance %d field %s must be a string", position, key.Value)
 		}
+		if key.Value == "detail_diagram" && field.Value == "" {
+			return fmt.Errorf("Diagram appearance %d field detail_diagram must not be empty", position)
+		}
 	}
 	for field, present := range required {
 		if !present {

@@ -297,6 +297,10 @@ describe('App', () => {
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
     await user.click(within(screen.getByRole('navigation', { name: 'Diagram breadcrumbs' })).getByRole('button', { name: 'System' }))
     expect(screen.getByText('Gateway documentation.')).toBeInTheDocument()
+
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
+    expect(screen.getByText('This diagram has no components.')).toBeInTheDocument()
+    expect(screen.queryByText('The architecture has no components yet.')).not.toBeInTheDocument()
   })
 
   it.each([

@@ -91,6 +91,8 @@ test('P2.1 navigates and reconstructs one accepted-v2 Diagram hierarchy without 
 
     await navigator.getByRole('button', { name: 'Detail, Inside Shared — records.md' }).click()
     await expect(page.getByRole('heading', { name: 'No components here' })).toBeVisible()
+    await expect(page.getByText('This diagram has no components.')).toBeVisible()
+    await expect(page.getByText('The architecture has no components yet.')).toHaveCount(0)
     await page.getByRole('navigation', { name: 'Diagram breadcrumbs' }).getByRole('button', { name: 'System A' }).click()
     await expect(page.getByText('Records documentation A.')).toBeVisible()
     await page.getByRole('button', { name: 'Clear selection' }).click()

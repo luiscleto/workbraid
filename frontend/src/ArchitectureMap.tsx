@@ -44,6 +44,7 @@ type ArchitectureMapProps = {
   components: MapComponent[]
   selectedID?: string
   onSelect: (id: string) => void
+  emptyMessage?: string
   layoutComponentIDs?: string[]
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
@@ -59,6 +60,7 @@ export function ArchitectureMap({
   components,
   selectedID,
   onSelect,
+  emptyMessage,
   layoutComponentIDs,
   reviewSide,
   reviewComponents = [],
@@ -151,7 +153,7 @@ export function ArchitectureMap({
   if (components.length === 0) {
     return (
       <div className="map-empty">
-        {reviewSide === 'before' ? 'Before changes has no components.' : 'The architecture has no components yet.'}
+        {reviewSide === 'before' ? 'Before changes has no components.' : emptyMessage ?? 'The architecture has no components yet.'}
         {reviewControls}
       </div>
     )

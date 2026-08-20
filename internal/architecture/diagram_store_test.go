@@ -189,6 +189,32 @@ func TestLoadAcceptedV2RejectsBoundedInvalidMatrix(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptedV2RejectsNonOrdinaryDiagramEntry(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	storeID := uuid.NewString()
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storePath, _ := manager.StorePath(storeID)
+	rootID := uuid.NewString()
+	diagramSource := fmt.Sprintf("id: %q\ntitle: Root\nappearances: []\n", rootID)
+	diagramBlob := writeTestBlob(t, storePath, []byte(diagramSource))
+	diagramTree := mktree(t, storePath, "120000 blob "+diagramBlob+"\troot.yaml\n")
+	manifest := fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  source_hint: /tmp/project\nroot_diagram: %q\n", storeID, rootID)
+	commit := commitManifestTree(t, storePath, []byte(manifest), "100644", []string{"040000 tree " + diagramTree + "\tdiagrams"})
+	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, base.Revision())
+	before := acceptedAuthorityState(t, storePath)
+
+	loaded, err := manager.LoadAccepted(context.Background(), storeID)
+	if !errors.Is(err, ErrInvalid) || loaded.Revision() != "" {
+		t.Fatalf("non-ordinary Diagram load = (%+v, %v)", loaded, err)
+	}
+	if after := acceptedAuthorityState(t, storePath); after != before {
+		t.Fatal("rejected non-ordinary Diagram entry mutated repository")
+	}
+}
+
 type diagramFixtureIDs struct {
 	root, detail, empty, gateway, worker, records, ledger string
 }

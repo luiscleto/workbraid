@@ -49,8 +49,6 @@ type diagram struct {
 	path        string
 	title       string
 	appearances []diagramAppearance
-	mode        string
-	source      []byte
 }
 
 type diagramAppearance struct {
@@ -729,8 +727,6 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 		if _, duplicate := diagramIDs[parsed.id]; duplicate {
 			return nil, uuid.Nil, fmt.Errorf("duplicate Diagram ID %s", parsed.id)
 		}
-		parsed.mode = entry.Mode
-		parsed.source = append([]byte(nil), contents...)
 		diagramIDs[parsed.id] = struct{}{}
 		diagrams = append(diagrams, parsed)
 	}

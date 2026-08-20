@@ -80,6 +80,63 @@ function testReview({
   }
 }
 
+function acceptedV2(overrides: Record<string, unknown> = {}) {
+  const root = '11111111-1111-4111-8111-111111111111'
+  const detail = '22222222-2222-4222-8222-222222222222'
+  const empty = '33333333-3333-4333-8333-333333333333'
+  const gateway = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const records = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const components = [
+    { id: gateway, title: 'Shared', filename: 'gateway.md', description: 'Gateway documentation.\n', relationships: [{ target_id: worker, label: 'calls' }] },
+    { id: worker, title: 'Worker', filename: 'worker.md', description: 'Worker documentation.\n', relationships: [{ target_id: records, label: 'writes' }, { target_id: records, label: 'writes' }] },
+    { id: records, title: 'Shared', filename: 'records.md', description: 'Records documentation.\n', relationships: [{ target_id: worker, label: 'feeds' }] },
+  ]
+  return {
+    source_root: '/tmp/example', project_name: 'example', state: 'ready', revision: '2'.repeat(40), format_version: 2,
+    component_count: components.length, component_titles: components.map((component) => component.title), components,
+    root_diagram_id: root,
+    diagrams: [
+      {
+        id: root, title: 'System', depth: 0, breadcrumbs: [{ id: root, title: 'System', focus_anchor_component_id: gateway }],
+        appearances: [
+          { component_id: gateway, role: 'home', detail_diagram_id: detail, detail_diagram_title: 'Detail' },
+          { component_id: worker, role: 'reference' },
+          { component_id: records, role: 'home', detail_diagram_id: empty, detail_diagram_title: 'Detail' },
+        ],
+        boundaries: [],
+        relationships: [
+          { key: `diagram:${root}:gateway:0`, source_node_key: gateway, target_node_key: worker, source_component_id: gateway, target_component_id: worker, label: 'calls' },
+          { key: `diagram:${root}:worker:0`, source_node_key: worker, target_node_key: records, source_component_id: worker, target_component_id: records, label: 'writes' },
+          { key: `diagram:${root}:worker:1`, source_node_key: worker, target_node_key: records, source_component_id: worker, target_component_id: records, label: 'writes' },
+          { key: `diagram:${root}:records:0`, source_node_key: records, target_node_key: worker, source_component_id: records, target_component_id: worker, label: 'feeds' },
+        ],
+      },
+      {
+        id: detail, title: 'Detail', depth: 1, context: 'Inside Shared — gateway.md', parent_diagram_id: root, parent_anchor_component_id: gateway,
+        breadcrumbs: [{ id: root, title: 'System', focus_anchor_component_id: gateway }, { id: detail, title: 'Detail' }],
+        appearances: [{ component_id: worker, role: 'home' }],
+        boundaries: [
+          { key: `boundary:${gateway}`, component_id: gateway, title: 'Shared', context: 'gateway.md', home_diagram_id: root, home_diagram_title: 'System' },
+          { key: `boundary:${records}`, component_id: records, title: 'Shared', context: 'records.md', home_diagram_id: root, home_diagram_title: 'System' },
+        ],
+        relationships: [
+          { key: `diagram:${detail}:gateway:0`, source_node_key: `boundary:${gateway}`, target_node_key: worker, source_component_id: gateway, target_component_id: worker, label: 'calls' },
+          { key: `diagram:${detail}:worker:0`, source_node_key: worker, target_node_key: `boundary:${records}`, source_component_id: worker, target_component_id: records, label: 'writes' },
+          { key: `diagram:${detail}:worker:1`, source_node_key: worker, target_node_key: `boundary:${records}`, source_component_id: worker, target_component_id: records, label: 'writes' },
+          { key: `diagram:${detail}:records:0`, source_node_key: `boundary:${records}`, target_node_key: worker, source_component_id: records, target_component_id: worker, label: 'feeds' },
+        ],
+      },
+      {
+        id: empty, title: 'Detail', depth: 1, context: 'Inside Shared — records.md', parent_diagram_id: root, parent_anchor_component_id: records,
+        breadcrumbs: [{ id: root, title: 'System', focus_anchor_component_id: records }, { id: empty, title: 'Detail' }],
+        appearances: [], boundaries: [], relationships: [],
+      },
+    ],
+    ...overrides,
+  }
+}
+
 describe('App', () => {
   afterEach(() => {
     cleanup()
@@ -199,6 +256,84 @@ describe('App', () => {
     expect(within(details as HTMLElement).getByText(revision)).toBeInTheDocument()
     const documentation = screen.getByRole('heading', { name: 'API' }).closest('article') as HTMLElement
     expect(documentation.nextElementSibling).toBe(details)
+  })
+
+  it('navigates one accepted-v2 Diagram projection coherently while keeping it view only', async () => {
+    mockResponses([acceptedV2()])
+    render(<App />)
+    await submitPath('/tmp/example')
+
+    expect(await screen.findByText('You can explore this architecture, but changes are not available here yet.')).toBeInTheDocument()
+    expect(screen.getByText('View only')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add component|edit component|review changes|update architecture/i })).not.toBeInTheDocument()
+    const navigator = screen.getByRole('navigation', { name: 'Diagrams and components' })
+    expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
+    expect(within(navigator).getByText('Also shown here')).toBeInTheDocument()
+    expect(screen.getByText('Gateway documentation.')).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Open Detail' }))
+    expect(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' })).toHaveAttribute('aria-current', 'page')
+    const breadcrumbs = screen.getByRole('navigation', { name: 'Diagram breadcrumbs' })
+    expect(within(breadcrumbs).getByRole('button', { name: 'System' })).toBeInTheDocument()
+    expect(within(breadcrumbs).getByText('Detail')).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByText('Worker documentation.')).toBeInTheDocument()
+
+    const elements = graphHarness.calls.at(-1)?.elements ?? []
+    expect(elements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared\nrecords.md\nLives in System' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ source: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', target: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', label: 'writes' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ source: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', target: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', label: 'feeds' }) }),
+    ]))
+    expect(elements.filter((element) => (element as { data?: { id?: string } }).data?.id === 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc')).toHaveLength(1)
+    expect(elements.filter((element) => (element as { data?: { label?: string } }).data?.label === 'writes')).toHaveLength(2)
+
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc' } }))
+    expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByText('Records documentation.')).toBeInTheDocument()
+
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    await user.click(within(screen.getByRole('navigation', { name: 'Diagram breadcrumbs' })).getByRole('button', { name: 'System' }))
+    expect(screen.getByText('Gateway documentation.')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['known non-current', { stale: true, action_error: 'refresh_invalid' }, undefined, 'The current architecture could not be loaded. This earlier view is read-only.'],
+    ['indeterminate Refresh', {}, { action_error: 'refresh_failed' }, "WorkBraid couldn't check for architecture changes. Try Refresh again."],
+    ['already-known stale after indeterminate Refresh', { stale: true, action_error: 'refresh_invalid' }, { stale: true, action_error: 'refresh_failed' }, 'The current architecture could not be loaded. This earlier view is read-only.'],
+  ])('gives %s authority state precedence over accepted-v2 staging', async (_case, initialOverrides, refreshOverrides, message) => {
+    mockResponses(refreshOverrides ? [acceptedV2(initialOverrides), acceptedV2(refreshOverrides)] : [acceptedV2(initialOverrides)])
+    render(<App />)
+    await submitPath('/tmp/example')
+    if (refreshOverrides) {
+      const user = userEvent.setup()
+      await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    }
+
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.queryByText('You can explore this architecture, but changes are not available here yet.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add component|edit component|review changes|update architecture/i })).not.toBeInTheDocument()
+  })
+
+  it('maps a late accepted-v2 mutation rejection to product language', async () => {
+    const v1 = {
+      source_root: '/tmp/example', project_name: 'example', state: 'ready', revision: '1'.repeat(40), format_version: 1,
+      component_count: 1, component_titles: ['Gateway'],
+      components: [{ id: 'gateway', title: 'Gateway', filename: 'gateway.md', description: 'Accepted.\n', relationships: [] }],
+    }
+    mockResponses([v1, { code: 'changes_unavailable' }], [200, 409])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit component' }))
+    await user.type(screen.getByLabelText('Title'), ' changed')
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Changes are not available for this architecture yet.')
+    expect(screen.getByRole('heading', { name: 'Edit component' })).toBeInTheDocument()
+    expect(screen.queryByText(/format|yaml|parser|schema/i)).not.toBeInTheDocument()
   })
 
   it('keeps accepted components separate while one edit and one addition accumulate as changes in progress', async () => {

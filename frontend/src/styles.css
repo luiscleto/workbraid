@@ -777,6 +777,42 @@ dd {
   list-style: none;
 }
 
+.diagram-navigator {
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--ink);
+  padding-bottom: 16px;
+}
+
+.diagram-tree li button {
+  position: relative;
+}
+
+.diagram-tree li button::before {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--muted-ink);
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.diagram-tree li button.selected::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.component-heading {
+  padding-top: 0;
+}
+
+.appearance-note {
+  color: #6a5b31 !important;
+  font-family: "IBM Plex Sans", sans-serif !important;
+  letter-spacing: 0.025em;
+}
+
 .component-index li {
   border-bottom: 1px solid var(--hairline);
 }
@@ -883,6 +919,119 @@ dd {
   text-transform: uppercase;
 }
 
+.map-region.has-diagram .region-label {
+  top: 49px;
+}
+
+.diagram-breadcrumbs {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  right: 14px;
+  left: 14px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.diagram-breadcrumbs span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.diagram-breadcrumbs button {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  padding: 2px 0;
+  overflow: hidden;
+  color: var(--accent);
+  background: rgb(248 240 220 / 88%);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: normal;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.diagram-breadcrumbs strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diagram-boundary-dock {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 3;
+  display: grid;
+  width: min(25rem, calc(100% - 2rem));
+  max-height: 42%;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+}
+
+.diagram-boundary-dock section + section {
+  border-top: 1px solid var(--hairline);
+}
+
+.diagram-boundary-dock button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.diagram-boundary-dock button:hover,
+.diagram-boundary-dock button:focus-visible {
+  background: #e3dab3;
+}
+
+.diagram-boundary-dock button small {
+  color: var(--muted-ink);
+}
+
+.diagram-boundary-dock ul {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0 0.65rem 0.55rem;
+  list-style: none;
+}
+
+.diagram-boundary-dock li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto minmax(0, 1fr);
+  gap: 0.35rem;
+  align-items: center;
+  color: var(--muted-ink);
+  font-size: 0.72rem;
+}
+
+.diagram-boundary-dock li strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 500;
+}
+
 .map-surface,
 .map-canvas {
   width: 100%;
@@ -906,6 +1055,11 @@ dd {
 
 .map-fit:hover:not(:disabled) {
   background: #e7dba9;
+}
+
+.map-region.has-diagram .map-fit {
+  top: 54px;
+  bottom: auto;
 }
 
 .map-failure {
@@ -996,6 +1150,31 @@ dd {
   padding: 28px clamp(20px, 2.4vw, 36px) 20px;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.view-only-note {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px;
+  margin: -4px 0 22px;
+  border-left: 3px solid var(--accent);
+  padding: 7px 0 7px 12px;
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.view-only-note strong {
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.detail-link {
+  align-self: flex-start;
+  margin-top: 20px;
 }
 
 .pane-heading {

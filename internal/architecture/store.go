@@ -36,9 +36,28 @@ var (
 
 // Snapshot is immutable accepted Architecture state pinned to one Git commit.
 type Snapshot struct {
-	storeID    uuid.UUID
-	revision   string
-	components []component
+	storeID       uuid.UUID
+	revision      string
+	formatVersion int
+	components    []component
+	rootDiagram   uuid.UUID
+	diagrams      []diagram
+}
+
+type diagram struct {
+	id          uuid.UUID
+	path        string
+	title       string
+	appearances []diagramAppearance
+	mode        string
+	source      []byte
+}
+
+type diagramAppearance struct {
+	component     uuid.UUID
+	role          string
+	detailDiagram uuid.UUID
+	hasDetailLink bool
 }
 
 type component struct {
@@ -70,12 +89,198 @@ type componentRelationship struct {
 func (snapshot Snapshot) Revision() string    { return snapshot.revision }
 func (snapshot Snapshot) ComponentCount() int { return len(snapshot.components) }
 func (snapshot Snapshot) StoreID() string     { return snapshot.storeID.String() }
+func (snapshot Snapshot) FormatVersion() int  { return snapshot.formatVersion }
 func (snapshot Snapshot) ComponentTitles() []string {
 	titles := make([]string, len(snapshot.components))
 	for index := range snapshot.components {
 		titles[index] = snapshot.components[index].title
 	}
 	return titles
+}
+
+// DiagramProjection is the immutable browser-facing projection of one
+// accepted v2 Diagram. Hierarchy, appearances, navigation, ordinary edges,
+// and boundary references are resolved by the accepted loader rather than by
+// the browser.
+type DiagramProjection struct {
+	ID                      string
+	Title                   string
+	Depth                   int
+	ParentDiagramID         string
+	ParentAnchorComponentID string
+	Breadcrumbs             []DiagramBreadcrumb
+	Appearances             []DiagramAppearance
+	Boundaries              []DiagramBoundary
+	Relationships           []DiagramRelationship
+}
+
+type DiagramBreadcrumb struct {
+	ID                     string
+	Title                  string
+	FocusAnchorComponentID string
+}
+
+type DiagramAppearance struct {
+	ComponentID        string
+	Role               string
+	DetailDiagramID    string
+	DetailDiagramTitle string
+}
+
+type DiagramBoundary struct {
+	Key              string
+	ComponentID      string
+	Title            string
+	Context          string
+	HomeDiagramID    string
+	HomeDiagramTitle string
+}
+
+type DiagramRelationship struct {
+	Key               string
+	SourceNodeKey     string
+	TargetNodeKey     string
+	SourceComponentID string
+	TargetComponentID string
+	Label             string
+}
+
+func (snapshot Snapshot) RootDiagramID() string {
+	if snapshot.formatVersion != 2 {
+		return ""
+	}
+	return snapshot.rootDiagram.String()
+}
+
+func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
+	if snapshot.formatVersion != 2 {
+		return nil
+	}
+	componentsByID := make(map[uuid.UUID]component, len(snapshot.components))
+	componentTitleCounts := make(map[string]int, len(snapshot.components))
+	for _, component := range snapshot.components {
+		componentsByID[component.id] = component
+		componentTitleCounts[component.title]++
+	}
+	diagramsByID := make(map[uuid.UUID]diagram, len(snapshot.diagrams))
+	homeByComponent := make(map[uuid.UUID]uuid.UUID, len(snapshot.components))
+	parentByDiagram := make(map[uuid.UUID]diagramParent, len(snapshot.diagrams))
+	for _, current := range snapshot.diagrams {
+		diagramsByID[current.id] = current
+		for _, appearance := range current.appearances {
+			if appearance.role == "home" {
+				homeByComponent[appearance.component] = current.id
+			}
+			if appearance.hasDetailLink {
+				parentByDiagram[appearance.detailDiagram] = diagramParent{diagram: current.id, anchor: appearance.component}
+			}
+		}
+	}
+
+	ordered := make([]diagram, 0, len(snapshot.diagrams))
+	var appendDiagram func(uuid.UUID)
+	appendDiagram = func(id uuid.UUID) {
+		current := diagramsByID[id]
+		ordered = append(ordered, current)
+		for _, appearance := range current.appearances {
+			if appearance.hasDetailLink {
+				appendDiagram(appearance.detailDiagram)
+			}
+		}
+	}
+	appendDiagram(snapshot.rootDiagram)
+
+	projections := make([]DiagramProjection, 0, len(ordered))
+	for _, current := range ordered {
+		projection := DiagramProjection{ID: current.id.String(), Title: current.title}
+		if parent, exists := parentByDiagram[current.id]; exists {
+			projection.ParentDiagramID = parent.diagram.String()
+			projection.ParentAnchorComponentID = parent.anchor.String()
+		}
+		projection.Breadcrumbs = diagramBreadcrumbs(current.id, snapshot.rootDiagram, diagramsByID, parentByDiagram)
+		projection.Depth = len(projection.Breadcrumbs) - 1
+
+		present := make(map[uuid.UUID]string, len(current.appearances))
+		for _, appearance := range current.appearances {
+			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role}
+			present[appearance.component] = appearance.component.String()
+			if appearance.hasDetailLink {
+				value.DetailDiagramID = appearance.detailDiagram.String()
+				value.DetailDiagramTitle = diagramsByID[appearance.detailDiagram].title
+			}
+			projection.Appearances = append(projection.Appearances, value)
+		}
+
+		boundaries := make(map[uuid.UUID]string)
+		for _, source := range snapshot.components {
+			for relationshipIndex, relationship := range source.relationships {
+				sourceKey, sourcePresent := present[source.id]
+				targetKey, targetPresent := present[relationship.target]
+				if sourcePresent == targetPresent {
+					if !sourcePresent {
+						continue
+					}
+				} else if !sourcePresent {
+					sourceKey = ensureDiagramBoundary(&projection, boundaries, source.id, componentsByID, componentTitleCounts, homeByComponent, diagramsByID)
+				} else {
+					targetKey = ensureDiagramBoundary(&projection, boundaries, relationship.target, componentsByID, componentTitleCounts, homeByComponent, diagramsByID)
+				}
+				projection.Relationships = append(projection.Relationships, DiagramRelationship{
+					Key:           fmt.Sprintf("diagram:%s:%s:%d", current.id, source.id, relationshipIndex),
+					SourceNodeKey: sourceKey, TargetNodeKey: targetKey,
+					SourceComponentID: source.id.String(), TargetComponentID: relationship.target.String(), Label: relationship.label,
+				})
+			}
+		}
+		projections = append(projections, projection)
+	}
+	return projections
+}
+
+type diagramParent struct {
+	diagram uuid.UUID
+	anchor  uuid.UUID
+}
+
+func diagramBreadcrumbs(selected, root uuid.UUID, diagrams map[uuid.UUID]diagram, parents map[uuid.UUID]diagramParent) []DiagramBreadcrumb {
+	path := []uuid.UUID{selected}
+	for current := selected; current != root; {
+		parent, exists := parents[current]
+		if !exists {
+			break
+		}
+		current = parent.diagram
+		path = append(path, current)
+	}
+	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
+		path[left], path[right] = path[right], path[left]
+	}
+	result := make([]DiagramBreadcrumb, len(path))
+	for index, id := range path {
+		result[index] = DiagramBreadcrumb{ID: id.String(), Title: diagrams[id].title}
+		if index+1 < len(path) {
+			result[index].FocusAnchorComponentID = parents[path[index+1]].anchor.String()
+		}
+	}
+	return result
+}
+
+func ensureDiagramBoundary(projection *DiagramProjection, existing map[uuid.UUID]string, componentID uuid.UUID, components map[uuid.UUID]component, titleCounts map[string]int, homes map[uuid.UUID]uuid.UUID, diagrams map[uuid.UUID]diagram) string {
+	if key, found := existing[componentID]; found {
+		return key
+	}
+	key := "boundary:" + componentID.String()
+	homeID := homes[componentID]
+	boundary := DiagramBoundary{
+		Key: key, ComponentID: componentID.String(), Title: components[componentID].title,
+		HomeDiagramID: homeID.String(), HomeDiagramTitle: diagrams[homeID].title,
+	}
+	if titleCounts[boundary.Title] > 1 {
+		boundary.Context = filepath.Base(components[componentID].path)
+	}
+	projection.Boundaries = append(projection.Boundaries, boundary)
+	existing[componentID] = key
+	return key
 }
 
 // AuthoringComponent is the structured projection used by the local browser.
@@ -392,33 +597,17 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 	}
 
 	var manifestEntry *treeEntry
-	componentsTreePresent := false
-	var componentEntries []treeEntry
 	for index := range entries {
 		entry := entries[index]
-		switch {
-		case entry.Path == "architecture.yaml":
+		if entry.Path == "architecture.yaml" {
 			if entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") {
 				return Snapshot{}, fmt.Errorf("%w: architecture.yaml is not an ordinary file", ErrInvalid)
 			}
 			manifestEntry = &entry
-		case entry.Path == "components" && entry.Type == "tree":
-			componentsTreePresent = true
-		case strings.HasPrefix(entry.Path, "components/"):
-			relative := strings.TrimPrefix(entry.Path, "components/")
-			if strings.Contains(relative, "/") || !strings.HasSuffix(relative, ".md") || entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") {
-				return Snapshot{}, fmt.Errorf("%w: accepted tree contains an invalid component path", ErrInvalid)
-			}
-			componentEntries = append(componentEntries, entry)
-		default:
-			return Snapshot{}, fmt.Errorf("%w: accepted tree contains unsupported path %q", ErrInvalid, entry.Path)
 		}
 	}
 	if manifestEntry == nil {
 		return Snapshot{}, fmt.Errorf("%w: architecture.yaml is missing", ErrInvalid)
-	}
-	if componentsTreePresent && len(componentEntries) == 0 {
-		return Snapshot{}, fmt.Errorf("%w: accepted tree contains an empty components directory", ErrInvalid)
 	}
 	contents, err := manager.git.readBlob(ctx, storePath, manifestEntry.Object)
 	if err != nil {
@@ -434,6 +623,10 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 	manifestStoreID, err := uuid.Parse(parsed.StoreID)
 	if err != nil || manifestStoreID != expectedStoreID {
 		return Snapshot{}, fmt.Errorf("%w: Architecture identity does not match this project", ErrInvalid)
+	}
+	componentEntries, diagramEntries, err := acceptedTreeEntries(entries, parsed.Version)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	components := make([]component, 0, len(componentEntries))
 	componentIDs := make(map[uuid.UUID]struct{}, len(componentEntries))
@@ -461,7 +654,155 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 			}
 		}
 	}
-	return Snapshot{storeID: expectedStoreID, revision: revision, components: components}, nil
+	snapshot := Snapshot{storeID: expectedStoreID, revision: revision, formatVersion: parsed.Version, components: components}
+	if parsed.Version == 2 {
+		diagrams, root, err := manager.loadDiagrams(ctx, storePath, diagramEntries, parsed.RootDiagram, components)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		snapshot.rootDiagram = root
+		snapshot.diagrams = diagrams
+	}
+	return snapshot, nil
+}
+
+func acceptedTreeEntries(entries []treeEntry, version int) ([]treeEntry, []treeEntry, error) {
+	componentsTreePresent := false
+	diagramsTreePresent := false
+	var componentEntries []treeEntry
+	var diagramEntries []treeEntry
+	for _, entry := range entries {
+		switch {
+		case entry.Path == "architecture.yaml":
+			// Already checked by the caller.
+		case entry.Path == "components" && entry.Type == "tree":
+			componentsTreePresent = true
+		case strings.HasPrefix(entry.Path, "components/"):
+			relative := strings.TrimPrefix(entry.Path, "components/")
+			if strings.Contains(relative, "/") || !strings.HasSuffix(relative, ".md") || entry.Type != "blob" || !ordinaryFileMode(entry.Mode) {
+				return nil, nil, errors.New("accepted tree contains an invalid component path")
+			}
+			componentEntries = append(componentEntries, entry)
+		case version == 2 && entry.Path == "diagrams" && entry.Type == "tree":
+			diagramsTreePresent = true
+		case version == 2 && strings.HasPrefix(entry.Path, "diagrams/"):
+			relative := strings.TrimPrefix(entry.Path, "diagrams/")
+			if strings.Contains(relative, "/") || !strings.HasSuffix(relative, ".yaml") || entry.Type != "blob" || !ordinaryFileMode(entry.Mode) {
+				return nil, nil, errors.New("accepted tree contains an invalid Diagram path")
+			}
+			diagramEntries = append(diagramEntries, entry)
+		default:
+			return nil, nil, fmt.Errorf("accepted tree contains unsupported path %q", entry.Path)
+		}
+	}
+	if componentsTreePresent && len(componentEntries) == 0 {
+		return nil, nil, errors.New("accepted tree contains an empty components directory")
+	}
+	if version == 2 && (!diagramsTreePresent || len(diagramEntries) == 0) {
+		return nil, nil, errors.New("accepted tree must contain one or more Diagrams")
+	}
+	return componentEntries, diagramEntries, nil
+}
+
+func ordinaryFileMode(mode string) bool { return mode == "100644" || mode == "100755" }
+
+func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entries []treeEntry, rootValue string, components []component) ([]diagram, uuid.UUID, error) {
+	root, err := uuid.Parse(rootValue)
+	if err != nil {
+		return nil, uuid.Nil, errors.New("root_diagram is not a valid UUID")
+	}
+	componentIDs := make(map[uuid.UUID]struct{}, len(components))
+	for _, component := range components {
+		componentIDs[component.id] = struct{}{}
+	}
+	diagrams := make([]diagram, 0, len(entries))
+	diagramIDs := make(map[uuid.UUID]struct{}, len(entries))
+	for _, entry := range entries {
+		contents, err := manager.git.readBlob(ctx, storePath, entry.Object)
+		if err != nil {
+			return nil, uuid.Nil, fmt.Errorf("read Diagram %q: %v", entry.Path, err)
+		}
+		parsed, err := parseDiagram(entry.Path, contents)
+		if err != nil {
+			return nil, uuid.Nil, fmt.Errorf("Diagram %q: %v", entry.Path, err)
+		}
+		if _, duplicate := diagramIDs[parsed.id]; duplicate {
+			return nil, uuid.Nil, fmt.Errorf("duplicate Diagram ID %s", parsed.id)
+		}
+		parsed.mode = entry.Mode
+		parsed.source = append([]byte(nil), contents...)
+		diagramIDs[parsed.id] = struct{}{}
+		diagrams = append(diagrams, parsed)
+	}
+	if _, exists := diagramIDs[root]; !exists {
+		return nil, uuid.Nil, errors.New("root_diagram does not resolve to a Diagram")
+	}
+
+	homeCounts := make(map[uuid.UUID]int, len(components))
+	parentCounts := make(map[uuid.UUID]int, len(diagrams))
+	children := make(map[uuid.UUID][]uuid.UUID, len(diagrams))
+	for _, current := range diagrams {
+		seen := make(map[uuid.UUID]struct{}, len(current.appearances))
+		for _, appearance := range current.appearances {
+			if _, exists := componentIDs[appearance.component]; !exists {
+				return nil, uuid.Nil, fmt.Errorf("Diagram %q contains an unknown Component appearance", current.path)
+			}
+			if _, duplicate := seen[appearance.component]; duplicate {
+				return nil, uuid.Nil, fmt.Errorf("Diagram %q contains a Component more than once", current.path)
+			}
+			seen[appearance.component] = struct{}{}
+			if appearance.role == "home" {
+				homeCounts[appearance.component]++
+			}
+			if appearance.hasDetailLink {
+				if _, exists := diagramIDs[appearance.detailDiagram]; !exists {
+					return nil, uuid.Nil, fmt.Errorf("Diagram %q links to an unknown detail Diagram", current.path)
+				}
+				parentCounts[appearance.detailDiagram]++
+				children[current.id] = append(children[current.id], appearance.detailDiagram)
+			}
+		}
+	}
+	for componentID := range componentIDs {
+		if homeCounts[componentID] != 1 {
+			return nil, uuid.Nil, fmt.Errorf("Component %s must have exactly one home appearance", componentID)
+		}
+	}
+	if parentCounts[root] != 0 {
+		return nil, uuid.Nil, errors.New("root Diagram must not have a parent anchor")
+	}
+	for diagramID := range diagramIDs {
+		if diagramID != root && parentCounts[diagramID] != 1 {
+			return nil, uuid.Nil, fmt.Errorf("non-root Diagram %s must have exactly one parent anchor", diagramID)
+		}
+	}
+	visiting := make(map[uuid.UUID]bool, len(diagrams))
+	visited := make(map[uuid.UUID]bool, len(diagrams))
+	var visit func(uuid.UUID) error
+	visit = func(id uuid.UUID) error {
+		if visiting[id] {
+			return errors.New("Diagram hierarchy contains a cycle")
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, child := range children[id] {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
+	}
+	if err := visit(root); err != nil {
+		return nil, uuid.Nil, err
+	}
+	if len(visited) != len(diagrams) {
+		return nil, uuid.Nil, errors.New("every Diagram must be reachable from root")
+	}
+	return diagrams, root, nil
 }
 
 // NewComponentChange assigns creation-time identity and filename while leaving
@@ -1190,10 +1531,11 @@ func endOfLineStartingAt(source []byte, offset int) int {
 }
 
 type manifest struct {
-	Format  string          `yaml:"format"`
-	Version int             `yaml:"version"`
-	StoreID string          `yaml:"store_id"`
-	Project manifestProject `yaml:"project"`
+	Format      string          `yaml:"format"`
+	Version     int             `yaml:"version"`
+	StoreID     string          `yaml:"store_id"`
+	Project     manifestProject `yaml:"project"`
+	RootDiagram string          `yaml:"root_diagram,omitempty"`
 }
 
 type manifestProject struct {
@@ -1209,6 +1551,9 @@ func marshalManifest(value manifest) ([]byte, error) {
 }
 
 func parseManifest(contents []byte) (manifest, error) {
+	if !utf8.Valid(contents) {
+		return manifest{}, errors.New("architecture.yaml is not valid UTF-8")
+	}
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil {
@@ -1224,7 +1569,14 @@ func parseManifest(contents []byte) (manifest, error) {
 	if len(document.Content) != 1 {
 		return manifest{}, errors.New("architecture.yaml must contain one mapping")
 	}
-	if err := validateManifestYAML(document.Content[0]); err != nil {
+	version, err := manifestVersion(document.Content[0])
+	if err != nil {
+		return manifest{}, err
+	}
+	if version != 1 && version != 2 {
+		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
+	}
+	if err := validateManifestYAML(document.Content[0], version); err != nil {
 		return manifest{}, err
 	}
 	var value manifest
@@ -1237,12 +1589,43 @@ func parseManifest(contents []byte) (manifest, error) {
 	return value, nil
 }
 
-func validateManifestYAML(root *yaml.Node) error {
+func manifestVersion(root *yaml.Node) (int, error) {
+	if root.Kind != yaml.MappingNode || root.ShortTag() != "!!map" {
+		return 0, errors.New("architecture.yaml must contain a mapping")
+	}
+	found := false
+	version := 0
+	for index := 0; index < len(root.Content); index += 2 {
+		key := root.Content[index]
+		value := root.Content[index+1]
+		if key.Kind == yaml.ScalarNode && key.ShortTag() == "!!str" && key.Value == "version" {
+			if found {
+				return 0, errors.New("architecture.yaml contains duplicate field \"version\"")
+			}
+			found = true
+			if value.Kind != yaml.ScalarNode || value.ShortTag() != "!!int" {
+				return 0, errors.New("architecture.yaml field version must be an integer")
+			}
+			if err := value.Decode(&version); err != nil {
+				return 0, errors.New("architecture.yaml field version must be an integer")
+			}
+		}
+	}
+	if !found {
+		return 0, errors.New("architecture.yaml is missing field \"version\"")
+	}
+	return version, nil
+}
+
+func validateManifestYAML(root *yaml.Node, version int) error {
 	if root.Kind != yaml.MappingNode || root.ShortTag() != "!!map" {
 		return errors.New("architecture.yaml must contain a mapping")
 	}
 	required := map[string]bool{
 		"format": false, "version": false, "store_id": false, "project": false,
+	}
+	if version == 2 {
+		required["root_diagram"] = false
 	}
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
@@ -1258,7 +1641,7 @@ func validateManifestYAML(root *yaml.Node) error {
 		}
 		required[key.Value] = true
 		switch key.Value {
-		case "format", "store_id":
+		case "format", "store_id", "root_diagram":
 			if value.Kind != yaml.ScalarNode || value.ShortTag() != "!!str" {
 				return fmt.Errorf("architecture.yaml field %s must be a string", key.Value)
 			}
@@ -1314,7 +1697,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version != 1 {
+	if value.Version != 1 && value.Version != 2 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -1325,6 +1708,169 @@ func validateManifest(value manifest) error {
 	}
 	if strings.TrimSpace(value.Project.SourceHint) == "" {
 		return errors.New("project.source_hint is empty")
+	}
+	if value.Version == 1 && value.RootDiagram != "" {
+		return errors.New("format v1 must not contain root_diagram")
+	}
+	if value.Version == 2 {
+		if _, err := uuid.Parse(value.RootDiagram); err != nil {
+			return errors.New("root_diagram is not a valid UUID")
+		}
+	}
+	return nil
+}
+
+type diagramYAML struct {
+	ID          string                  `yaml:"id"`
+	Title       string                  `yaml:"title"`
+	Appearances []diagramAppearanceYAML `yaml:"appearances,omitempty"`
+}
+
+type diagramAppearanceYAML struct {
+	Component     string `yaml:"component"`
+	Role          string `yaml:"role"`
+	DetailDiagram string `yaml:"detail_diagram,omitempty"`
+}
+
+func parseDiagram(path string, contents []byte) (diagram, error) {
+	if !utf8.Valid(contents) {
+		return diagram{}, errors.New("Diagram is not valid UTF-8")
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return diagram{}, fmt.Errorf("parse YAML: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return diagram{}, errors.New("Diagram contains multiple YAML documents")
+		}
+		return diagram{}, fmt.Errorf("parse YAML: %w", err)
+	}
+	if len(document.Content) != 1 {
+		return diagram{}, errors.New("Diagram must contain one mapping")
+	}
+	if err := validateDiagramYAML(document.Content[0]); err != nil {
+		return diagram{}, err
+	}
+	var value diagramYAML
+	if err := document.Content[0].Decode(&value); err != nil {
+		return diagram{}, fmt.Errorf("parse YAML: %w", err)
+	}
+	id, err := uuid.Parse(value.ID)
+	if err != nil {
+		return diagram{}, errors.New("Diagram id is not a valid UUID")
+	}
+	if strings.TrimSpace(value.Title) == "" {
+		return diagram{}, errors.New("Diagram title is empty")
+	}
+	result := diagram{id: id, path: path, title: value.Title, appearances: make([]diagramAppearance, len(value.Appearances))}
+	for index, item := range value.Appearances {
+		componentID, err := uuid.Parse(item.Component)
+		if err != nil {
+			return diagram{}, fmt.Errorf("appearance %d Component is not a valid UUID", index+1)
+		}
+		if item.Role != "home" && item.Role != "reference" {
+			return diagram{}, fmt.Errorf("appearance %d role must be home or reference", index+1)
+		}
+		appearance := diagramAppearance{component: componentID, role: item.Role}
+		if item.DetailDiagram != "" {
+			if item.Role != "home" {
+				return diagram{}, fmt.Errorf("appearance %d reference cannot link to a detail Diagram", index+1)
+			}
+			detailID, err := uuid.Parse(item.DetailDiagram)
+			if err != nil {
+				return diagram{}, fmt.Errorf("appearance %d detail_diagram is not a valid UUID", index+1)
+			}
+			appearance.detailDiagram = detailID
+			appearance.hasDetailLink = true
+		}
+		result.appearances[index] = appearance
+	}
+	return result, nil
+}
+
+func validateDiagramYAML(root *yaml.Node) error {
+	if root.Kind != yaml.MappingNode || root.ShortTag() != "!!map" {
+		return errors.New("Diagram must contain a mapping")
+	}
+	required := map[string]bool{"id": false, "title": false}
+	seenAppearances := false
+	for index := 0; index < len(root.Content); index += 2 {
+		key := root.Content[index]
+		value := root.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
+			return errors.New("Diagram field names must be strings")
+		}
+		if key.Value != "id" && key.Value != "title" && key.Value != "appearances" {
+			return fmt.Errorf("Diagram contains unknown field %q", key.Value)
+		}
+		if key.Value == "appearances" {
+			if seenAppearances {
+				return errors.New("Diagram contains duplicate field \"appearances\"")
+			}
+			seenAppearances = true
+			if value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {
+				return errors.New("Diagram field appearances must be a sequence")
+			}
+			for appearanceIndex, appearance := range value.Content {
+				if err := validateDiagramAppearanceYAML(appearance, appearanceIndex+1); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if required[key.Value] {
+			return fmt.Errorf("Diagram contains duplicate field %q", key.Value)
+		}
+		required[key.Value] = true
+		if value.Kind != yaml.ScalarNode || value.ShortTag() != "!!str" {
+			return fmt.Errorf("Diagram field %s must be a string", key.Value)
+		}
+	}
+	for field, present := range required {
+		if !present {
+			return fmt.Errorf("Diagram is missing field %q", field)
+		}
+	}
+	return nil
+}
+
+func validateDiagramAppearanceYAML(value *yaml.Node, position int) error {
+	if value.Kind != yaml.MappingNode || value.ShortTag() != "!!map" {
+		return fmt.Errorf("Diagram appearance %d must be a mapping", position)
+	}
+	required := map[string]bool{"component": false, "role": false}
+	seenDetail := false
+	for index := 0; index < len(value.Content); index += 2 {
+		key := value.Content[index]
+		field := value.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
+			return fmt.Errorf("Diagram appearance %d field names must be strings", position)
+		}
+		if key.Value != "component" && key.Value != "role" && key.Value != "detail_diagram" {
+			return fmt.Errorf("Diagram appearance %d contains unknown field %q", position, key.Value)
+		}
+		if key.Value == "detail_diagram" {
+			if seenDetail {
+				return fmt.Errorf("Diagram appearance %d contains duplicate field %q", position, key.Value)
+			}
+			seenDetail = true
+		} else {
+			if required[key.Value] {
+				return fmt.Errorf("Diagram appearance %d contains duplicate field %q", position, key.Value)
+			}
+			required[key.Value] = true
+		}
+		if field.Kind != yaml.ScalarNode || field.ShortTag() != "!!str" {
+			return fmt.Errorf("Diagram appearance %d field %s must be a string", position, key.Value)
+		}
+	}
+	for field, present := range required {
+		if !present {
+			return fmt.Errorf("Diagram appearance %d is missing field %q", position, field)
+		}
 	}
 	return nil
 }

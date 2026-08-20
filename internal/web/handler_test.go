@@ -347,7 +347,7 @@ func TestOpenProjectBoundedAcceptedStateFailuresAreReadOnly(t *testing.T) {
 			wantCode:   errorArchitectureUnsupported,
 			arrange: func(t *testing.T, dataDirectory, storePath, _, revision string) {
 				manifest := runGit(t, dataDirectory, "--git-dir", storePath, "show", revision+":architecture.yaml")
-				manifest = strings.Replace(manifest, "version: 1", "version: 2", 1) + "\n"
+				manifest = strings.Replace(manifest, "version: 1", "version: 3", 1) + "\n"
 				advanceAcceptedToManifest(t, storePath, revision, []byte(manifest), nil)
 			},
 		},

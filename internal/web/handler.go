@@ -150,6 +150,7 @@ const (
 	errorRefreshUnavailable      = "refresh_unavailable"
 	errorRefreshInvalid          = "refresh_invalid"
 	errorRefreshUnsupported      = "refresh_unsupported"
+	errorChangesUnavailable      = "changes_unavailable"
 )
 
 func (h *Handler) openProject(response http.ResponseWriter, request *http.Request) {
@@ -223,9 +224,12 @@ type architectureResponse struct {
 	ProjectName     string              `json:"project_name"`
 	State           string              `json:"state"`
 	Revision        string              `json:"revision"`
+	FormatVersion   int                 `json:"format_version"`
 	ComponentCount  int                 `json:"component_count"`
 	ComponentTitles []string            `json:"component_titles"`
 	Components      []componentResponse `json:"components"`
+	RootDiagramID   string              `json:"root_diagram_id,omitempty"`
+	Diagrams        []diagramResponse   `json:"diagrams,omitempty"`
 	Changes         *changesResponse    `json:"changes,omitempty"`
 	Stale           bool                `json:"stale,omitempty"`
 	ParentDiff      string              `json:"parent_diff,omitempty"`
@@ -295,9 +299,12 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		ProjectName:     projectName,
 		State:           state,
 		Revision:        projection.Revision,
+		FormatVersion:   projection.FormatVersion,
 		ComponentCount:  projection.ComponentCount,
 		ComponentTitles: projection.ComponentTitles,
 		Components:      projection.Components,
+		RootDiagramID:   projection.RootDiagramID,
+		Diagrams:        projection.Diagrams,
 		Stale:           stale,
 		ParentDiff:      parentDiff,
 	}
@@ -688,6 +695,10 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		return
 	}
 	snapshot := *h.loadedSnapshot
+	if snapshot.FormatVersion() == 2 {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+		return
+	}
 	if h.pending != nil && (h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision()) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return

@@ -9,9 +9,56 @@ import (
 
 type snapshotProjectionResponse struct {
 	Revision        string              `json:"revision"`
+	FormatVersion   int                 `json:"format_version"`
 	ComponentCount  int                 `json:"component_count"`
 	ComponentTitles []string            `json:"component_titles"`
 	Components      []componentResponse `json:"components"`
+	RootDiagramID   string              `json:"root_diagram_id,omitempty"`
+	Diagrams        []diagramResponse   `json:"diagrams,omitempty"`
+}
+
+type diagramResponse struct {
+	ID                      string                        `json:"id"`
+	Title                   string                        `json:"title"`
+	Depth                   int                           `json:"depth"`
+	Context                 string                        `json:"context,omitempty"`
+	ParentDiagramID         string                        `json:"parent_diagram_id,omitempty"`
+	ParentAnchorComponentID string                        `json:"parent_anchor_component_id,omitempty"`
+	Breadcrumbs             []diagramBreadcrumbResponse   `json:"breadcrumbs"`
+	Appearances             []diagramAppearanceResponse   `json:"appearances"`
+	Boundaries              []diagramBoundaryResponse     `json:"boundaries"`
+	Relationships           []diagramRelationshipResponse `json:"relationships"`
+}
+
+type diagramBreadcrumbResponse struct {
+	ID                     string `json:"id"`
+	Title                  string `json:"title"`
+	FocusAnchorComponentID string `json:"focus_anchor_component_id,omitempty"`
+}
+
+type diagramAppearanceResponse struct {
+	ComponentID        string `json:"component_id"`
+	Role               string `json:"role"`
+	DetailDiagramID    string `json:"detail_diagram_id,omitempty"`
+	DetailDiagramTitle string `json:"detail_diagram_title,omitempty"`
+}
+
+type diagramBoundaryResponse struct {
+	Key              string `json:"key"`
+	ComponentID      string `json:"component_id"`
+	Title            string `json:"title"`
+	Context          string `json:"context,omitempty"`
+	HomeDiagramID    string `json:"home_diagram_id"`
+	HomeDiagramTitle string `json:"home_diagram_title"`
+}
+
+type diagramRelationshipResponse struct {
+	Key               string `json:"key"`
+	SourceNodeKey     string `json:"source_node_key"`
+	TargetNodeKey     string `json:"target_node_key"`
+	SourceComponentID string `json:"source_component_id"`
+	TargetComponentID string `json:"target_component_id"`
+	Label             string `json:"label"`
 }
 
 type reviewComparisonResponse struct {
@@ -65,10 +112,76 @@ func projectSnapshot(snapshot architecture.Snapshot, relationshipKeyPrefix strin
 	}
 	return snapshotProjectionResponse{
 		Revision:        snapshot.Revision(),
+		FormatVersion:   snapshot.FormatVersion(),
 		ComponentCount:  snapshot.ComponentCount(),
 		ComponentTitles: snapshot.ComponentTitles(),
 		Components:      components,
+		RootDiagramID:   snapshot.RootDiagramID(),
+		Diagrams:        projectDiagrams(snapshot),
 	}
+}
+
+func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
+	projected := snapshot.DiagramProjections()
+	if len(projected) == 0 {
+		return nil
+	}
+	componentTitles := make(map[string]string, snapshot.ComponentCount())
+	componentContexts := make(map[string]string, snapshot.ComponentCount())
+	componentTitleCounts := make(map[string]int, snapshot.ComponentCount())
+	for _, component := range snapshot.AuthoringComponents() {
+		componentTitles[component.ID] = component.Title
+		componentContexts[component.ID] = component.Filename
+		componentTitleCounts[component.Title]++
+	}
+	titleCounts := make(map[string]int, len(projected))
+	for _, diagram := range projected {
+		titleCounts[diagram.Title]++
+	}
+	result := make([]diagramResponse, len(projected))
+	for index, diagram := range projected {
+		value := diagramResponse{
+			ID: diagram.ID, Title: diagram.Title, Depth: diagram.Depth, ParentDiagramID: diagram.ParentDiagramID,
+			ParentAnchorComponentID: diagram.ParentAnchorComponentID,
+			Breadcrumbs:             make([]diagramBreadcrumbResponse, len(diagram.Breadcrumbs)),
+			Appearances:             make([]diagramAppearanceResponse, len(diagram.Appearances)),
+			Boundaries:              make([]diagramBoundaryResponse, len(diagram.Boundaries)),
+			Relationships:           make([]diagramRelationshipResponse, len(diagram.Relationships)),
+		}
+		if titleCounts[diagram.Title] > 1 {
+			if diagram.ParentAnchorComponentID == "" {
+				value.Context = "Main diagram"
+			} else {
+				value.Context = "Inside " + componentTitles[diagram.ParentAnchorComponentID]
+				if componentTitleCounts[componentTitles[diagram.ParentAnchorComponentID]] > 1 {
+					value.Context += " — " + componentContexts[diagram.ParentAnchorComponentID]
+				}
+			}
+		}
+		for itemIndex, breadcrumb := range diagram.Breadcrumbs {
+			value.Breadcrumbs[itemIndex] = diagramBreadcrumbResponse{ID: breadcrumb.ID, Title: breadcrumb.Title, FocusAnchorComponentID: breadcrumb.FocusAnchorComponentID}
+		}
+		for itemIndex, appearance := range diagram.Appearances {
+			value.Appearances[itemIndex] = diagramAppearanceResponse{
+				ComponentID: appearance.ComponentID, Role: appearance.Role,
+				DetailDiagramID: appearance.DetailDiagramID, DetailDiagramTitle: appearance.DetailDiagramTitle,
+			}
+		}
+		for itemIndex, boundary := range diagram.Boundaries {
+			value.Boundaries[itemIndex] = diagramBoundaryResponse{
+				Key: boundary.Key, ComponentID: boundary.ComponentID, Title: boundary.Title, Context: boundary.Context,
+				HomeDiagramID: boundary.HomeDiagramID, HomeDiagramTitle: boundary.HomeDiagramTitle,
+			}
+		}
+		for itemIndex, relationship := range diagram.Relationships {
+			value.Relationships[itemIndex] = diagramRelationshipResponse{
+				Key: relationship.Key, SourceNodeKey: relationship.SourceNodeKey, TargetNodeKey: relationship.TargetNodeKey,
+				SourceComponentID: relationship.SourceComponentID, TargetComponentID: relationship.TargetComponentID, Label: relationship.Label,
+			}
+		}
+		result[index] = value
+	}
+	return result
 }
 
 // captureReviewPresentation projects and compares one immutable bound pair.

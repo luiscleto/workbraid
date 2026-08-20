@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArchitectureMap,
+  MapComponent,
   ReviewMapComponentChange,
   ReviewMapRelationshipChange,
   ReviewRelationshipSelection,
@@ -19,13 +20,54 @@ type ArchitectureResult = {
   project_name: string
   state: 'empty' | 'ready'
   revision: string
+  format_version: number
   component_count: number
   component_titles: string[]
   components: AuthoringComponent[]
+  root_diagram_id?: string
+  diagrams?: DiagramProjection[]
   changes?: ChangesInProgress
   stale?: boolean
   parent_diff?: string
   action_error?: string
+}
+
+type DiagramProjection = {
+  id: string
+  title: string
+  depth: number
+  context?: string
+  parent_diagram_id?: string
+  parent_anchor_component_id?: string
+  breadcrumbs: { id: string; title: string; focus_anchor_component_id?: string }[]
+  appearances: DiagramAppearance[]
+  boundaries: DiagramBoundary[]
+  relationships: DiagramRelationship[]
+}
+
+type DiagramAppearance = {
+  component_id: string
+  role: 'home' | 'reference'
+  detail_diagram_id?: string
+  detail_diagram_title?: string
+}
+
+type DiagramBoundary = {
+  key: string
+  component_id: string
+  title: string
+  context?: string
+  home_diagram_id: string
+  home_diagram_title: string
+}
+
+type DiagramRelationship = {
+  key: string
+  source_node_key: string
+  target_node_key: string
+  source_component_id: string
+  target_component_id: string
+  label: string
 }
 
 type AuthoringComponent = {
@@ -76,9 +118,12 @@ type ChangeReview = {
 
 type ReviewSnapshot = {
   revision: string
+  format_version?: number
   component_count: number
   component_titles: string[]
   components: AuthoringComponent[]
+  root_diagram_id?: string
+  diagrams?: DiagramProjection[]
 }
 
 type ReviewSide = 'with' | 'before'
@@ -188,6 +233,54 @@ function relationshipIssueComponentName(changes: ChangesInProgress, component: P
   return target?.context ? `${title} — ${target.context}` : title
 }
 
+type DiagramComponent = AuthoringComponent & { appearance: DiagramAppearance }
+
+function componentsForDiagram(result: ArchitectureResult, diagram?: DiagramProjection): DiagramComponent[] {
+  if (!diagram) return []
+  const byID = new Map(result.components.map((component) => [component.id, component]))
+  return diagram.appearances.flatMap((appearance) => {
+    const component = byID.get(appearance.component_id)
+    return component ? [{ ...component, appearance }] : []
+  })
+}
+
+function mapComponentsForDiagram(result: ArchitectureResult, diagram?: DiagramProjection): MapComponent[] {
+  if (!diagram) return []
+  const byID = new Map(result.components.map((component) => [component.id, component]))
+  const nodes = new Map<string, MapComponent>()
+  for (const appearance of diagram.appearances) {
+    const component = byID.get(appearance.component_id)
+    if (!component) continue
+    nodes.set(appearance.component_id, {
+      id: appearance.component_id,
+      component_id: appearance.component_id,
+      title: component.title,
+      filename: component.filename,
+      node_kind: appearance.role,
+      ...(appearance.role === 'reference' ? { subtitle: 'Also shown here' } : {}),
+      relationships: [],
+    })
+  }
+  for (const boundary of diagram.boundaries) {
+    nodes.set(boundary.key, {
+      id: boundary.key,
+      component_id: boundary.component_id,
+      title: boundary.title,
+      node_kind: 'boundary',
+      subtitle: [boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join('\n'),
+      relationships: [],
+    })
+  }
+  for (const relationship of diagram.relationships) {
+    nodes.get(relationship.source_node_key)?.relationships.push({
+      target_id: relationship.target_node_key,
+      label: relationship.label,
+      projection_key: relationship.key,
+    })
+  }
+  return [...nodes.values()]
+}
+
 function canonicalReviewPath(component: AuthoringComponent) {
   return `components/${component.filename}`
 }
@@ -211,6 +304,7 @@ export function App() {
   const [architectureBusy, setArchitectureBusy] = useState(false)
   const [acceptanceUnknown, setAcceptanceUnknown] = useState(false)
   const [selectedComponentID, setSelectedComponentID] = useState<string>()
+  const [selectedDiagramID, setSelectedDiagramID] = useState<string>()
   const [workspaceTask, setWorkspaceTask] = useState<WorkspaceTask>('empty')
   const [navigationIntent, setNavigationIntent] = useState<NavigationIntent | null>(null)
   const [discardConfirming, setDiscardConfirming] = useState(false)
@@ -219,9 +313,19 @@ export function App() {
 
   const enterWorkspace = useCallback((result: ArchitectureResult, task?: WorkspaceTask) => {
     setState({ kind: 'ready', value: result })
-    setSelectedComponentID((current) => result.components?.some((component) => component.id === current) ? current : result.components?.[0]?.id)
+    if (result.format_version === 2) {
+      const selectedDiagram = result.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+        ?? result.diagrams?.find((diagram) => diagram.id === result.root_diagram_id)
+      setSelectedDiagramID(selectedDiagram?.id)
+      setSelectedComponentID((current) => selectedDiagram?.appearances.some((appearance) => appearance.component_id === current)
+        ? current
+        : selectedDiagram?.appearances[0]?.component_id)
+    } else {
+      setSelectedDiagramID(undefined)
+      setSelectedComponentID((current) => result.components?.some((component) => component.id === current) ? current : result.components?.[0]?.id)
+    }
     setWorkspaceTask(task ?? (result.changes?.components.length ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
-  }, [])
+  }, [selectedDiagramID])
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
   const currentReview = readyResult?.changes?.review
@@ -254,10 +358,21 @@ export function App() {
       if (selectedComponentID) setSelectedComponentID(undefined)
       return
     }
+    if (state.value.format_version === 2) {
+      const diagram = state.value.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
+        ?? state.value.diagrams?.find((candidate) => candidate.id === state.value.root_diagram_id)
+      if (diagram && diagram.id !== selectedDiagramID) {
+        setSelectedDiagramID(diagram.id)
+      }
+      if (workspaceTask === 'empty') return
+      if (selectedComponentID && diagram?.appearances.some((appearance) => appearance.component_id === selectedComponentID)) return
+      setSelectedComponentID(diagram?.appearances[0]?.component_id)
+      return
+    }
     if (workspaceTask === 'empty' && state.value.components?.length) return
     if (selectedComponentID && state.value.components?.some((component) => component.id === selectedComponentID)) return
     setSelectedComponentID(state.value.components?.[0]?.id)
-  }, [state, selectedComponentID, reviewSide, workspaceTask])
+  }, [state, selectedComponentID, selectedDiagramID, reviewSide, workspaceTask])
 
   async function inspectProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -490,6 +605,7 @@ export function App() {
         setState({ kind: 'idle' })
         setSourceRoot('')
         setSelectedComponentID(undefined)
+        setSelectedDiagramID(undefined)
         setWorkspaceTask('empty')
         return
       }
@@ -538,9 +654,12 @@ export function App() {
       }
       const notice = payload.action_error ? messageForArchitectureAction(payload.action_error) : ''
       const nextTask = payload.changes?.stale ? 'changes' : workspaceTask
-      enterWorkspace({ ...payload, action_error: undefined }, nextTask)
+      enterWorkspace(payload, nextTask)
       setArchitectureNotice(notice)
     } catch {
+      setState((current) => current.kind === 'ready' && current.value.source_root === result.source_root
+        ? { kind: 'ready', value: { ...current.value, action_error: 'refresh_failed' } }
+        : current)
       setArchitectureNotice(messageForArchitectureAction('refresh_failed'))
     } finally {
       setArchitectureBusy(false)
@@ -551,8 +670,19 @@ export function App() {
     const result = state.value
     const review = result.changes?.review
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
-    const activeComponents = activeProjection?.components ?? result.components ?? []
+    const activeDiagram = !review && result.format_version === 2
+      ? result.diagrams?.find((diagram) => diagram.id === selectedDiagramID) ?? result.diagrams?.find((diagram) => diagram.id === result.root_diagram_id)
+      : undefined
+    const activeDiagramComponents = activeDiagram ? componentsForDiagram(result, activeDiagram) : undefined
+    const activeComponents = activeProjection?.components ?? activeDiagramComponents ?? result.components ?? []
+    const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(result, activeDiagram) : undefined
+    const mapComponents = diagramMapComponents ?? activeComponents
     const selected = activeComponents.find((component) => component.id === selectedComponentID)
+    const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
+    const diagramNodeTitles = new Map<string, string>()
+    for (const component of activeDiagramComponents ?? []) diagramNodeTitles.set(component.id, component.title)
+    for (const boundary of activeDiagram?.boundaries ?? []) diagramNodeTitles.set(boundary.key, boundary.title)
+    const showV2ViewOnly = result.format_version === 2 && !result.stale && result.action_error !== 'refresh_failed'
     const titleCounts = new Map<string, number>()
     for (const component of activeComponents) titleCounts.set(component.title, (titleCounts.get(component.title) ?? 0) + 1)
     const componentReviewStatus = new Map(review?.comparison.components.map((change) => [change.component_id, change]))
@@ -572,6 +702,29 @@ export function App() {
         kind: 'component', key: `component:${id}`, componentID: id, title: component.title,
         path: change?.path ?? canonicalReviewPath(component), status: change?.status ?? 'unchanged',
       })
+    }
+    const selectDiagram = (diagramID: string, focusComponentID?: string) => {
+      const diagram = result.diagrams?.find((candidate) => candidate.id === diagramID)
+      if (!diagram) return
+      setSelectedDiagramID(diagram.id)
+      setSelectedComponentID(focusComponentID && diagram.appearances.some((appearance) => appearance.component_id === focusComponentID)
+        ? focusComponentID
+        : diagram.appearances[0]?.component_id)
+      setWorkspaceTask(diagram.appearances.length ? 'documentation' : 'empty')
+      setEditor(null)
+      setReviewFocus(null)
+    }
+    const selectMapNode = (id: string) => {
+      if (!activeDiagram) {
+        selectComponent(id)
+        return
+      }
+      const boundary = activeDiagram.boundaries.find((candidate) => candidate.key === id)
+      if (boundary) {
+        selectDiagram(boundary.home_diagram_id, boundary.component_id)
+        return
+      }
+      selectComponent(id)
     }
     const selectRelationship = (relationship: ReviewRelationshipSelection) => {
       setSelectedComponentID(relationship.source_id)
@@ -613,8 +766,30 @@ export function App() {
           </div>
         )}
         <div className={`architecture-workbench ${review ? 'reviewing' : ''}`}>
-          <nav className="component-index" aria-label="Components">
-            <div className="index-heading"><h1>{review ? (reviewSide === 'with' ? 'With changes' : 'Before changes') : 'Components'}</h1></div>
+          <nav className="component-index" aria-label={result.format_version === 2 && !review ? 'Diagrams and components' : 'Components'}>
+            {result.format_version === 2 && !review && (
+              <div className="diagram-navigator">
+                <div className="index-heading"><h1>Diagrams</h1></div>
+                <ul className="diagram-tree">
+                  {result.diagrams?.map((diagram) => (
+                    <li key={diagram.id}>
+                      <button
+                        type="button"
+                        className={diagram.id === activeDiagram?.id ? 'selected' : undefined}
+                        style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
+                        aria-label={[diagram.title, diagram.context].filter(Boolean).join(', ')}
+                        aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
+                        onClick={() => selectDiagram(diagram.id)}
+                      >
+                        <span>{diagram.title}</span>
+                        {diagram.context && <small>{diagram.context}</small>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="index-heading component-heading"><h1>{review ? (reviewSide === 'with' ? 'With changes' : 'Before changes') : 'Components'}</h1></div>
             {activeComponents.length ? (
               <ul>
                 {activeComponents.map((component) => {
@@ -631,6 +806,7 @@ export function App() {
                     >
                       <span>{component.title}</span>
                       {(titleCounts.get(component.title) ?? 0) > 1 && <small>{' '}{component.filename || component.id.slice(0, 8)}</small>}
+                      {activeDiagram?.appearances.find((appearance) => appearance.component_id === component.id)?.role === 'reference' && <small className="appearance-note">Also shown here</small>}
                       {statusLabel && <small className="index-review-status">{statusLabel}</small>}
                     </button>
                   </li>
@@ -638,17 +814,29 @@ export function App() {
                 })}
               </ul>
             ) : <p className="index-empty">No components</p>}
-            {!review && !result.stale && !result.changes?.stale && !acceptanceUnknown && (
+            {!review && result.format_version !== 2 && !result.stale && !result.changes?.stale && !acceptanceUnknown && (
               <button className="index-add" type="button" onClick={() => requestNavigation({ kind: 'add' })}>Add component</button>
             )}
           </nav>
-          <section className="map-region">
-            <div className="region-label">{review ? (reviewSide === 'with' ? 'With changes map' : 'Before changes map') : 'Architecture map'}</div>
+          <section className={`map-region ${activeDiagram ? 'has-diagram' : ''}`}>
+            <div className="region-label">{review ? (reviewSide === 'with' ? 'With changes map' : 'Before changes map') : activeDiagram?.title ?? 'Architecture map'}</div>
+            {activeDiagram && (
+              <nav className="diagram-breadcrumbs" aria-label="Diagram breadcrumbs">
+                {activeDiagram.breadcrumbs.map((breadcrumb, index) => (
+                  <span key={breadcrumb.id}>
+                    {index > 0 && <span aria-hidden="true">/</span>}
+                    {breadcrumb.id === activeDiagram.id
+                      ? <strong aria-current="page">{breadcrumb.title}</strong>
+                      : <button type="button" onClick={() => selectDiagram(breadcrumb.id, breadcrumb.focus_anchor_component_id)}>{breadcrumb.title}</button>}
+                  </span>
+                ))}
+              </nav>
+            )}
             <ArchitectureMap
-              revision={activeProjection?.revision ?? result.revision}
-              components={activeComponents}
+              revision={`${activeProjection?.revision ?? result.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
+              components={mapComponents}
               selectedID={selectedComponentID}
-              onSelect={selectComponent}
+              onSelect={selectMapNode}
               {...(review ? {
                 layoutComponentIDs,
                 reviewSide,
@@ -658,8 +846,36 @@ export function App() {
                 onSelectRelationship: selectRelationship,
               } : {})}
             />
+            {activeDiagram && activeDiagram.boundaries.length > 0 && (
+              <nav className="diagram-boundary-dock" aria-label="Components that live elsewhere">
+                {activeDiagram.boundaries.map((boundary) => (
+                  <section key={boundary.key}>
+                    <button type="button" aria-label={[boundary.title, boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join(', ')} onClick={() => selectMapNode(boundary.key)}>
+                      <span>{boundary.title}{boundary.context && <small> {boundary.context}</small>}</span>
+                      <small>Lives in {boundary.home_diagram_title}</small>
+                    </button>
+                    <ul aria-label={`Relationships for ${[boundary.title, boundary.context].filter(Boolean).join(', ')}`}>
+                      {activeDiagram.relationships.filter((relationship) => relationship.source_node_key === boundary.key || relationship.target_node_key === boundary.key).map((relationship) => (
+                        <li key={relationship.key} tabIndex={0}>
+                          <span>{diagramNodeTitles.get(relationship.source_node_key)}</span>
+                          <strong>{relationship.label}</strong>
+                          <span aria-hidden="true">→</span>
+                          <span>{diagramNodeTitles.get(relationship.target_node_key)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </nav>
+            )}
           </section>
           <aside className="working-pane" aria-label="Architecture task">
+            {showV2ViewOnly && (
+              <div className="view-only-note">
+                <strong>View only</strong>
+                <span>You can explore this architecture, but changes are not available here yet.</span>
+              </div>
+            )}
             {review && result.changes ? (
               <ChangesTask
                 result={result}
@@ -715,8 +931,15 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
-                {!result.stale && !result.changes?.stale && !acceptanceUnknown && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                {selectedAppearance?.detail_diagram_id && (
+                  <button className="inline-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
+                    Open {selectedAppearance.detail_diagram_title}
+                  </button>
+                )}
+                {result.format_version !== 2 && !result.stale && !result.changes?.stale && !acceptanceUnknown && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
               </article>
+            ) : activeDiagram ? (
+              <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p></div>
             ) : result.components?.length ? (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Select a component</h2><p>Choose a component from the index or map to read its documentation.</p></div>
             ) : (
@@ -1245,6 +1468,7 @@ function messageForAuthoringError(code?: string) {
   if (code === 'changes_elsewhere') return 'Changes are already in progress for another architecture.'
   if (code === 'component_not_found') return 'That component is no longer available to edit.'
   if (code === 'architecture_not_open') return 'Open the project again, then try your change.'
+  if (code === 'changes_unavailable') return 'Changes are not available for this architecture yet.'
   return "WorkBraid couldn't keep that change. Try again."
 }
 

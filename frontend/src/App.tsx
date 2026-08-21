@@ -316,6 +316,7 @@ export function App() {
   const [discardConfirming, setDiscardConfirming] = useState(false)
   const [reviewSide, setReviewSide] = useState<ReviewSide>('with')
   const [reviewFocus, setReviewFocus] = useState<ReviewFocus | null>(null)
+  const [reviewSelectionCleared, setReviewSelectionCleared] = useState(false)
 
   const enterWorkspace = useCallback((result: ArchitectureResult, task?: WorkspaceTask) => {
     setState({ kind: 'ready', value: result })
@@ -348,10 +349,12 @@ export function App() {
   useEffect(() => {
     if (!currentReview) {
       setReviewFocus(null)
+      setReviewSelectionCleared(false)
       return
     }
     setReviewSide('with')
     setReviewFocus(null)
+    setReviewSelectionCleared(false)
     const initialDiagram = currentReview.with_changes.format_version === 2
       ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
       : undefined
@@ -371,6 +374,10 @@ export function App() {
       : state.value.changes?.review
     if (review) {
       const projection = reviewSide === 'with' ? review.with_changes : review.before
+      if (reviewSelectionCleared) {
+        if (selectedComponentID) setSelectedComponentID(undefined)
+        return
+      }
       if (projection.format_version === 2) {
         const diagram = projection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
           ?? projection.diagrams?.find((candidate) => candidate.id === projection.root_diagram_id)
@@ -402,7 +409,7 @@ export function App() {
     if (workspaceTask === 'empty' && state.value.components?.length) return
     if (selectedComponentID && state.value.components?.some((component) => component.id === selectedComponentID)) return
     setSelectedComponentID(state.value.components?.[0]?.id)
-  }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSide, workspaceTask])
+  }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSelectionCleared, reviewSide, workspaceTask])
 
   async function inspectProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -755,6 +762,7 @@ export function App() {
       const component = activeComponents.find((candidate) => candidate.id === id)
       if (!component) return
       const change = componentReviewStatus.get(id)
+      setReviewSelectionCleared(false)
       setSelectedComponentID(id)
       setReviewFocus({
         kind: 'component', key: `component:${id}`, componentID: id, title: component.title,
@@ -764,6 +772,7 @@ export function App() {
     const selectDiagram = (diagramID: string, focusComponentID?: string) => {
       const diagram = diagramProjection.diagrams?.find((candidate) => candidate.id === diagramID)
       if (!diagram) return
+      setReviewSelectionCleared(false)
       setSelectedDiagramID(diagram.id)
       setSelectedComponentID(focusComponentID && diagram.appearances.some((appearance) => appearance.component_id === focusComponentID)
         ? focusComponentID
@@ -794,6 +803,7 @@ export function App() {
       const relationshipComponents = relationshipProjection && relationshipDiagram
         ? componentsForDiagram(relationshipProjection, relationshipDiagram)
         : relationshipProjection?.components ?? activeComponents
+      setReviewSelectionCleared(false)
       if (relationship.review_side && relationship.review_side !== reviewSide) setReviewSide(relationship.review_side)
       setSelectedComponentID(relationshipComponents.some((component) => component.id === relationship.source_id)
         ? relationship.source_id
@@ -808,6 +818,7 @@ export function App() {
           ?? nextProjection.diagrams?.find((diagram) => diagram.id === nextProjection.root_diagram_id)
         : undefined
       const nextComponents = nextDiagram ? componentsForDiagram(nextProjection, nextDiagram) : nextProjection.components
+      setReviewSelectionCleared(false)
       setReviewSide(side)
       setReviewFocus(null)
       setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)
@@ -959,10 +970,12 @@ export function App() {
                 reviewFocus={reviewFocus}
                 onReviewSide={switchReviewSide}
                 onClearReviewFocus={() => {
+                  setReviewSelectionCleared(true)
                   setSelectedComponentID(undefined)
                   setReviewFocus(null)
                 }}
                 onFocusDiagram={(focus) => {
+                  setReviewSelectionCleared(false)
                   setSelectedDiagramID(focus.diagramID)
                   setSelectedComponentID(undefined)
                   setReviewFocus(focus)

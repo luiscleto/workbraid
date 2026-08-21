@@ -956,6 +956,47 @@ describe('App', () => {
     expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
   })
 
+  it.each([
+    ['Gateway', 'Shared, gateway.md', 'Gateway documentation.'],
+    ['Worker', 'Worker', 'Worker documentation.'],
+    ['Records', 'Shared, records.md', 'Records documentation.'],
+  ])('keeps v2 review deliberately unselected after clearing %s focus', async (_component, buttonName, documentation) => {
+    const base = 'a'.repeat(40)
+    const candidate = 'b'.repeat(40)
+    const before = acceptedV2({ revision: base })
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [],
+        review: {
+          diff: '', base_revision: base, candidate_tree: candidate, generation: 1,
+          before,
+          with_changes: { ...before, revision: candidate },
+          comparison: { components: [], relationships: [] },
+        },
+      },
+    })
+    mockResponses([reviewed])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+
+    await user.click(within(navigator).getByRole('button', { name: buttonName }))
+    expect(screen.getByLabelText('Review context')).toHaveTextContent(documentation)
+    await user.click(screen.getByRole('button', { name: 'Clear focus' }))
+
+    expect(await screen.findByRole('heading', { name: 'Select a change' })).toBeInTheDocument()
+    expect(screen.queryByText('Gateway documentation.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Worker documentation.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Records documentation.')).not.toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: buttonName })).not.toHaveAttribute('aria-current')
+
+    await user.click(within(navigator).getByRole('button', { name: buttonName }))
+    expect(screen.getByLabelText('Review context')).toHaveTextContent(documentation)
+  })
+
   it('turns an invalid quiet pending title into actionable guidance only at review', async () => {
     const pending = {
       source_root: '/tmp/example', project_name: 'example', state: 'empty', revision: '1'.repeat(40),

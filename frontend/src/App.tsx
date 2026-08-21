@@ -352,10 +352,16 @@ export function App() {
     }
     setReviewSide('with')
     setReviewFocus(null)
-    setSelectedDiagramID(currentReview.with_changes.root_diagram_id)
-    setSelectedComponentID((current) => currentReview.with_changes.components.some((component) => component.id === current)
+    const initialDiagram = currentReview.with_changes.format_version === 2
+      ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
+      : undefined
+    const initialComponents = initialDiagram
+      ? componentsForDiagram(currentReview.with_changes, initialDiagram)
+      : currentReview.with_changes.components
+    setSelectedDiagramID(initialDiagram?.id)
+    setSelectedComponentID((current) => initialComponents.some((component) => component.id === current)
       ? current
-      : currentReview.with_changes.components[0]?.id)
+      : initialComponents[0]?.id)
   }, [reviewIdentity])
 
   useEffect(() => {
@@ -364,7 +370,16 @@ export function App() {
       ? undefined
       : state.value.changes?.review
     if (review) {
-      const active = reviewSide === 'with' ? review.with_changes.components : review.before.components
+      const projection = reviewSide === 'with' ? review.with_changes : review.before
+      if (projection.format_version === 2) {
+        const diagram = projection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
+          ?? projection.diagrams?.find((candidate) => candidate.id === projection.root_diagram_id)
+        const active = diagram ? componentsForDiagram(projection, diagram) : []
+        if (selectedComponentID && active.some((component) => component.id === selectedComponentID)) return
+        setSelectedComponentID(active[0]?.id)
+        return
+      }
+      const active = projection.components
       if (selectedComponentID && active.some((component) => component.id === selectedComponentID)) return
       if (selectedComponentID) setSelectedComponentID(undefined)
       return
@@ -712,7 +727,9 @@ export function App() {
       !review.before.diagrams?.some((diagram) => diagram.id === selectedDiagramID))
     const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
-    const activeComponents = activeProjection?.components ?? activeDiagramComponents ?? result.components ?? []
+    const activeComponents = activeProjection?.format_version === 2
+      ? activeDiagramComponents ?? []
+      : activeProjection?.components ?? activeDiagramComponents ?? result.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents = diagramMapComponents ?? activeComponents
     const selected = activeComponents.find((component) => component.id === selectedComponentID)
@@ -770,7 +787,12 @@ export function App() {
     }
     const switchReviewSide = (side: ReviewSide) => {
       if (!review || side === reviewSide) return
-      const nextComponents = side === 'with' ? review.with_changes.components : review.before.components
+      const nextProjection = side === 'with' ? review.with_changes : review.before
+      const nextDiagram = nextProjection.format_version === 2
+        ? nextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+          ?? nextProjection.diagrams?.find((diagram) => diagram.id === nextProjection.root_diagram_id)
+        : undefined
+      const nextComponents = nextDiagram ? componentsForDiagram(nextProjection, nextDiagram) : nextProjection.components
       setReviewSide(side)
       setReviewFocus(null)
       setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)

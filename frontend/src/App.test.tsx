@@ -656,7 +656,11 @@ describe('App', () => {
     expect(screen.getByText('New queue.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
-    expect(within(screen.getByRole('navigation', { name: 'Components' })).queryByText('Queue')).not.toBeInTheDocument()
+    const v1Index = screen.getByRole('navigation', { name: 'Components' })
+    expect(within(v1Index).queryByText('Queue')).not.toBeInTheDocument()
+    expect(within(v1Index).getByRole('button', { name: 'Gateway, Content changed' })).toBeInTheDocument()
+    expect(within(v1Index).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
+    expect(within(v1Index).getByRole('button', { name: 'Docs, Content changed' })).toBeInTheDocument()
     expect(screen.queryByText('New queue.')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Select a change' })).toBeInTheDocument()
 
@@ -788,6 +792,74 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
     const removedBoundaryElements = graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>
     expect(removedBoundaryElements.find((element) => element.data.id === `diagram:${detail}:${worker}:1`)?.data).toMatchObject({ reviewStatus: 'removed', source: worker, target: `boundary:${records}` })
+  })
+
+  it('keeps v2 review index and documentation scoped to the selected side and Diagram', async () => {
+    const base = '6'.repeat(40)
+    const candidate = '7'.repeat(40)
+    const detail = '22222222-2222-4222-8222-222222222222'
+    const records = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const before = acceptedV2({ revision: base })
+    const withDiagrams = before.diagrams.map((diagram) => diagram.id === detail ? {
+      ...diagram,
+      appearances: [...diagram.appearances, { component_id: records, role: 'reference' }],
+      boundaries: diagram.boundaries.filter((boundary) => boundary.component_id !== records),
+      relationships: diagram.relationships.map((relationship) => ({
+        ...relationship,
+        source_node_key: relationship.source_node_key === `boundary:${records}` ? records : relationship.source_node_key,
+        target_node_key: relationship.target_node_key === `boundary:${records}` ? records : relationship.target_node_key,
+      })),
+    } : diagram)
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [],
+        review: {
+          diff: 'diff --git a/diagrams/detail.yaml b/diagrams/detail.yaml\n+  - component: records\n+    role: reference\n',
+          base_revision: base,
+          candidate_tree: candidate,
+          generation: 1,
+          before,
+          with_changes: { ...before, revision: candidate, diagrams: withDiagrams },
+          comparison: {
+            components: [], relationships: [],
+            appearances: [{ diagram_id: detail, component_id: records, role: 'reference', status: 'added', path: 'diagrams/detail.yaml' }],
+          },
+        },
+      },
+    })
+    mockResponses([reviewed])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+
+    expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+
+    await user.click(within(navigator).getByRole('button', { name: 'Shared' }))
+    expect(screen.getByText('Records documentation.')).toBeInTheDocument()
+    expect(screen.queryByText('Gateway documentation.')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
+    expect(within(navigator).queryByRole('button', { name: 'Shared' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Records documentation.')).not.toBeInTheDocument()
+    expect(await screen.findByText('Worker documentation.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+    expect(screen.getByText('Worker documentation.')).toBeInTheDocument()
+    await user.click(within(navigator).getByRole('button', { name: 'System' }))
+    expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
   })
 
   it('turns an invalid quiet pending title into actionable guidance only at review', async () => {

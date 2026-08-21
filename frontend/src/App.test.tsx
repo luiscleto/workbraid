@@ -794,6 +794,100 @@ describe('App', () => {
     expect(removedBoundaryElements.find((element) => element.data.id === `diagram:${detail}:${worker}:1`)?.data).toMatchObject({ reviewStatus: 'removed', source: worker, target: `boundary:${records}` })
   })
 
+  it('keeps external-source boundary relationship focus free of unrelated Diagram documentation', async () => {
+    const base = '8'.repeat(40)
+    const candidate = '9'.repeat(40)
+    const root = '11111111-1111-4111-8111-111111111111'
+    const detail = '22222222-2222-4222-8222-222222222222'
+    const gateway = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const before = acceptedV2({ revision: base })
+    const withComponents = before.components.map((component) => component.id === gateway ? {
+      ...component,
+      relationships: [{ target_id: worker, label: 'invokes' }],
+    } : component)
+    const withDiagrams = before.diagrams.map((diagram) => ({
+      ...diagram,
+      relationships: diagram.relationships.map((relationship) => relationship.source_component_id === gateway ? {
+        ...relationship,
+        label: 'invokes',
+      } : relationship),
+    }))
+    const diff = 'diff --git a/components/gateway.md b/components/gateway.md\n--- a/components/gateway.md\n+++ b/components/gateway.md\n@@ -4 +4 @@\n-    label: calls\n+    label: invokes\n'
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [{ ...withComponents.find((component) => component.id === gateway), new: false }],
+        review: {
+          diff, base_revision: base, candidate_tree: candidate, generation: 1,
+          before: { ...before, revision: base },
+          with_changes: { ...before, revision: candidate, components: withComponents, diagrams: withDiagrams },
+          comparison: {
+            components: [],
+            relationships: [
+              {
+                key: `review:with:${gateway}:0`, source_id: gateway, target_id: worker, source_title: 'Shared', target_title: 'Worker',
+                label: 'invokes', status: 'added', path: 'components/gateway.md', occurrence: 1,
+                diagram_projections: [
+                  { side: 'with', diagram_id: root, key: `diagram:${root}:gateway:0`, source_node_key: gateway, target_node_key: worker },
+                  { side: 'with', diagram_id: detail, key: `diagram:${detail}:gateway:0`, source_node_key: `boundary:${gateway}`, target_node_key: worker },
+                ],
+              },
+              {
+                key: `review:removed:${gateway}:0`, before_key: `review:before:${gateway}:0`, source_id: gateway, target_id: worker, source_title: 'Shared', target_title: 'Worker',
+                label: 'calls', status: 'removed', path: 'components/gateway.md', occurrence: 1,
+                diagram_projections: [
+                  { side: 'before', diagram_id: root, key: `diagram:${root}:gateway:0`, source_node_key: gateway, target_node_key: worker },
+                  { side: 'before', diagram_id: detail, key: `diagram:${detail}:gateway:0`, source_node_key: `boundary:${gateway}`, target_node_key: worker },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    })
+    mockResponses([reviewed])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+
+    const addedEdge = (graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>).find((element) => element.data.id === `diagram:${detail}:gateway:0`)
+    expect(addedEdge?.data).toMatchObject({
+      reviewStatus: 'added', source: `boundary:${gateway}`, target: worker, source_title: 'Shared', target_title: 'Worker',
+    })
+    expect(screen.getByRole('button', { name: 'Added relationship: Shared — invokes — Worker' })).toBeInTheDocument()
+    await act(async () => {
+      graphHarness.edgeSelect?.({ target: { data: () => addedEdge?.data } })
+    })
+
+    expect(graphHarness.selectedIDs).toContain(`diagram:${detail}:gateway:0`)
+    expect(document.activeElement).toHaveAttribute('data-diff-path', 'components/gateway.md')
+    const externalContext = screen.getByLabelText('Review context')
+    expect(within(externalContext).getByRole('heading', { name: 'Relationship' })).toBeInTheDocument()
+    expect(externalContext).toHaveTextContent('Added relationship')
+    expect(externalContext).toHaveTextContent('SharedinvokesWorker')
+    expect(screen.queryByText('Gateway documentation.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Worker documentation.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Shared' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Worker' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Removed relationship: Shared — calls — Worker' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    expect(graphHarness.selectedIDs).toContain(`diagram:${detail}:gateway:0`)
+    expect(screen.getByLabelText('Review context')).toHaveTextContent('Removed relationship')
+    expect(screen.getByLabelText('Review context')).toHaveTextContent('SharedcallsWorker')
+    expect(screen.queryByText('Worker documentation.')).not.toBeInTheDocument()
+
+    await user.click(within(navigator).getByRole('button', { name: 'System' }))
+    await user.click(screen.getByRole('button', { name: 'Removed relationship: Shared — calls — Worker' }))
+    expect(screen.getByLabelText('Review context')).toHaveTextContent('Gateway documentation.')
+    expect(within(screen.getByLabelText('Review context')).getByRole('heading', { name: 'Shared' })).toBeInTheDocument()
+    expect(document.activeElement).toHaveAttribute('data-diff-path', 'components/gateway.md')
+  })
+
   it('keeps v2 review index and documentation scoped to the selected side and Diagram', async () => {
     const base = '6'.repeat(40)
     const candidate = '7'.repeat(40)

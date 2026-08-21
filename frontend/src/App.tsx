@@ -375,6 +375,10 @@ export function App() {
         const diagram = projection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
           ?? projection.diagrams?.find((candidate) => candidate.id === projection.root_diagram_id)
         const active = diagram ? componentsForDiagram(projection, diagram) : []
+        if (reviewFocus?.kind === 'relationship' && !active.some((component) => component.id === reviewFocus.source_id)) {
+          if (selectedComponentID) setSelectedComponentID(undefined)
+          return
+        }
         if (selectedComponentID && active.some((component) => component.id === selectedComponentID)) return
         setSelectedComponentID(active[0]?.id)
         return
@@ -398,7 +402,7 @@ export function App() {
     if (workspaceTask === 'empty' && state.value.components?.length) return
     if (selectedComponentID && state.value.components?.some((component) => component.id === selectedComponentID)) return
     setSelectedComponentID(state.value.components?.[0]?.id)
-  }, [state, selectedComponentID, selectedDiagramID, reviewSide, workspaceTask])
+  }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSide, workspaceTask])
 
   async function inspectProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -781,8 +785,19 @@ export function App() {
       selectComponent(id)
     }
     const selectRelationship = (relationship: ReviewRelationshipSelection) => {
+      const relationshipSide = relationship.review_side ?? reviewSide
+      const relationshipProjection = relationshipSide === 'with' ? review?.with_changes : review?.before
+      const relationshipDiagram = relationshipProjection?.format_version === 2
+        ? relationshipProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+          ?? relationshipProjection.diagrams?.find((diagram) => diagram.id === relationshipProjection.root_diagram_id)
+        : undefined
+      const relationshipComponents = relationshipProjection && relationshipDiagram
+        ? componentsForDiagram(relationshipProjection, relationshipDiagram)
+        : relationshipProjection?.components ?? activeComponents
       if (relationship.review_side && relationship.review_side !== reviewSide) setReviewSide(relationship.review_side)
-      setSelectedComponentID(relationship.source_id)
+      setSelectedComponentID(relationshipComponents.some((component) => component.id === relationship.source_id)
+        ? relationship.source_id
+        : undefined)
       setReviewFocus({ kind: 'relationship', ...relationship })
     }
     const switchReviewSide = (side: ReviewSide) => {
@@ -1398,6 +1413,19 @@ function ReviewContext({
       <section className="review-context" aria-label="Review context">
         <div className="review-context-heading"><div><p className="eyebrow">Diagram composition</p><h3>{focus.title}</h3></div><button className="text-action" type="button" onClick={onClear}>Clear focus</button></div>
         <p>{focus.status === 'added' ? 'This diagram is added with the changes.' : focus.status === 'title_changed' ? 'This diagram title changes.' : 'A component placement changes in this diagram.'}</p>
+      </section>
+    )
+  }
+  if (focus?.kind === 'relationship' && !component) {
+    return (
+      <section className="review-context" aria-label="Review context">
+        <div className="review-context-heading">
+          <div><p className="eyebrow">{relationshipStatusText(focus.status)} relationship</p><h3>Relationship</h3></div>
+          <button className="text-action" type="button" onClick={onClear}>Clear focus</button>
+        </div>
+        <p className={`review-relationship-summary review-${focus.status}`}>
+          <span>{focus.source_title}</span><strong>{focus.label}</strong><span>{focus.target_title}</span>
+        </p>
       </section>
     )
   }

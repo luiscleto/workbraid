@@ -914,6 +914,11 @@ describe('App', () => {
         validation_relationship_position: 1, validation_relationship_field: 'label', review_blocker: 'relationship_label_required',
         components: [{ id: 'pending', title: 'Pending evidence', description: 'Earlier pending body.\n', new: false, relationships: [{ target_id: 'target', label: '' }] }],
         relationship_targets: [{ id: 'target', title: 'Earlier target' }],
+        review: testReview({
+          base: '1'.repeat(40), candidate: '2'.repeat(40), diff: 'retained review must stay hidden',
+          before: [{ id: 'accepted', title: 'Legacy accepted', description: 'Accepted.\n' }],
+          withChanges: [{ id: 'pending', title: 'Pending evidence', description: 'Earlier pending body.\n' }],
+        }),
       },
     }
     mockResponses([current])
@@ -922,7 +927,8 @@ describe('App', () => {
 
     expect(await screen.findByText('These changes started from an older architecture and are read-only.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Discard changes' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /fix relationship|review changes|update architecture/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /edit|fix relationship|review changes|update architecture/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'View' }))
     expect(screen.getByRole('heading', { name: 'Change details' })).toBeInTheDocument()

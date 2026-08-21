@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -192,6 +193,61 @@ func TestLegacyNonSetupPendingEvidenceIsReadOnlyDiscardOnly(t *testing.T) {
 	setup := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source))
 	if setup.Changes == nil || !setup.Changes.DiagramSetup {
 		t.Fatalf("setup unavailable after discard: %+v", setup)
+	}
+}
+
+func TestLegacyNonSetupPendingWithRetainedReviewCannotAdvertiseOrAccept(t *testing.T) {
+	state, handler, source, dataDirectory, v1 := newLegacySetupFixture(t)
+	decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source))
+	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
+	if reviewed.Changes == nil || reviewed.Changes.Review == nil || state.pending == nil || state.pending.review == nil {
+		t.Fatalf("setup review missing: response=%+v pending=%+v", reviewed.Changes, state.pending)
+	}
+	oldReview := *reviewed.Changes.Review
+
+	// Reproduce the defensive alpha-transition boundary: an old non-setup v1
+	// pending set survives in memory while its previously built review binding
+	// also remains. Neither response projection nor confirmation may revive it.
+	state.stateMutex.Lock()
+	legacyChange := state.architecture.NewComponentChange(*state.loadedSnapshot, nil, "Legacy pending evidence", "Not canonical.\n")
+	state.pending.diagramSetup = nil
+	state.pending.newComponentHomes = nil
+	state.pending.changes = append(state.pending.changes[:0], legacyChange)
+	retainedPending := state.pending
+	retainedReview := state.pending.review
+	state.stateMutex.Unlock()
+
+	current := decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+	if current.Revision != v1 || current.Stale || current.Changes == nil || !current.Changes.LegacyReadOnly || current.Changes.Review != nil || len(current.Changes.Components) != 1 {
+		t.Fatalf("legacy retained-review projection = %+v", current)
+	}
+	if state.pending != retainedPending || state.pending.review != retainedReview {
+		t.Fatalf("response projection mutated retained evidence: pending=%+v", state.pending)
+	}
+
+	storeID := associatedStoreID(t, state.db, filepath.Clean(source))
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	acceptedBefore := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted")
+	objectsBefore := runGit(t, dataDirectory, "--git-dir", storePath, "count-objects", "-v")
+	acceptedCASReached := false
+	state.beforeAcceptedCAS = func(string) { acceptedCASReached = true }
+	rejected := postAcceptChanges(t, handler, testOrigin, source, oldReview)
+	var failure errorResponse
+	if err := json.Unmarshal(rejected.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if rejected.Code != http.StatusConflict || failure.Code != errorChangesUnavailable || acceptedCASReached {
+		t.Fatalf("legacy retained review confirmation status=%d failure=%+v CAS=%t", rejected.Code, failure, acceptedCASReached)
+	}
+	acceptedAfter := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted")
+	objectsAfter := runGit(t, dataDirectory, "--git-dir", storePath, "count-objects", "-v")
+	if acceptedAfter != acceptedBefore || objectsAfter != objectsBefore || state.pending != retainedPending || state.pending.review != retainedReview {
+		t.Fatalf("legacy rejection changed Git authority/objects or evidence: accepted=%q before=%q objects changed=%t pending=%+v", acceptedAfter, acceptedBefore, objectsAfter != objectsBefore, state.pending)
+	}
+
+	discarded := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source))
+	if discarded.Revision != v1 || discarded.Changes != nil || state.pending != nil {
+		t.Fatalf("legacy retained-review discard = %+v pending=%+v", discarded, state.pending)
 	}
 }
 

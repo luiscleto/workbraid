@@ -334,7 +334,9 @@ export function App() {
   }, [selectedDiagramID])
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
-  const currentReview = readyResult?.changes?.review
+  const currentReview = readyResult?.stale || readyResult?.changes?.stale || readyResult?.changes?.legacy_read_only
+    ? undefined
+    : readyResult?.changes?.review
   const reviewIdentity = currentReview ? `${currentReview.base_revision}:${currentReview.candidate_tree}:${currentReview.generation}` : ''
   const editorDirty = editor !== null && (
     editor.title !== editor.initialTitle || editor.description !== editor.initialDescription ||
@@ -358,7 +360,9 @@ export function App() {
 
   useEffect(() => {
     if (state.kind !== 'ready') return
-    const review = state.value.changes?.review
+    const review = state.value.stale || state.value.changes?.stale || state.value.changes?.legacy_read_only
+      ? undefined
+      : state.value.changes?.review
     if (review) {
       const active = reviewSide === 'with' ? review.with_changes.components : review.before.components
       if (selectedComponentID && active.some((component) => component.id === selectedComponentID)) return
@@ -695,7 +699,9 @@ export function App() {
 
   if (state.kind === 'ready') {
     const result = state.value
-    const review = result.changes?.review
+    const review = result.stale || result.changes?.stale || result.changes?.legacy_read_only
+      ? undefined
+      : result.changes?.review
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
     const diagramProjection = activeProjection ?? result
     const activeDiagram = diagramProjection.format_version === 2
@@ -1336,7 +1342,7 @@ function ChangesTask({
         </div>
       )}
       {result.action_error && !changes.review_blocker && <p className="review-error" role="alert">{messageForArchitectureAction(result.action_error)}</p>}
-      {(!changes.review || result.stale || changes.stale) && !acceptanceUnknown && (
+      {(!changes.review || readOnly) && !acceptanceUnknown && (
         <div className="change-actions">
           {!result.stale && !changes.stale && !changes.legacy_read_only && !changes.review && (
             <button className="inline-action" type="button" disabled={busy} onClick={onReview}>{busy ? 'Preparing…' : 'Review changes'}</button>

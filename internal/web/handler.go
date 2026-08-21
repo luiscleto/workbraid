@@ -314,6 +314,7 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		ParentDiff:      parentDiff,
 	}
 	if pending != nil && pending.storeID == snapshot.StoreID() {
+		legacyReadOnly := snapshot.FormatVersion() == 1 && pending.diagramSetup == nil
 		pendingAccepted := pending.baseSnapshot.AuthoringComponents()
 		changes := make([]pendingComponentResponse, len(pending.changes))
 		for index, change := range pending.changes {
@@ -336,9 +337,9 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 			ReviewBlocker:                  pending.reviewBlocker,
 			Stale:                          pending.stale,
 			DiagramSetup:                   pending.diagramSetup != nil,
-			LegacyReadOnly:                 snapshot.FormatVersion() == 1 && pending.diagramSetup == nil,
+			LegacyReadOnly:                 legacyReadOnly,
 		}
-		if !pending.stale && pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
+		if !legacyReadOnly && !pending.stale && pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 			before, withChanges, comparison := captureReviewPresentation(pending.baseSnapshot, pending.review.candidate.Snapshot())
 			result.Changes.Review = &reviewResponse{
 				Diff: pending.review.diff, BaseRevision: pending.review.baseRevision,
@@ -957,6 +958,10 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	}
 	snapshot := *h.loadedSnapshot
 	pending := h.pending
+	if snapshot.FormatVersion() == 1 && pending != nil && pending.diagramSetup == nil {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+		return
+	}
 	if pending == nil || pending.stale || pending.review == nil {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorReviewFailed})
 		return

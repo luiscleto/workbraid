@@ -356,7 +356,8 @@ export function App() {
     setReviewFocus(null)
     setReviewSelectionCleared(false)
     const initialDiagram = currentReview.with_changes.format_version === 2
-      ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
+      ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+        ?? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
       : undefined
     const initialComponents = initialDiagram
       ? componentsForDiagram(currentReview.with_changes, initialDiagram)
@@ -751,6 +752,13 @@ export function App() {
     const titleCounts = new Map<string, number>()
     for (const component of activeComponents) titleCounts.set(component.title, (titleCounts.get(component.title) ?? 0) + 1)
     const componentReviewStatus = new Map(review?.comparison.components.map((change) => [change.component_id, change]))
+    const diagramReviewStatus = new Map<string, 'Added' | 'Title changed' | 'Changed'>()
+    for (const change of review?.comparison.diagrams ?? []) {
+      diagramReviewStatus.set(change.diagram_id, change.status === 'added' ? 'Added' : 'Title changed')
+    }
+    for (const change of review?.comparison.appearances ?? []) {
+      if (!diagramReviewStatus.has(change.diagram_id)) diagramReviewStatus.set(change.diagram_id, 'Changed')
+    }
     const layoutComponentIDs = review
       ? [...new Set([...review.before.components, ...review.with_changes.components].map((component) => component.id))]
       : undefined
@@ -857,21 +865,25 @@ export function App() {
               <div className="diagram-navigator">
                 <div className="index-heading"><h1>Diagrams</h1></div>
                 <ul className="diagram-tree">
-                  {diagramProjection.diagrams?.map((diagram) => (
-                    <li key={diagram.id}>
-                      <button
-                        type="button"
-                        className={diagram.id === activeDiagram?.id ? 'selected' : undefined}
-                        style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
-                        aria-label={[diagram.title, diagram.context].filter(Boolean).join(', ')}
-                        aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
-                        onClick={() => selectDiagram(diagram.id)}
-                      >
-                        <span>{diagram.title}</span>
-                        {diagram.context && <small>{diagram.context}</small>}
-                      </button>
-                    </li>
-                  ))}
+                  {diagramProjection.diagrams?.map((diagram) => {
+                    const reviewStatus = diagramReviewStatus.get(diagram.id)
+                    return (
+                      <li key={diagram.id}>
+                        <button
+                          type="button"
+                          className={diagram.id === activeDiagram?.id ? 'selected' : undefined}
+                          style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
+                          aria-label={[diagram.title, diagram.context, reviewStatus].filter(Boolean).join(', ')}
+                          aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
+                          onClick={() => selectDiagram(diagram.id)}
+                        >
+                          <span>{diagram.title}</span>
+                          {diagram.context && <small>{diagram.context}</small>}
+                          {reviewStatus && <small className="index-review-status">{reviewStatus}</small>}
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               </div>
             )}

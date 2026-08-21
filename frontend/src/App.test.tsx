@@ -931,7 +931,7 @@ describe('App', () => {
 
     expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
     expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
-    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md, Changed' }))
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
     expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
 
@@ -954,6 +954,115 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
     expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
+  })
+
+  it('retains the active Diagram when review begins and marks bound Diagram composition changes', async () => {
+    const base = 'c'.repeat(40)
+    const candidate = 'd'.repeat(40)
+    const root = '11111111-1111-4111-8111-111111111111'
+    const detail = '22222222-2222-4222-8222-222222222222'
+    const recordsDetail = '33333333-3333-4333-8333-333333333333'
+    const operations = '44444444-4444-4444-8444-444444444444'
+    const records = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const before = acceptedV2({ revision: base })
+    const candidateDiagrams = before.diagrams.map((diagram) => {
+      if (diagram.id === detail) {
+        return {
+          ...diagram,
+          appearances: [...diagram.appearances, { component_id: records, role: 'reference' }],
+          boundaries: diagram.boundaries.filter((boundary) => boundary.component_id !== records),
+          relationships: diagram.relationships.map((relationship) => ({
+            ...relationship,
+            source_node_key: relationship.source_node_key === `boundary:${records}` ? records : relationship.source_node_key,
+            target_node_key: relationship.target_node_key === `boundary:${records}` ? records : relationship.target_node_key,
+          })),
+        }
+      }
+      if (diagram.id === recordsDetail) return { ...diagram, title: 'Records internals' }
+      return diagram
+    })
+    candidateDiagrams.push({
+      id: operations,
+      title: 'Operations',
+      depth: 1,
+      context: 'Inside Worker',
+      parent_diagram_id: root,
+      parent_anchor_component_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      breadcrumbs: [{ id: root, title: 'System' }, { id: operations, title: 'Operations' }],
+      appearances: [],
+      boundaries: [],
+      relationships: [],
+    })
+    const pending = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [{ ...before.components[1], new: false }],
+      },
+    })
+    const diff = [
+      'diff --git a/diagrams/detail.yaml b/diagrams/detail.yaml',
+      '+  - component_id: cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      'diff --git a/diagrams/records.yaml b/diagrams/records.yaml',
+      '-title: Detail',
+      '+title: Records internals',
+      'diff --git a/diagrams/operations.yaml b/diagrams/operations.yaml',
+      '+title: Operations',
+      '',
+    ].join('\n')
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [{ ...before.components[1], new: false }],
+        review: {
+          diff, base_revision: base, candidate_tree: candidate, generation: 2,
+          before,
+          with_changes: { ...before, revision: candidate, diagrams: candidateDiagrams },
+          comparison: {
+            components: [],
+            relationships: [],
+            diagrams: [
+              { diagram_id: recordsDetail, title: 'Records internals', status: 'title_changed', path: 'diagrams/records.yaml' },
+              { diagram_id: operations, title: 'Operations', status: 'added', path: 'diagrams/operations.yaml' },
+            ],
+            appearances: [{ diagram_id: detail, component_id: records, role: 'reference', status: 'added', path: 'diagrams/detail.yaml' }],
+          },
+        },
+      },
+    })
+    mockResponses([pending, reviewed])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    await user.click(screen.getByRole('button', { name: /Changes in progress/ }))
+    await user.click(screen.getByRole('button', { name: 'Review changes' }))
+
+    const changedDetail = await within(navigator).findByRole('button', { name: 'Detail, Inside Shared — gateway.md, Changed' })
+    expect(changedDetail).toHaveAttribute('aria-current', 'page')
+    expect(within(navigator).getByRole('button', { name: 'System' })).not.toHaveTextContent(/Added|Changed/)
+    expect(within(navigator).getByRole('button', { name: 'Records internals, Inside Shared — records.md, Title changed' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Operations, Inside Worker, Added' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(changedDetail).toHaveAttribute('aria-current', 'page')
+    expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
+    expect(within(navigator).queryByRole('button', { name: 'Shared' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Operations added' }))
+    expect(within(navigator).getByRole('button', { name: 'Operations, Inside Worker, Added' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByLabelText('Review context')).toHaveTextContent('Diagram compositionOperations')
+    expect(document.activeElement).toHaveAttribute('data-diff-path', 'diagrams/operations.yaml')
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigator).queryByRole('button', { name: /Operations/ })).not.toBeInTheDocument()
+    expect(screen.getByText('That diagram exists only with the changes. Before changes shows the earlier architecture map.')).toBeInTheDocument()
   })
 
   it.each([

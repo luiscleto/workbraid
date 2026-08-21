@@ -42,8 +42,13 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	if commitLine := gitText(t, "--git-dir", storePath, "rev-list", "--parents", "-n", "1", snapshot.Revision()); commitLine != snapshot.Revision() {
 		t.Fatalf("bootstrap is not parentless: %q", commitLine)
 	}
-	if tree := gitText(t, "--git-dir", storePath, "ls-tree", snapshot.Revision()); !strings.HasPrefix(tree, "100644 blob ") || !strings.HasSuffix(tree, "\tarchitecture.yaml") || strings.Contains(tree, "\n") {
+	if tree := gitText(t, "--git-dir", storePath, "ls-tree", snapshot.Revision()); !strings.Contains(tree, "\tarchitecture.yaml") || !strings.Contains(tree, "\tdiagrams") {
 		t.Fatalf("unexpected bootstrap tree: %q", tree)
+	}
+	for _, path := range []string{"architecture.yaml", "diagrams/root.yaml"} {
+		if entry := gitText(t, "--git-dir", storePath, "ls-tree", snapshot.Revision(), path); !strings.HasPrefix(entry, "100644 blob ") {
+			t.Fatalf("unexpected bootstrap entry for %s: %q", path, entry)
+		}
 	}
 	manifestBytes, err := runGit(context.Background(), nil, "--git-dir", storePath, "show", snapshot.Revision()+":architecture.yaml")
 	if err != nil {
@@ -53,8 +58,19 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse generated manifest: %v", err)
 	}
-	if parsed.Format != "workbraid-architecture" || parsed.Version != 1 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.SourceHint != sourceHint {
+	if parsed.Format != "workbraid-architecture" || parsed.Version != 2 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.SourceHint != sourceHint || parsed.RootDiagram == "" {
 		t.Fatalf("unexpected manifest: %+v", parsed)
+	}
+	rootBytes, err := runGit(context.Background(), nil, "--git-dir", storePath, "show", snapshot.Revision()+":diagrams/root.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := parseDiagram("diagrams/root.yaml", rootBytes)
+	if err != nil || root.id.String() != parsed.RootDiagram || root.title != "Example Project" || len(root.appearances) != 0 {
+		t.Fatalf("unexpected generated root: %+v err=%v", root, err)
+	}
+	if snapshot.FormatVersion() != 2 || snapshot.RootDiagramID() != parsed.RootDiagram {
+		t.Fatalf("unexpected v2 snapshot: version=%d root=%q", snapshot.FormatVersion(), snapshot.RootDiagramID())
 	}
 
 	gitText(t, "--git-dir", storePath, "symbolic-ref", "HEAD", "refs/heads/unrelated")
@@ -238,7 +254,8 @@ func TestLoadAcceptedComponentSnapshotFromRealGit(t *testing.T) {
 		"100644 blob " + omittedBlob + "\tomitted.md",
 		"100755 blob " + workerBlob + "\tworker.md",
 	}, "\n")+"\n")
-	commit := commitManifestTree(t, storePath, manifestBytes, "100644", []string{"040000 tree " + componentTree + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifestBytes, api, worker, duplicateTitle, omitted)
+	commit := commitManifestTree(t, storePath, manifestBytes, "100644", []string{"040000 tree " + componentTree + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, snapshot.Revision())
 	before := acceptedAuthorityState(t, storePath)
 
@@ -300,7 +317,7 @@ func TestLoadAcceptedComponentSnapshotFromRealGit(t *testing.T) {
 		"100644 blob " + apiBlob + "\trenamed.md",
 		"100755 blob " + workerBlob + "\tworker.md",
 	}, "\n")+"\n")
-	renamedCommit := commitManifestTree(t, storePath, manifestBytes, "100644", []string{"040000 tree " + renamedTree + "\tcomponents"})
+	renamedCommit := commitManifestTree(t, storePath, manifestBytes, "100644", []string{"040000 tree " + renamedTree + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, renamedCommit, commit)
 	renamed, err := manager.LoadAccepted(context.Background(), storeID)
 	if err != nil {
@@ -337,7 +354,8 @@ func TestLoadAcceptedProjectsInlineMarkdownTitlesToHumanReadableText(t *testing.
 		"100644 blob "+writeTestBlob(t, storePath, atx)+"\tatx.md\n"+
 			"100644 blob "+writeTestBlob(t, storePath, hardSetext)+"\thard-setext.md\n"+
 			"100644 blob "+writeTestBlob(t, storePath, softSetext)+"\tsoft-setext.md\n")
-	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + componentTree + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifest, atx, hardSetext, softSetext)
+	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + componentTree + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, accepted, bootstrap.Revision())
 
 	loaded, err := manager.LoadAccepted(context.Background(), storeID)
@@ -379,7 +397,8 @@ func TestConstructCandidatePreservesExactExistingSourceSectionsAndAcceptedAuthor
 	setextBlob := writeTestBlob(t, storePath, setext)
 	untouchedBlob := writeTestBlob(t, storePath, untouched)
 	components := mktree(t, storePath, "100755 blob "+atxBlob+"\todd-name.md\n100644 blob "+untouchedBlob+"\trecords.md\n100644 blob "+setextBlob+"\tworker.md\n")
-	commit := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifest, atx, setext, untouched)
+	commit := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, bootstrap.Revision())
 	base, err := manager.LoadAccepted(context.Background(), storeID)
 	if err != nil {
@@ -391,7 +410,7 @@ func TestConstructCandidatePreservesExactExistingSourceSectionsAndAcceptedAuthor
 		{ID: atxID, Path: "components/odd-name.md", Title: "New API", Description: "\nATX body  \n", TitleChanged: true},
 		{ID: setextID, Path: "components/worker.md", Title: "Old worker continued", Description: "\nChanged body\n", DescriptionChanged: true},
 	}
-	candidate, err := manager.ConstructCandidate(context.Background(), base, changes)
+	candidate, err := manager.ConstructCandidate(context.Background(), base, changes, CandidateComposition{})
 	if err != nil {
 		t.Fatalf("construct candidate: %v", err)
 	}
@@ -421,7 +440,7 @@ func TestConstructCandidatePreservesExactExistingSourceSectionsAndAcceptedAuthor
 
 	setextTitleCandidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{
 		{ID: setextID, Path: "components/worker.md", Title: "New worker", Description: "\nSetext body\n", TitleChanged: true},
-	})
+	}, CandidateComposition{})
 	if err != nil {
 		t.Fatalf("construct Setext title candidate: %v", err)
 	}
@@ -455,7 +474,8 @@ func TestConstructCandidateRelationshipReplacementPreservesAuthoredSectionsAndLa
 		"100644 blob "+untouchedBlob+"\tother.md\n"+
 			"100755 blob "+writeTestBlob(t, storePath, source)+"\tsource.md\n"+
 			"100644 blob "+writeTestBlob(t, storePath, target)+"\ttarget.md\n")
-	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifest, source, target, other)
+	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, accepted, bootstrap.Revision())
 	base, err := manager.LoadAccepted(context.Background(), storeID)
 	if err != nil {
@@ -471,7 +491,7 @@ func TestConstructCandidateRelationshipReplacementPreservesAuthoredSectionsAndLa
 		{TargetID: targetID, Label: "  publishes: [events] # α\nnext line  "},
 	}
 	change.RelationshipsChanged = true
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{change})
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{change}, CandidateComposition{})
 	if err != nil {
 		t.Fatalf("construct relationship candidate: %v", err)
 	}
@@ -499,7 +519,7 @@ func TestConstructCandidateRelationshipReplacementPreservesAuthoredSectionsAndLa
 	}
 
 	change.Relationships = nil
-	removed, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{change})
+	removed, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{change}, CandidateComposition{})
 	if err != nil {
 		t.Fatalf("remove all relationships: %v", err)
 	}
@@ -527,7 +547,8 @@ func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.
 	sourceID := uuid.NewString()
 	source := []byte("---\nid: \"" + sourceID + "\"\n---\n# Source\nBody\n")
 	components := mktree(t, storePath, "100644 blob "+writeTestBlob(t, storePath, source)+"\tsource.md\n")
-	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifest, source)
+	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + components + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, accepted, bootstrap.Revision())
 	base, err := manager.LoadAccepted(context.Background(), storeID)
 	if err != nil {
@@ -537,7 +558,7 @@ func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.
 	change, _ := base.ChangeForAcceptedComponent(sourceID)
 	change.Relationships = []AuthoringRelationship{{TargetID: created.ID, Label: "calls"}}
 	change.RelationshipsChanged = true
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{created, change})
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{created, change}, rootHomes(base, created))
 	if err != nil {
 		t.Fatalf("complete candidate did not resolve pending target: %v", err)
 	}
@@ -545,7 +566,7 @@ func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.
 		t.Fatalf("candidate component count = %d", candidate.Snapshot().ComponentCount())
 	}
 	change.Relationships[0].TargetID = uuid.NewString()
-	_, err = manager.ConstructCandidate(context.Background(), base, []ComponentChange{created, change})
+	_, err = manager.ConstructCandidate(context.Background(), base, []ComponentChange{created, change}, rootHomes(base, created))
 	if !errors.Is(err, ErrRelationshipTargetRequired) {
 		t.Fatalf("unresolved target error = %v", err)
 	}
@@ -567,7 +588,7 @@ func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *test
 	if first.Path != "components/api-gateway.md" || second.Path != "components/api-gateway-2.md" || first.ID == second.ID {
 		t.Fatalf("creation identity/paths = (%q, %q) / (%q, %q)", first.ID, first.Path, second.ID, second.Path)
 	}
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{first, second})
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{first, second}, rootHomes(base, first, second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +605,8 @@ func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *test
 			t.Fatalf("new component mode = %q", mode)
 		}
 	}
-	if _, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{{ID: first.ID, Path: first.Path, Title: "   ", Description: first.Description, New: true}}); !errors.Is(err, ErrTitleRequired) {
+	invalid := ComponentChange{ID: first.ID, Path: first.Path, Title: "   ", Description: first.Description, New: true}
+	if _, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{invalid}, rootHomes(base, invalid)); !errors.Is(err, ErrTitleRequired) {
 		t.Fatalf("blank title error = %v, want ErrTitleRequired", err)
 	}
 }
@@ -605,7 +627,8 @@ func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T)
 	componentTree := mktree(t, storePath,
 		"100644 blob "+writeTestBlob(t, storePath, atx)+"\tatx.md\n"+
 			"100644 blob "+writeTestBlob(t, storePath, setext)+"\tsetext.md\n")
-	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + componentTree + "\tcomponents"})
+	diagramTree := v2HomeDiagramTree(t, storePath, manifest, atx, setext)
+	accepted := commitManifestTree(t, storePath, manifest, "100644", []string{"040000 tree " + componentTree + "\tcomponents", "040000 tree " + diagramTree + "\tdiagrams"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, accepted, bootstrap.Revision())
 	base, err := manager.LoadAccepted(context.Background(), storeID)
 	if err != nil {
@@ -629,7 +652,7 @@ func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T)
 				{ID: atxID, Path: "components/atx.md", Title: title, Description: "ATX body\n", TitleChanged: true},
 				{ID: setextID, Path: "components/setext.md", Title: title, Description: "Setext body\n", TitleChanged: true},
 				created,
-			})
+			}, rootHomes(base, created))
 			if err != nil {
 				t.Fatalf("construct candidate: %v", err)
 			}
@@ -644,6 +667,36 @@ func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T)
 			}
 		})
 	}
+}
+
+func v2HomeDiagramTree(t *testing.T, storePath string, manifestBytes []byte, sources ...[]byte) string {
+	t.Helper()
+	parsed, err := parseManifest(manifestBytes)
+	if err != nil || parsed.Version != 2 {
+		t.Fatalf("parse v2 fixture manifest: %+v err=%v", parsed, err)
+	}
+	root := diagram{id: uuid.MustParse(parsed.RootDiagram), path: "diagrams/root.yaml", title: "Root"}
+	for index, source := range sources {
+		component, err := parseComponent(fmt.Sprintf("components/%d.md", index), source)
+		if err != nil {
+			t.Fatalf("parse component fixture %d: %v", index, err)
+		}
+		root.appearances = append(root.appearances, diagramAppearance{component: component.id, role: "home"})
+	}
+	contents, err := marshalDiagram(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := writeTestBlob(t, storePath, contents)
+	return mktree(t, storePath, "100644 blob "+blob+"\troot.yaml\n")
+}
+
+func rootHomes(base Snapshot, changes ...ComponentChange) CandidateComposition {
+	composition := CandidateComposition{NewComponentHomes: make([]NewComponentHome, len(changes))}
+	for index, change := range changes {
+		composition.NewComponentHomes[index] = NewComponentHome{ComponentID: change.ID, DiagramID: base.RootDiagramID()}
+	}
+	return composition
 }
 
 type retainedComponent struct {

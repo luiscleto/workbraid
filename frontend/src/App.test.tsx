@@ -258,14 +258,14 @@ describe('App', () => {
     expect(documentation.nextElementSibling).toBe(details)
   })
 
-  it('navigates one accepted-v2 Diagram projection coherently while keeping it view only', async () => {
+  it('navigates one accepted-v2 Diagram projection coherently while keeping authoring available', async () => {
     mockResponses([acceptedV2()])
     render(<App />)
     await submitPath('/tmp/example')
 
-    expect(await screen.findByText('You can explore this architecture, but changes are not available here yet.')).toBeInTheDocument()
-    expect(screen.getByText('View only')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /add component|edit component|review changes|update architecture/i })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Add component' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit component' })).toBeInTheDocument()
+    expect(screen.queryByText('View only')).not.toBeInTheDocument()
     const navigator = screen.getByRole('navigation', { name: 'Diagrams and components' })
     expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
@@ -304,10 +304,10 @@ describe('App', () => {
   })
 
   it.each([
-    ['known non-current', { stale: true, action_error: 'refresh_invalid' }, undefined, 'The current architecture could not be loaded. This earlier view is read-only.'],
-    ['indeterminate Refresh', {}, { action_error: 'refresh_failed' }, "WorkBraid couldn't check for architecture changes. Try Refresh again."],
-    ['already-known stale after indeterminate Refresh', { stale: true, action_error: 'refresh_invalid' }, { stale: true, action_error: 'refresh_failed' }, 'The current architecture could not be loaded. This earlier view is read-only.'],
-  ])('gives %s authority state precedence over accepted-v2 staging', async (_case, initialOverrides, refreshOverrides, message) => {
+    ['known non-current', { stale: true, action_error: 'refresh_invalid' }, undefined, 'The current architecture could not be loaded. This earlier view is read-only.', true],
+    ['indeterminate Refresh', {}, { action_error: 'refresh_failed' }, "WorkBraid couldn't check for architecture changes. Try Refresh again.", false],
+    ['already-known stale after indeterminate Refresh', { stale: true, action_error: 'refresh_invalid' }, { stale: true, action_error: 'refresh_failed' }, 'The current architecture could not be loaded. This earlier view is read-only.', true],
+  ])('preserves %s authority semantics after writable-v2 authoring lands', async (_case, initialOverrides, refreshOverrides, message, readOnly) => {
     mockResponses(refreshOverrides ? [acceptedV2(initialOverrides), acceptedV2(refreshOverrides)] : [acceptedV2(initialOverrides)])
     render(<App />)
     await submitPath('/tmp/example')
@@ -317,26 +317,26 @@ describe('App', () => {
     }
 
     expect(await screen.findByText(message)).toBeInTheDocument()
-    expect(screen.queryByText('You can explore this architecture, but changes are not available here yet.')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /add component|edit component|review changes|update architecture/i })).not.toBeInTheDocument()
+    const mutations = screen.queryAllByRole('button', { name: /add component|edit component|review changes|update architecture/i })
+    expect(mutations.length === 0).toBe(readOnly)
   })
 
-  it('maps a late accepted-v2 mutation rejection to product language', async () => {
+  it('offers concise Diagram setup instead of ordinary authoring for readable v1', async () => {
     const v1 = {
       source_root: '/tmp/example', project_name: 'example', state: 'ready', revision: '1'.repeat(40), format_version: 1,
       component_count: 1, component_titles: ['Gateway'],
       components: [{ id: 'gateway', title: 'Gateway', filename: 'gateway.md', description: 'Accepted.\n', relationships: [] }],
     }
-    mockResponses([v1, { code: 'changes_unavailable' }], [200, 409])
+    const setup = { ...v1, changes: { components: [], valid: true, diagram_setup: true } }
+    const fetchMock = mockResponses([v1, setup])
     render(<App />)
     await submitPath('/tmp/example')
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Edit component' }))
-    await user.type(screen.getByLabelText('Title'), ' changed')
-    await user.click(screen.getByRole('button', { name: 'Keep change' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('Changes are not available for this architecture yet.')
-    expect(screen.getByRole('heading', { name: 'Edit component' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit component' })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Set up diagrams' }))
+    expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+    expect(screen.getByText('Setting up diagrams will make this architecture editable.')).toBeInTheDocument()
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/setup')
     expect(screen.queryByText(/format|yaml|parser|schema/i)).not.toBeInTheDocument()
   })
 
@@ -389,7 +389,7 @@ describe('App', () => {
     expect(within(screen.getByRole('heading', { name: 'Changes in progress' }).closest('section') as HTMLElement).getAllByRole('listitem')).toHaveLength(2)
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/components/edit')
     expect(requestBody(fetchMock, 1)).toEqual({
-      source_root: '/tmp/example', component_id: 'api-id', title: 'Gateway', description: '\nChanged body\n',
+      source_root: '/tmp/example', expected_revision: 'f'.repeat(40), component_id: 'api-id', title: 'Gateway', description: '\nChanged body\n',
       title_changed: true, description_changed: true,
     })
     expect(requestPath(fetchMock, 2)).toBe('/api/architecture/components/add')
@@ -425,6 +425,7 @@ describe('App', () => {
 
     expect(requestBody(fetchMock, 1)).toEqual({
       source_root: '/tmp/example',
+      expected_revision: 'f'.repeat(40),
       component_id: 'api-id',
       title: 'Gateway',
       title_changed: true,
@@ -458,6 +459,7 @@ describe('App', () => {
 
     expect(requestBody(fetchMock, 1)).toEqual({
       source_root: '/tmp/example',
+      expected_revision: 'f'.repeat(40),
       component_id: 'api-id',
       description: '\nChanged body',
       title_changed: false,
@@ -1051,7 +1053,7 @@ describe('App', () => {
 
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/components/edit')
     expect(requestBody(fetchMock, 1)).toEqual({
-      source_root: '/tmp/example', component_id: 'gateway', relationships_changed: true,
+      source_root: '/tmp/example', expected_revision: '7'.repeat(40), component_id: 'gateway', relationships_changed: true,
       relationships: [
         { target_id: 'worker', label: '  calls: primary  ' },
         { target_id: 'queue', label: 'publishes\n events' },

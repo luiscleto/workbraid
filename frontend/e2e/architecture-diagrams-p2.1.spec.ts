@@ -19,7 +19,7 @@ const recordsID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 type RunningWorkBraid = { child: ChildProcess; origin: string; logFD: number }
 type SourceEvidence = { head: string; status: string; index: string; files: string }
 
-test('P2.1 navigates and reconstructs one accepted-v2 Diagram hierarchy without authoring it', async ({ page }) => {
+test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 product', async ({ page }) => {
   page.setDefaultTimeout(10_000)
   const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-p21-diagrams-'))
   const sourceRoot = join(runtimeRoot, 'source-project')
@@ -53,9 +53,9 @@ test('P2.1 navigates and reconstructs one accepted-v2 Diagram hierarchy without 
     await openProject(page, application.origin, sourceRoot)
     expect(await displayedRevision(page)).toBe(firstRevision)
 
-    await expect(page.getByText('View only', { exact: true })).toBeVisible()
-    await expect(page.getByText('You can explore this architecture, but changes are not available here yet.')).toBeVisible()
-    await expect(page.getByRole('button', { name: /add component|edit component|review changes|update architecture/i })).toHaveCount(0)
+    await expect(page.getByText('View only', { exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Add component' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Edit component' })).toBeVisible()
     const navigator = page.getByRole('navigation', { name: 'Diagrams and components' })
     await expect(navigator.getByRole('button', { name: 'System A' })).toHaveAttribute('aria-current', 'page')
     await expect(navigator.getByRole('button', { name: 'Detail, Inside Shared — gateway.md' })).toBeVisible()
@@ -134,6 +134,84 @@ test('P2.1 navigates and reconstructs one accepted-v2 Diagram hierarchy without 
     rmSync(runtimeRoot, { recursive: true, force: true })
   }
 })
+
+test('P2.2 deliberately sets up diagrams for one readable legacy Architecture', async ({ page }) => {
+  page.setDefaultTimeout(10_000)
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-p22-legacy-'))
+  const sourceRoot = join(runtimeRoot, 'source-project')
+  const dataRoot = join(runtimeRoot, 'app-data')
+  const binary = join(runtimeRoot, 'workbraid')
+  let application: RunningWorkBraid | undefined
+  try {
+    createSourceRepository(sourceRoot)
+    mkdirSync(dataRoot, { recursive: true })
+    const sourceBefore = sourceEvidence(sourceRoot)
+    run('go', ['build', '-buildvcs=false', '-o', binary, './cmd/workbraid'], repositoryRoot)
+    const port = await unusedLoopbackPort()
+    application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'legacy-bootstrap.log')
+    await openProject(page, application.origin, sourceRoot)
+    await page.getByRole('button', { name: 'Set up architecture' }).click()
+    await page.getByRole('button', { name: 'Set up', exact: true }).click()
+    const bootstrap = await displayedRevision(page)
+    const storePath = onlyArchitectureStore(dataRoot)
+    const storeID = basename(storePath, '.git')
+    await stopWorkBraid(application)
+    application = undefined
+
+    const legacy = writeAcceptedV1(storePath, bootstrap, storeID, sourceRoot)
+    const gatewayEntry = gitBare(storePath, ['ls-tree', legacy, 'components/gateway.md'])
+    application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'legacy-open.log')
+    await openProject(page, application.origin, sourceRoot)
+    expect(await displayedRevision(page)).toBe(legacy)
+    await expect(page.getByText('Gateway legacy documentation.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Edit component' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Set up diagrams' }).click()
+    await expect(page.getByRole('heading', { name: 'Changes in progress' })).toBeVisible()
+    await expect(page.getByText('Setting up diagrams will make this architecture editable.')).toBeVisible()
+    await page.getByRole('button', { name: 'Review changes' }).click()
+    const review = page.locator('.review-workspace-pane')
+    await expect(review.getByText('Diagram changes')).toBeVisible()
+    await expect(review.getByText('Gateway placed in diagram')).toBeVisible()
+    await review.getByRole('button', { name: 'Before changes' }).click()
+    await expect(page.getByText('That diagram exists only with the changes. Before changes shows the earlier architecture map.')).toBeVisible()
+    await expect(review.getByTestId('raw-diff')).toContainText('version: 2')
+    const candidateTree = await detailValue(review, 'Candidate tree')
+    expect(gitBare(storePath, ['ls-tree', candidateTree, 'components/gateway.md'])).toBe(gatewayEntry)
+    await page.getByRole('button', { name: 'Update architecture' }).click()
+    const accepted = await displayedRevision(page)
+    expect(accepted).not.toBe(legacy)
+    await expect(page.getByRole('button', { name: 'Add component' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Edit component' })).toBeVisible()
+
+    await stopWorkBraid(application)
+    application = undefined
+    application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'legacy-restart.log')
+    await openProject(page, application.origin, sourceRoot)
+    expect(await displayedRevision(page)).toBe(accepted)
+    await expect(page.getByRole('navigation', { name: 'Diagrams and components' })).toBeVisible()
+    await expect(page.getByText('Gateway legacy documentation.')).toBeVisible()
+    expect(sourceEvidence(sourceRoot)).toEqual(sourceBefore)
+    expect(sqlite(dataRoot, "SELECT group_concat(name, ',') FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")).toBe('source_architecture_associations')
+  } finally {
+    if (application) await stopWorkBraid(application)
+    rmSync(runtimeRoot, { recursive: true, force: true })
+  }
+})
+
+function writeAcceptedV1(storePath: string, parent: string, storeID: string, sourceRoot: string) {
+  const gateway = `---\nid: "${gatewayID}"\nrelationships:\n  - target: "${workerID}"\n    label: calls\n---\n# Gateway\nGateway legacy documentation.\n`
+  const worker = `---\nid: "${workerID}"\n---\n# Worker\nWorker legacy documentation.\n`
+  const componentTree = gitBareInput(storePath, ['mktree'], [
+    `100755 blob ${gitBareInput(storePath, ['hash-object', '-w', '--stdin'], gateway)}\tgateway.md`,
+    `100644 blob ${gitBareInput(storePath, ['hash-object', '-w', '--stdin'], worker)}\tworker.md`,
+  ].join('\n') + '\n')
+  const manifest = `format: workbraid-architecture\nversion: 1\nstore_id: "${storeID}"\nproject:\n  name: "Source project"\n  source_hint: "${sourceRoot}"\n`
+  const manifestBlob = gitBareInput(storePath, ['hash-object', '-w', '--stdin'], manifest)
+  const tree = gitBareInput(storePath, ['mktree'], `100644 blob ${manifestBlob}\tarchitecture.yaml\n040000 tree ${componentTree}\tcomponents\n`)
+  const commit = gitBareInput(storePath, ['-c', 'user.name=WorkBraid P2.2', '-c', 'user.email=p22@workbraid.invalid', 'commit-tree', tree, '-p', parent], 'legacy fixture\n')
+  gitBare(storePath, ['update-ref', 'refs/heads/accepted', commit, parent])
+  return commit
+}
 
 function writeAcceptedV2(storePath: string, parent: string, expected: string, storeID: string, sourceRoot: string, suffix: string) {
   const componentSources = {

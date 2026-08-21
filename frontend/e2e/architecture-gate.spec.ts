@@ -44,13 +44,13 @@ test('Gate 1 production path creates, accepts, and reconstructs Architecture wit
     await page.getByRole('button', { name: 'Set up architecture' }).click()
     await expect(page.getByRole('heading', { name: 'Set up architecture?' })).toBeVisible()
     await page.getByRole('button', { name: 'Set up', exact: true }).click()
-    await expect(page.getByRole('heading', { name: 'Components' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Components', exact: true })).toBeVisible()
     await expect(page.getByText('No components', { exact: true })).toBeVisible()
 
     const storePath = onlyArchitectureStore(dataRoot)
     const bootstrapRevision = gitBare(storePath, ['rev-parse', 'refs/heads/accepted'])
     expect(await displayedRevision(page)).toBe(bootstrapRevision)
-    expect(gitBare(storePath, ['ls-tree', bootstrapRevision])).toMatch(/^100644 blob [0-9a-f]{40}\tarchitecture\.yaml$/)
+    expect(gitBare(storePath, ['ls-tree', bootstrapRevision])).toMatch(/^100644 blob [0-9a-f]{40}\tarchitecture\.yaml\n040000 tree [0-9a-f]{40}\tdiagrams$/)
 
     await addComponent(page, 'Gateway', [
       'Routes requests to the rest of the system.',
@@ -68,10 +68,10 @@ test('Gate 1 production path creates, accepts, and reconstructs Architecture wit
     await addComponent(page, 'Records', 'Stores durable records.\n')
     await addComponent(page, 'Worker', 'Processes queued work.\n')
 
-    const componentIndex = page.getByRole('navigation', { name: 'Components' })
+    const componentIndex = page.getByRole('navigation', { name: 'Diagrams and components' })
     await expect(componentIndex.getByText('No components', { exact: true })).toBeVisible()
     await expect(componentIndex.getByText('Gateway', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('The architecture has no components yet.')).toBeVisible()
+    await expect(page.getByText('This diagram has no components.')).toBeVisible()
 
     await openPendingEditor(page, 'Gateway')
     await page.getByRole('button', { name: 'Add relationship' }).click()
@@ -81,7 +81,7 @@ test('Gate 1 production path creates, accepts, and reconstructs Architecture wit
     await page.getByRole('button', { name: 'Keep change' }).click()
 
     await expect(componentIndex.getByText('No components', { exact: true })).toBeVisible()
-    await expect(page.getByText('The architecture has no components yet.')).toBeVisible()
+    await expect(page.getByText('This diagram has no components.')).toBeVisible()
     await page.getByRole('button', { name: 'Review changes' }).click()
     const review = page.locator('.review-workspace-pane')
     await expect(review).toBeVisible()
@@ -122,11 +122,11 @@ test('Gate 1 production path creates, accepts, and reconstructs Architecture wit
     await openProject(page, application.origin, sourceRoot)
 
     expect(await displayedRevision(page)).toBe(acceptedRevision)
-    await expect(page.getByRole('navigation', { name: 'Components' }).getByText('Gateway', { exact: true })).toBeVisible()
-    await expect(page.getByRole('navigation', { name: 'Components' }).getByText('Records', { exact: true })).toBeVisible()
-    await expect(page.getByRole('navigation', { name: 'Components' }).getByText('Worker', { exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByText('Gateway', { exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByText('Records', { exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByText('Worker', { exact: true })).toBeVisible()
     await expect(page.getByTestId('architecture-map')).toBeVisible()
-    await page.getByRole('navigation', { name: 'Components' }).getByText('Gateway', { exact: true }).click()
+    await page.getByRole('navigation', { name: 'Diagrams and components' }).getByText('Gateway', { exact: true }).click()
     await expect(page.getByRole('table')).toBeVisible()
     await page.getByRole('button', { name: 'Edit component' }).click()
     await expect(page.getByLabel('Target').locator('option:checked')).toHaveText('Records')

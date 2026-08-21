@@ -20,6 +20,7 @@ type snapshotProjectionResponse struct {
 type diagramResponse struct {
 	ID                      string                        `json:"id"`
 	Title                   string                        `json:"title"`
+	Filename                string                        `json:"filename"`
 	Depth                   int                           `json:"depth"`
 	Context                 string                        `json:"context,omitempty"`
 	ParentDiagramID         string                        `json:"parent_diagram_id,omitempty"`
@@ -64,6 +65,23 @@ type diagramRelationshipResponse struct {
 type reviewComparisonResponse struct {
 	Components    []reviewComponentChangeResponse    `json:"components"`
 	Relationships []reviewRelationshipChangeResponse `json:"relationships"`
+	Diagrams      []reviewDiagramChangeResponse      `json:"diagrams,omitempty"`
+	Appearances   []reviewAppearanceChangeResponse   `json:"appearances,omitempty"`
+}
+
+type reviewDiagramChangeResponse struct {
+	DiagramID string `json:"diagram_id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Path      string `json:"path"`
+}
+
+type reviewAppearanceChangeResponse struct {
+	DiagramID   string `json:"diagram_id"`
+	ComponentID string `json:"component_id"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	Path        string `json:"path"`
 }
 
 type reviewComponentChangeResponse struct {
@@ -141,7 +159,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 	result := make([]diagramResponse, len(projected))
 	for index, diagram := range projected {
 		value := diagramResponse{
-			ID: diagram.ID, Title: diagram.Title, Depth: diagram.Depth, ParentDiagramID: diagram.ParentDiagramID,
+			ID: diagram.ID, Title: diagram.Title, Filename: diagram.Filename, Depth: diagram.Depth, ParentDiagramID: diagram.ParentDiagramID,
 			ParentAnchorComponentID: diagram.ParentAnchorComponentID,
 			Breadcrumbs:             make([]diagramBreadcrumbResponse, len(diagram.Breadcrumbs)),
 			Appearances:             make([]diagramAppearanceResponse, len(diagram.Appearances)),
@@ -190,7 +208,60 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotProjectionResponse, snapshotProjectionResponse, reviewComparisonResponse) {
 	before := projectSnapshot(base, "before")
 	withChanges := projectSnapshot(candidate, "with")
-	return before, withChanges, compareReviewProjections(before.Components, withChanges.Components)
+	comparison := compareReviewProjections(before.Components, withChanges.Components)
+	comparison.Diagrams, comparison.Appearances = compareDiagramProjections(before.Diagrams, withChanges.Diagrams)
+	return before, withChanges, comparison
+}
+
+func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewDiagramChangeResponse, []reviewAppearanceChangeResponse) {
+	beforeByID := make(map[string]diagramResponse, len(before))
+	withByID := make(map[string]diagramResponse, len(withChanges))
+	for _, current := range before {
+		beforeByID[current.ID] = current
+	}
+	for _, current := range withChanges {
+		withByID[current.ID] = current
+	}
+	var diagrams []reviewDiagramChangeResponse
+	var appearances []reviewAppearanceChangeResponse
+	for _, current := range withChanges {
+		base, exists := beforeByID[current.ID]
+		status := ""
+		if !exists {
+			status = "added"
+		} else if base.Title != current.Title {
+			status = "title_changed"
+		}
+		if status != "" {
+			diagrams = append(diagrams, reviewDiagramChangeResponse{DiagramID: current.ID, Title: current.Title, Status: status, Path: "diagrams/" + current.Filename})
+		}
+		beforeAppearances := appearanceSet(base.Appearances)
+		for _, appearance := range current.Appearances {
+			key := appearance.ComponentID + "\x00" + appearance.Role + "\x00" + appearance.DetailDiagramID
+			if _, unchanged := beforeAppearances[key]; !unchanged {
+				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "added", Path: "diagrams/" + current.Filename})
+			}
+		}
+	}
+	for _, current := range before {
+		candidate := withByID[current.ID]
+		withAppearances := appearanceSet(candidate.Appearances)
+		for _, appearance := range current.Appearances {
+			key := appearance.ComponentID + "\x00" + appearance.Role + "\x00" + appearance.DetailDiagramID
+			if _, unchanged := withAppearances[key]; !unchanged {
+				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "removed", Path: "diagrams/" + current.Filename})
+			}
+		}
+	}
+	return diagrams, appearances
+}
+
+func appearanceSet(values []diagramAppearanceResponse) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, appearance := range values {
+		result[appearance.ComponentID+"\x00"+appearance.Role+"\x00"+appearance.DetailDiagramID] = struct{}{}
+	}
+	return result
 }
 
 // compareReviewProjections is deliberately concrete to the Review changes

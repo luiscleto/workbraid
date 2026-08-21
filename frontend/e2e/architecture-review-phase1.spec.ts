@@ -43,7 +43,7 @@ test('Phase 1 reviews one bound multi-change candidate and reconstructs the acce
     await openProject(page, application.origin, sourceRoot)
     await page.getByRole('button', { name: 'Set up architecture' }).click()
     await page.getByRole('button', { name: 'Set up', exact: true }).click()
-    await expect(page.getByRole('heading', { name: 'Components' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Components', exact: true })).toBeVisible()
 
     await addComponent(page, 'Gateway', 'Accepted gateway body.\n')
     await addComponent(page, 'Worker', 'Accepted worker body.\n')

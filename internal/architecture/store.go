@@ -39,6 +39,8 @@ type Snapshot struct {
 	storeID       uuid.UUID
 	revision      string
 	formatVersion int
+	projectName   string
+	sourceHint    string
 	components    []component
 	rootDiagram   uuid.UUID
 	diagrams      []diagram
@@ -49,6 +51,7 @@ type diagram struct {
 	path        string
 	title       string
 	appearances []diagramAppearance
+	mode        string
 }
 
 type diagramAppearance struct {
@@ -103,6 +106,7 @@ func (snapshot Snapshot) ComponentTitles() []string {
 type DiagramProjection struct {
 	ID                      string
 	Title                   string
+	Filename                string
 	Depth                   int
 	ParentDiagramID         string
 	ParentAnchorComponentID string
@@ -190,7 +194,7 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 
 	projections := make([]DiagramProjection, 0, len(ordered))
 	for _, current := range ordered {
-		projection := DiagramProjection{ID: current.id.String(), Title: current.title}
+		projection := DiagramProjection{ID: current.id.String(), Title: current.title, Filename: filepath.Base(current.path)}
 		if parent, exists := parentByDiagram[current.id]; exists {
 			projection.ParentDiagramID = parent.diagram.String()
 			projection.ParentAnchorComponentID = parent.anchor.String()
@@ -358,6 +362,45 @@ type ComponentChange struct {
 	RelationshipsChanged bool
 }
 
+// CandidateComposition is the minimum concrete non-Component input to the
+// one candidate-construction path. The owning pending Architecture change set
+// supplies it alongside its Component edits.
+type CandidateComposition struct {
+	DiagramSetup      *DiagramSetupChange
+	NewComponentHomes []NewComponentHome
+}
+
+// DiagramSetupChange is the one deliberate v1-to-v2 setup fact. Its identity
+// is generated once when pending work begins and remains stable for that
+// in-process pending generation.
+type DiagramSetupChange struct {
+	RootDiagramID string
+}
+
+// NewComponentHome associates one newly generated Component with its required
+// home Diagram. It is composition, not a synthetic Component edit.
+type NewComponentHome struct {
+	ComponentID string
+	DiagramID   string
+}
+
+func (snapshot Snapshot) NewDiagramSetupChange() DiagramSetupChange {
+	return DiagramSetupChange{RootDiagramID: uuid.NewString()}
+}
+
+func (snapshot Snapshot) HasDiagram(id string) bool {
+	parsed, err := uuid.Parse(id)
+	if err != nil || snapshot.formatVersion != 2 {
+		return false
+	}
+	for _, current := range snapshot.diagrams {
+		if current.id == parsed {
+			return true
+		}
+	}
+	return false
+}
+
 // Candidate is a completely constructed and validated non-canonical tree.
 type Candidate struct {
 	tree     string
@@ -500,20 +543,37 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 		}
 	}
 
+	rootDiagramID := uuid.NewString()
 	manifestBytes, err := marshalManifest(manifest{
-		Format:  "workbraid-architecture",
-		Version: 1,
-		StoreID: parsedStoreID.String(),
-		Project: manifestProject{Name: projectName, SourceHint: sourceHint},
+		Format:      "workbraid-architecture",
+		Version:     2,
+		StoreID:     parsedStoreID.String(),
+		Project:     manifestProject{Name: projectName, SourceHint: sourceHint},
+		RootDiagram: rootDiagramID,
 	})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("%w: prepare Architecture identity: %v", ErrIncomplete, err)
 	}
-	blob, err := manager.git.writeBlob(ctx, storePath, manifestBytes)
+	manifestBlob, err := manager.git.writeBlob(ctx, storePath, manifestBytes)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("%w: write Architecture identity: %v", ErrIncomplete, err)
 	}
-	tree, err := manager.git.makeBootstrapTree(ctx, storePath, blob)
+	diagramBytes, err := marshalDiagram(diagram{
+		id: uuid.MustParse(rootDiagramID), path: "diagrams/root.yaml", title: projectName,
+	})
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%w: prepare root Diagram: %v", ErrIncomplete, err)
+	}
+	diagramBlob, err := manager.git.writeBlob(ctx, storePath, diagramBytes)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%w: write root Diagram: %v", ErrIncomplete, err)
+	}
+	diagramsTree, err := manager.git.makeTree(ctx, storePath, []byte("100644 blob "+diagramBlob+"\troot.yaml\n"))
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%w: create Diagram tree: %v", ErrIncomplete, err)
+	}
+	rootTreeSource := fmt.Sprintf("100644 blob %s\tarchitecture.yaml\n040000 tree %s\tdiagrams\n", manifestBlob, diagramsTree)
+	tree, err := manager.git.makeTree(ctx, storePath, []byte(rootTreeSource))
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("%w: create bootstrap tree: %v", ErrIncomplete, err)
 	}
@@ -652,7 +712,10 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 			}
 		}
 	}
-	snapshot := Snapshot{storeID: expectedStoreID, revision: revision, formatVersion: parsed.Version, components: components}
+	snapshot := Snapshot{
+		storeID: expectedStoreID, revision: revision, formatVersion: parsed.Version,
+		projectName: parsed.Project.Name, sourceHint: parsed.Project.SourceHint, components: components,
+	}
 	if parsed.Version == 2 {
 		diagrams, root, err := manager.loadDiagrams(ctx, storePath, diagramEntries, parsed.RootDiagram, components)
 		if err != nil {
@@ -727,6 +790,7 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 		if _, duplicate := diagramIDs[parsed.id]; duplicate {
 			return nil, uuid.Nil, fmt.Errorf("duplicate Diagram ID %s", parsed.id)
 		}
+		parsed.mode = entry.Mode
 		diagramIDs[parsed.id] = struct{}{}
 		diagrams = append(diagrams, parsed)
 	}
@@ -863,7 +927,7 @@ func componentFilenameSlug(title string) string {
 // path. It starts from the exact loaded base tree, writes only changed/new
 // blobs, and validates the complete resulting tree through the same loader used
 // for accepted Architecture.
-func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, changes []ComponentChange) (Candidate, error) {
+func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition CandidateComposition) (Candidate, error) {
 	storePath, err := manager.StorePath(base.storeID.String())
 	if err != nil {
 		return Candidate{}, err
@@ -874,17 +938,28 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 	}
 
 	byPath := make(map[string]treeEntry, len(entries))
-	var manifest treeEntry
+	var manifestEntry treeEntry
 	for _, entry := range entries {
 		if entry.Path == "architecture.yaml" {
-			manifest = entry
+			manifestEntry = entry
 		}
 		if entry.Type == "blob" {
 			byPath[entry.Path] = entry
 		}
 	}
-	if manifest.Path == "" {
+	if manifestEntry.Path == "" {
 		return Candidate{}, fmt.Errorf("%w: architecture identity is missing", ErrInvalid)
+	}
+
+	if base.formatVersion == 1 {
+		if composition.DiagramSetup == nil {
+			return Candidate{}, fmt.Errorf("%w: accepted Architecture must be set up for editing", ErrInvalid)
+		}
+		if len(changes) != 0 || len(composition.NewComponentHomes) != 0 {
+			return Candidate{}, fmt.Errorf("%w: Diagram setup cannot include other changes", ErrInvalid)
+		}
+	} else if composition.DiagramSetup != nil {
+		return Candidate{}, fmt.Errorf("%w: Diagrams are already set up", ErrInvalid)
 	}
 
 	baseByID := make(map[string]component, len(base.components))
@@ -975,6 +1050,104 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		byPath[change.Path] = treeEntry{Mode: mode, Type: "blob", Object: blob, Path: change.Path}
 	}
 
+	if composition.DiagramSetup != nil {
+		rootID, err := uuid.Parse(composition.DiagramSetup.RootDiagramID)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("%w: root Diagram identity is invalid", ErrInvalid)
+		}
+		root := diagram{id: rootID, path: "diagrams/root.yaml", title: base.projectName, mode: "100644"}
+		for _, component := range base.components {
+			root.appearances = append(root.appearances, diagramAppearance{component: component.id, role: "home"})
+		}
+		contents, err := marshalDiagram(root)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("serialize Diagram setup: %w", err)
+		}
+		blob, err := manager.git.writeBlob(ctx, storePath, contents)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("write Diagram setup: %w", err)
+		}
+		byPath[root.path] = treeEntry{Mode: root.mode, Type: "blob", Object: blob, Path: root.path}
+		manifestBytes, err := marshalManifest(manifest{
+			Format: "workbraid-architecture", Version: 2, StoreID: base.storeID.String(),
+			Project: manifestProject{Name: base.projectName, SourceHint: base.sourceHint}, RootDiagram: rootID.String(),
+		})
+		if err != nil {
+			return Candidate{}, fmt.Errorf("serialize Diagram setup manifest: %w", err)
+		}
+		blob, err = manager.git.writeBlob(ctx, storePath, manifestBytes)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("write Diagram setup manifest: %w", err)
+		}
+		byPath["architecture.yaml"] = treeEntry{Mode: "100644", Type: "blob", Object: blob, Path: "architecture.yaml"}
+		manifestEntry = byPath["architecture.yaml"]
+	}
+
+	if base.formatVersion == 2 {
+		changedDiagrams := make(map[uuid.UUID]diagram)
+		seenHomes := make(map[string]struct{}, len(composition.NewComponentHomes))
+		for _, home := range composition.NewComponentHomes {
+			if _, duplicate := seenHomes[home.ComponentID]; duplicate {
+				return Candidate{}, fmt.Errorf("%w: new Component has more than one home", ErrInvalid)
+			}
+			seenHomes[home.ComponentID] = struct{}{}
+			componentID, componentErr := uuid.Parse(home.ComponentID)
+			diagramID, diagramErr := uuid.Parse(home.DiagramID)
+			if componentErr != nil || diagramErr != nil {
+				return Candidate{}, fmt.Errorf("%w: new Component home is invalid", ErrInvalid)
+			}
+			changeFound := false
+			for _, change := range changes {
+				if change.New && change.ID == home.ComponentID {
+					changeFound = true
+					break
+				}
+			}
+			if !changeFound {
+				return Candidate{}, fmt.Errorf("%w: home does not belong to a new Component", ErrInvalid)
+			}
+			current, exists := changedDiagrams[diagramID]
+			if !exists {
+				for _, candidate := range base.diagrams {
+					if candidate.id == diagramID {
+						current = candidate
+						exists = true
+						break
+					}
+				}
+			}
+			if !exists {
+				return Candidate{}, fmt.Errorf("%w: home Diagram does not exist", ErrInvalid)
+			}
+			for _, appearance := range current.appearances {
+				if appearance.component == componentID {
+					return Candidate{}, fmt.Errorf("%w: new Component already appears in its home Diagram", ErrInvalid)
+				}
+			}
+			current.appearances = append(current.appearances, diagramAppearance{component: componentID, role: "home"})
+			changedDiagrams[diagramID] = current
+		}
+		for _, change := range changes {
+			if !change.New {
+				continue
+			}
+			if _, exists := seenHomes[change.ID]; !exists {
+				return Candidate{}, fmt.Errorf("%w: new Component is missing its home Diagram", ErrInvalid)
+			}
+		}
+		for _, current := range changedDiagrams {
+			contents, err := marshalDiagram(current)
+			if err != nil {
+				return Candidate{}, fmt.Errorf("serialize Component home: %w", err)
+			}
+			blob, err := manager.git.writeBlob(ctx, storePath, contents)
+			if err != nil {
+				return Candidate{}, fmt.Errorf("write Component home: %w", err)
+			}
+			byPath[current.path] = treeEntry{Mode: current.mode, Type: "blob", Object: blob, Path: current.path}
+		}
+	}
+
 	componentPaths := make([]string, 0, len(byPath))
 	for path := range byPath {
 		if strings.HasPrefix(path, "components/") {
@@ -994,9 +1167,31 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 			return Candidate{}, fmt.Errorf("construct candidate component tree: %w", err)
 		}
 	}
-	rootSource := fmt.Sprintf("%s blob %s\tarchitecture.yaml\n", manifest.Mode, manifest.Object)
+	diagramPaths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		if strings.HasPrefix(path, "diagrams/") {
+			diagramPaths = append(diagramPaths, path)
+		}
+	}
+	sort.Strings(diagramPaths)
+	var diagramTree string
+	if len(diagramPaths) > 0 {
+		var treeSource strings.Builder
+		for _, path := range diagramPaths {
+			entry := byPath[path]
+			fmt.Fprintf(&treeSource, "%s blob %s\t%s\n", entry.Mode, entry.Object, strings.TrimPrefix(path, "diagrams/"))
+		}
+		diagramTree, err = manager.git.makeTree(ctx, storePath, []byte(treeSource.String()))
+		if err != nil {
+			return Candidate{}, fmt.Errorf("construct candidate Diagram tree: %w", err)
+		}
+	}
+	rootSource := fmt.Sprintf("%s blob %s\tarchitecture.yaml\n", manifestEntry.Mode, manifestEntry.Object)
 	if componentTree != "" {
 		rootSource += "040000 tree " + componentTree + "\tcomponents\n"
+	}
+	if diagramTree != "" {
+		rootSource += "040000 tree " + diagramTree + "\tdiagrams\n"
 	}
 	tree, err := manager.git.makeTree(ctx, storePath, []byte(rootSource))
 	if err != nil {
@@ -1726,6 +1921,17 @@ type diagramAppearanceYAML struct {
 	Component     string `yaml:"component"`
 	Role          string `yaml:"role"`
 	DetailDiagram string `yaml:"detail_diagram,omitempty"`
+}
+
+func marshalDiagram(value diagram) ([]byte, error) {
+	encoded := diagramYAML{ID: value.id.String(), Title: value.title, Appearances: make([]diagramAppearanceYAML, len(value.appearances))}
+	for index, appearance := range value.appearances {
+		encoded.Appearances[index] = diagramAppearanceYAML{Component: appearance.component.String(), Role: appearance.role}
+		if appearance.hasDetailLink {
+			encoded.Appearances[index].DetailDiagram = appearance.detailDiagram.String()
+		}
+	}
+	return yaml.Marshal(encoded)
 }
 
 func parseDiagram(path string, contents []byte) (diagram, error) {

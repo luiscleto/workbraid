@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -96,11 +97,13 @@ func TestInitializeProjectCreatesOneAcceptedBootstrapAndLeavesSourceUntouched(t 
 		State          string `json:"state"`
 		Revision       string `json:"revision"`
 		ComponentCount int    `json:"component_count"`
+		FormatVersion  int    `json:"format_version"`
+		RootDiagramID  string `json:"root_diagram_id"`
 	}
 	if err := json.Unmarshal(initialized.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.SourceRoot != filepath.Clean(repository) || result.ProjectName != filepath.Base(repository) || result.State != "empty" || result.Revision == "" || result.ComponentCount != 0 {
+	if result.SourceRoot != filepath.Clean(repository) || result.ProjectName != filepath.Base(repository) || result.State != "empty" || result.Revision == "" || result.ComponentCount != 0 || result.FormatVersion != 2 || result.RootDiagramID == "" {
 		t.Fatalf("unexpected initialization result: %+v", result)
 	}
 
@@ -125,15 +128,16 @@ func TestInitializeProjectCreatesOneAcceptedBootstrapAndLeavesSourceUntouched(t 
 	if got := runGit(t, dataDirectory, "--git-dir", storePath, "rev-list", "--parents", "-n", "1", result.Revision); got != result.Revision {
 		t.Fatalf("bootstrap has a parent: %q", got)
 	}
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", result.Revision); !strings.HasPrefix(got, "100644 blob ") || !strings.HasSuffix(got, "\tarchitecture.yaml") || strings.Contains(got, "\n") {
+	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", result.Revision); !strings.Contains(got, "\tarchitecture.yaml") || !strings.Contains(got, "\tdiagrams") {
 		t.Fatalf("unexpected bootstrap tree: %q", got)
 	}
 	manifestBytes := []byte(runGit(t, dataDirectory, "--git-dir", storePath, "show", result.Revision+":architecture.yaml"))
 	var manifest struct {
-		Format  string `yaml:"format"`
-		Version int    `yaml:"version"`
-		StoreID string `yaml:"store_id"`
-		Project struct {
+		Format      string `yaml:"format"`
+		Version     int    `yaml:"version"`
+		StoreID     string `yaml:"store_id"`
+		RootDiagram string `yaml:"root_diagram"`
+		Project     struct {
 			Name       string `yaml:"name"`
 			SourceHint string `yaml:"source_hint"`
 		} `yaml:"project"`
@@ -141,8 +145,11 @@ func TestInitializeProjectCreatesOneAcceptedBootstrapAndLeavesSourceUntouched(t 
 	if err := yaml.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Format != "workbraid-architecture" || manifest.Version != 1 || manifest.StoreID != storeID || manifest.Project.Name != filepath.Base(repository) || manifest.Project.SourceHint != filepath.Clean(repository) {
+	if manifest.Format != "workbraid-architecture" || manifest.Version != 2 || manifest.StoreID != storeID || manifest.Project.Name != filepath.Base(repository) || manifest.Project.SourceHint != filepath.Clean(repository) || manifest.RootDiagram != result.RootDiagramID {
 		t.Fatalf("unexpected manifest: %+v", manifest)
+	}
+	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", result.Revision, "diagrams/root.yaml"); !strings.HasPrefix(got, "100644 blob ") {
+		t.Fatalf("unexpected root Diagram entry: %q", got)
 	}
 	if after := snapshotRepository(t, repository); after != before {
 		t.Fatalf("source repository changed\nbefore:\n%s\nafter:\n%s", before, after)
@@ -347,7 +354,7 @@ func TestOpenProjectBoundedAcceptedStateFailuresAreReadOnly(t *testing.T) {
 			wantCode:   errorArchitectureUnsupported,
 			arrange: func(t *testing.T, dataDirectory, storePath, _, revision string) {
 				manifest := runGit(t, dataDirectory, "--git-dir", storePath, "show", revision+":architecture.yaml")
-				manifest = strings.Replace(manifest, "version: 1", "version: 3", 1) + "\n"
+				manifest = strings.Replace(manifest, "version: 2", "version: 3", 1) + "\n"
 				advanceAcceptedToManifest(t, storePath, revision, []byte(manifest), nil)
 			},
 		},
@@ -866,6 +873,33 @@ func advanceAcceptedToComponents(t *testing.T, storePath, oldRevision string, ma
 	}
 	componentTree := runGitWithInput(t, storePath, []byte(strings.Join(componentEntries, "\n")+"\n"), "--git-dir", storePath, "mktree")
 	rootEntries := "100644 blob " + manifestBlob + "\tarchitecture.yaml\n040000 tree " + componentTree + "\tcomponents\n"
+	var identity struct {
+		Version     int    `yaml:"version"`
+		RootDiagram string `yaml:"root_diagram"`
+	}
+	if err := yaml.Unmarshal(manifest, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity.Version == 2 {
+		var diagram strings.Builder
+		fmt.Fprintf(&diagram, "id: %q\ntitle: Root\nappearances:\n", identity.RootDiagram)
+		for _, component := range components {
+			parts := bytes.SplitN(component.source, []byte("---"), 3)
+			if len(parts) != 3 {
+				t.Fatalf("component fixture %q has no frontmatter", component.path)
+			}
+			var metadata struct {
+				ID string `yaml:"id"`
+			}
+			if err := yaml.Unmarshal(parts[1], &metadata); err != nil || metadata.ID == "" {
+				t.Fatalf("component fixture %q metadata: id=%q err=%v", component.path, metadata.ID, err)
+			}
+			fmt.Fprintf(&diagram, "  - component: %q\n    role: home\n", metadata.ID)
+		}
+		diagramBlob := runGitWithInput(t, storePath, []byte(diagram.String()), "--git-dir", storePath, "hash-object", "-w", "--stdin")
+		diagramTree := runGitWithInput(t, storePath, []byte("100644 blob "+diagramBlob+"\troot.yaml\n"), "--git-dir", storePath, "mktree")
+		rootEntries += "040000 tree " + diagramTree + "\tdiagrams\n"
+	}
 	tree := runGitWithInput(t, storePath, []byte(rootEntries), "--git-dir", storePath, "mktree")
 	commit := runGitWithInput(t, storePath, []byte("external accepted components\n"),
 		"-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid",

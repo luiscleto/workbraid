@@ -18,7 +18,7 @@ const (
 	p21RecordsID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 )
 
-func TestAcceptedV2HandlerProjectionIsReadOnlyAndRestartable(t *testing.T) {
+func TestAcceptedV2HandlerProjectionIsWritableAndRestartable(t *testing.T) {
 	source := createSourceRepository(t)
 	sourceBefore := snapshotRepository(t, source)
 	dataDirectory := t.TempDir()
@@ -29,7 +29,6 @@ func TestAcceptedV2HandlerProjectionIsReadOnlyAndRestartable(t *testing.T) {
 	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
 	accepted := advanceAcceptedToP21V2(t, storePath, initialized.Revision, storeID, "System")
 	associationsBefore := snapshotAssociations(t, db)
-	gitBefore := snapshotPrivateArchitecture(t, dataDirectory)
 
 	opened := decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
 	if opened.Revision != accepted || opened.FormatVersion != 2 || opened.RootDiagramID != p21RootID || len(opened.Diagrams) != 3 {
@@ -71,23 +70,16 @@ func TestAcceptedV2HandlerProjectionIsReadOnlyAndRestartable(t *testing.T) {
 		t.Fatalf("canonical reference projection = %+v", root.Appearances)
 	}
 
-	for _, endpoint := range []string{"/api/architecture/components/add", "/api/architecture/components/edit"} {
-		request := componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Late v1 edit", Description: "Must not persist."}
-		if strings.HasSuffix(endpoint, "/edit") {
-			request.ComponentID = p21GatewayID
-			request.TitleChanged = true
-		}
-		response := postComponentMutation(t, handler, testOrigin, endpoint, request)
-		var failure errorResponse
-		if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
-			t.Fatal(err)
-		}
-		if response.Code != http.StatusConflict || failure.Code != errorChangesUnavailable || state.pending != nil {
-			t.Fatalf("v2 mutation %s status=%d failure=%+v pending=%+v", endpoint, response.Code, failure, state.pending)
-		}
+	response := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: p21GatewayID,
+		Description: "Writable v2 change.\n", DescriptionChanged: true,
+	})
+	if response.Code != http.StatusOK || state.pending == nil || state.pending.candidate == nil {
+		t.Fatalf("v2 mutation status=%d body=%s pending=%+v", response.Code, response.Body.String(), state.pending)
 	}
-	if got := snapshotPrivateArchitecture(t, dataDirectory); got != gitBefore {
-		t.Fatal("v2 read-only request changed private Git")
+	decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source))
+	if got := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted"); got != accepted {
+		t.Fatalf("pending v2 request advanced accepted to %q", got)
 	}
 	if got := snapshotRepository(t, source); got != sourceBefore {
 		t.Fatal("v2 read-only request changed source repository")
@@ -130,7 +122,7 @@ func TestRefreshFromV1ToV2MakesOldPendingStaleAndRejectsLateMutation(t *testing.
 	if err := json.Unmarshal(late.Body.Bytes(), &failure); err != nil {
 		t.Fatal(err)
 	}
-	if late.Code != http.StatusConflict || failure.Code != errorChangesUnavailable || len(state.pending.changes) != 1 || state.pending.changes[0].Title != "Pending v1" {
+	if late.Code != http.StatusConflict || failure.Code != errorChangesElsewhere || len(state.pending.changes) != 1 || state.pending.changes[0].Title != "Pending v1" {
 		t.Fatalf("late mutation changed stale pending: status=%d failure=%+v pending=%+v", late.Code, failure, state.pending)
 	}
 	discarded := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source))
@@ -164,7 +156,7 @@ func TestAcceptedV2RefreshIsQuietThenAdoptsNonLinearReplacement(t *testing.T) {
 	}
 }
 
-func TestRefreshToAcceptedV2SerializesLateV1MutationEligibility(t *testing.T) {
+func TestRefreshToAcceptedV2RejectsLateOldRevisionMutation(t *testing.T) {
 	db := openWebTestDatabase(t)
 	source := createSourceRepository(t)
 	dataDirectory := t.TempDir()
@@ -191,7 +183,7 @@ func TestRefreshToAcceptedV2SerializesLateV1MutationEligibility(t *testing.T) {
 	go func() {
 		close(mutationStarted)
 		mutationDone <- postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-			SourceRoot: filepath.Clean(source), Title: "Late v1 mutation", Description: "Must not persist.",
+			SourceRoot: filepath.Clean(source), ExpectedRevision: initialized.Revision, Title: "Late mutation", Description: "Must not persist.",
 		})
 	}()
 	<-mutationStarted
@@ -207,7 +199,7 @@ func TestRefreshToAcceptedV2SerializesLateV1MutationEligibility(t *testing.T) {
 	if refreshResponse.Code != http.StatusOK || refreshed.Revision != accepted || refreshed.FormatVersion != 2 {
 		t.Fatalf("raced Refresh = status %d, %+v", refreshResponse.Code, refreshed)
 	}
-	if mutationResponse.Code != http.StatusConflict || failure.Code != errorChangesUnavailable || state.pending != nil {
+	if mutationResponse.Code != http.StatusConflict || failure.Code != errorChangesElsewhere || state.pending != nil {
 		t.Fatalf("raced mutation = status %d, %+v, pending=%+v", mutationResponse.Code, failure, state.pending)
 	}
 	if state.loadedSnapshot == nil || state.loadedSnapshot.Revision() != accepted || state.loadedSnapshot.FormatVersion() != 2 || state.loadedStale {

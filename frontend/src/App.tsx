@@ -35,6 +35,7 @@ type ArchitectureResult = {
 type DiagramProjection = {
   id: string
   title: string
+  filename: string
   depth: number
   context?: string
   parent_diagram_id?: string
@@ -91,6 +92,8 @@ type ChangesInProgress = {
   review?: ChangeReview
   review_blocker?: string
   stale?: boolean
+  diagram_setup?: boolean
+  legacy_read_only?: boolean
 }
 
 type RelationshipTarget = {
@@ -113,6 +116,8 @@ type ChangeReview = {
   comparison: {
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
+    diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
+    appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed'; path: string }[]
   }
 }
 
@@ -131,6 +136,7 @@ type ReviewSide = 'with' | 'before'
 type ReviewFocus =
   | { kind: 'component'; key: string; componentID: string; title: string; path: string; status: 'added' | 'content_changed' | 'unchanged' }
   | ({ kind: 'relationship' } & ReviewRelationshipSelection)
+  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed' }
 
 type ComponentEditor = {
   kind: 'add' | 'edit'
@@ -235,7 +241,7 @@ function relationshipIssueComponentName(changes: ChangesInProgress, component: P
 
 type DiagramComponent = AuthoringComponent & { appearance: DiagramAppearance }
 
-function componentsForDiagram(result: ArchitectureResult, diagram?: DiagramProjection): DiagramComponent[] {
+function componentsForDiagram(result: Pick<ArchitectureResult, 'components'> | ReviewSnapshot, diagram?: DiagramProjection): DiagramComponent[] {
   if (!diagram) return []
   const byID = new Map(result.components.map((component) => [component.id, component]))
   return diagram.appearances.flatMap((appearance) => {
@@ -244,7 +250,7 @@ function componentsForDiagram(result: ArchitectureResult, diagram?: DiagramProje
   })
 }
 
-function mapComponentsForDiagram(result: ArchitectureResult, diagram?: DiagramProjection): MapComponent[] {
+function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> | ReviewSnapshot, diagram?: DiagramProjection): MapComponent[] {
   if (!diagram) return []
   const byID = new Map(result.components.map((component) => [component.id, component]))
   const nodes = new Map<string, MapComponent>()
@@ -324,7 +330,7 @@ export function App() {
       setSelectedDiagramID(undefined)
       setSelectedComponentID((current) => result.components?.some((component) => component.id === current) ? current : result.components?.[0]?.id)
     }
-    setWorkspaceTask(task ?? (result.changes?.components.length ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
+    setWorkspaceTask(task ?? (result.changes ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
   }, [selectedDiagramID])
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
@@ -344,6 +350,7 @@ export function App() {
     }
     setReviewSide('with')
     setReviewFocus(null)
+    setSelectedDiagramID(currentReview.with_changes.root_diagram_id)
     setSelectedComponentID((current) => currentReview.with_changes.components.some((component) => component.id === current)
       ? current
       : currentReview.with_changes.components[0]?.id)
@@ -460,12 +467,14 @@ export function App() {
     try {
       const response = await postJSON(endpoint, {
         source_root: result.source_root,
+        expected_revision: result.revision,
         ...(editor.id ? { component_id: editor.id } : {}),
         ...(editor.kind === 'add' || editor.titleChanged ? { title: editor.title } : {}),
         ...(editor.kind === 'add' || editor.descriptionChanged ? { description: editor.descriptionPrefix + editor.description } : {}),
         ...(editor.kind === 'add' || relationshipsChanged ? { relationships } : {}),
         ...(editor.kind === 'edit' ? { title_changed: editor.titleChanged, description_changed: editor.descriptionChanged } : {}),
         ...(editor.kind === 'edit' && relationshipsChanged ? { relationships_changed: true } : {}),
+        ...(editor.kind === 'add' && selectedDiagramID ? { diagram_id: selectedDiagramID } : {}),
       })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
@@ -516,6 +525,24 @@ export function App() {
       }
     } catch {
       setArchitectureNotice("WorkBraid couldn't prepare these changes for review. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
+  async function setupDiagrams(result: ArchitectureResult) {
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/architecture/diagrams/setup', { source_root: result.source_root })
+      const payload = (await response.json()) as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload)) {
+        setArchitectureNotice("WorkBraid couldn't set up diagrams. Try again.")
+        return
+      }
+      enterWorkspace(payload, 'changes')
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't set up diagrams. Try again.")
     } finally {
       setArchitectureBusy(false)
     }
@@ -670,19 +697,23 @@ export function App() {
     const result = state.value
     const review = result.changes?.review
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
-    const activeDiagram = !review && result.format_version === 2
-      ? result.diagrams?.find((diagram) => diagram.id === selectedDiagramID) ?? result.diagrams?.find((diagram) => diagram.id === result.root_diagram_id)
+    const diagramProjection = activeProjection ?? result
+    const activeDiagram = diagramProjection.format_version === 2
+      ? diagramProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID) ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
-    const activeDiagramComponents = activeDiagram ? componentsForDiagram(result, activeDiagram) : undefined
+    const candidateOnlyDiagramBefore = Boolean(review && reviewSide === 'before' && selectedDiagramID &&
+      review.with_changes.diagrams?.some((diagram) => diagram.id === selectedDiagramID) &&
+      !review.before.diagrams?.some((diagram) => diagram.id === selectedDiagramID))
+    const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
+    const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.components ?? activeDiagramComponents ?? result.components ?? []
-    const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(result, activeDiagram) : undefined
+    const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents = diagramMapComponents ?? activeComponents
     const selected = activeComponents.find((component) => component.id === selectedComponentID)
     const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
     const diagramNodeTitles = new Map<string, string>()
     for (const component of activeDiagramComponents ?? []) diagramNodeTitles.set(component.id, component.title)
     for (const boundary of activeDiagram?.boundaries ?? []) diagramNodeTitles.set(boundary.key, boundary.title)
-    const showV2ViewOnly = result.format_version === 2 && !result.stale && result.action_error !== 'refresh_failed'
     const titleCounts = new Map<string, number>()
     for (const component of activeComponents) titleCounts.set(component.title, (titleCounts.get(component.title) ?? 0) + 1)
     const componentReviewStatus = new Map(review?.comparison.components.map((change) => [change.component_id, change]))
@@ -704,7 +735,7 @@ export function App() {
       })
     }
     const selectDiagram = (diagramID: string, focusComponentID?: string) => {
-      const diagram = result.diagrams?.find((candidate) => candidate.id === diagramID)
+      const diagram = diagramProjection.diagrams?.find((candidate) => candidate.id === diagramID)
       if (!diagram) return
       setSelectedDiagramID(diagram.id)
       setSelectedComponentID(focusComponentID && diagram.appearances.some((appearance) => appearance.component_id === focusComponentID)
@@ -745,9 +776,9 @@ export function App() {
             <p className="workspace-context"><strong>{result.project_name}</strong><span>Architecture</span></p>
           </div>
           <div className="frame-actions">
-            {result.changes?.components.length ? (
+            {result.changes ? (
               <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'changes' })}>
-                Changes in progress <span className="change-count">{result.changes.components.length}</span>
+                Changes in progress {result.changes.components.length > 0 && <span className="change-count">{result.changes.components.length}</span>}
               </button>
             ) : null}
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'refresh' })}>
@@ -766,12 +797,12 @@ export function App() {
           </div>
         )}
         <div className={`architecture-workbench ${review ? 'reviewing' : ''}`}>
-          <nav className="component-index" aria-label={result.format_version === 2 && !review ? 'Diagrams and components' : 'Components'}>
-            {result.format_version === 2 && !review && (
+          <nav className="component-index" aria-label={diagramProjection.format_version === 2 ? 'Diagrams and components' : 'Components'}>
+            {diagramProjection.format_version === 2 && (
               <div className="diagram-navigator">
                 <div className="index-heading"><h1>Diagrams</h1></div>
                 <ul className="diagram-tree">
-                  {result.diagrams?.map((diagram) => (
+                  {diagramProjection.diagrams?.map((diagram) => (
                     <li key={diagram.id}>
                       <button
                         type="button"
@@ -814,12 +845,13 @@ export function App() {
                 })}
               </ul>
             ) : <p className="index-empty">No components</p>}
-            {!review && result.format_version !== 2 && !result.stale && !result.changes?.stale && !acceptanceUnknown && (
+            {!review && result.format_version !== 1 && authoringAvailable && (
               <button className="index-add" type="button" onClick={() => requestNavigation({ kind: 'add' })}>Add component</button>
             )}
           </nav>
           <section className={`map-region ${activeDiagram ? 'has-diagram' : ''}`}>
             <div className="region-label">{review ? (reviewSide === 'with' ? 'With changes map' : 'Before changes map') : activeDiagram?.title ?? 'Architecture map'}</div>
+            {candidateOnlyDiagramBefore && <p className="candidate-only-note">That diagram exists only with the changes. Before changes shows the earlier architecture map.</p>}
             {activeDiagram && (
               <nav className="diagram-breadcrumbs" aria-label="Diagram breadcrumbs">
                 {activeDiagram.breadcrumbs.map((breadcrumb, index) => (
@@ -871,12 +903,6 @@ export function App() {
             )}
           </section>
           <aside className="working-pane" aria-label="Architecture task">
-            {showV2ViewOnly && (
-              <div className="view-only-note">
-                <strong>View only</strong>
-                <span>You can explore this architecture, but changes are not available here yet.</span>
-              </div>
-            )}
             {review && result.changes ? (
               <ChangesTask
                 result={result}
@@ -890,6 +916,11 @@ export function App() {
                 onClearReviewFocus={() => {
                   setSelectedComponentID(undefined)
                   setReviewFocus(null)
+                }}
+                onFocusDiagram={(focus) => {
+                  setSelectedDiagramID(focus.diagramID)
+                  setSelectedComponentID(undefined)
+                  setReviewFocus(focus)
                 }}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
@@ -937,10 +968,13 @@ export function App() {
                     Open {selectedAppearance.detail_diagram_title}
                   </button>
                 )}
-                {result.format_version !== 2 && !result.stale && !result.changes?.stale && !acceptanceUnknown && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                {result.format_version === 1 && authoringAvailable && !result.changes && <div className="legacy-diagram-setup"><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>}
               </article>
             ) : activeDiagram ? (
               <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p></div>
+            ) : result.format_version === 1 && authoringAvailable && !result.changes ? (
+              <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Set up diagrams</h2><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>
             ) : result.components?.length ? (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Select a component</h2><p>Choose a component from the index or map to read its documentation.</p></div>
             ) : (
@@ -1179,6 +1213,7 @@ function ChangesTask({
   reviewFocus,
   onReviewSide,
   onClearReviewFocus,
+  onFocusDiagram,
   onEdit,
   onFixRelationship,
   onReview,
@@ -1196,6 +1231,7 @@ function ChangesTask({
   reviewFocus?: ReviewFocus | null
   onReviewSide?: (side: ReviewSide) => void
   onClearReviewFocus?: () => void
+  onFocusDiagram?: (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => void
   onEdit: (component: PendingComponent) => void
   onFixRelationship: (component: PendingComponent) => void
   onReview: () => void
@@ -1224,6 +1260,21 @@ function ChangesTask({
           </div>
         </div>
         <p className="review-introduction">Inspect the visual change and complete exact diff before updating the architecture.</p>
+        {(changes.review.comparison.diagrams?.length || changes.review.comparison.appearances?.length) ? (
+          <section className="diagram-review-summary" aria-label="Diagram changes">
+            <h3>Diagram changes</h3>
+            <ul>
+              {changes.review.comparison.diagrams?.map((diagram) => <li key={`${diagram.diagram_id}:${diagram.status}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `diagram:${diagram.diagram_id}`, diagramID: diagram.diagram_id, title: diagram.title, path: diagram.path, status: diagram.status })}><strong>{diagram.title}</strong> {diagram.status === 'added' ? 'added' : 'title changed'}</button></li>)}
+              {changes.review.comparison.appearances?.map((appearance, index) => {
+                const projection = changes.review?.with_changes.components.find((component) => component.id === appearance.component_id)
+                  ?? changes.review?.before.components.find((component) => component.id === appearance.component_id)
+                const diagram = changes.review?.with_changes.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
+                  ?? changes.review?.before.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
+                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed' })}><strong>{projection?.title ?? 'Component'}</strong> {appearance.status === 'added' ? 'placed in diagram' : 'removed from diagram'}</button></li>
+              })}
+            </ul>
+          </section>
+        ) : null}
         <ReviewContext
           side={reviewSide}
           component={selectedReviewComponent}
@@ -1258,7 +1309,8 @@ function ChangesTask({
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
       <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="changes-heading">Changes in progress</h2></div>
-      <p>{changes.stale ? 'These changes started from an older architecture and are read-only.' : 'These changes have not updated the architecture yet.'}</p>
+      <p>{changes.legacy_read_only || changes.stale ? 'These changes started from an older architecture and are read-only.' : changes.diagram_setup ? 'Diagrams are ready to review before the architecture is updated.' : 'These changes have not updated the architecture yet.'}</p>
+      {changes.diagram_setup && <p>Setting up diagrams will make this architecture editable.</p>}
       <ul>
         {changes.components.map((component) => {
           const ownsReviewBlocker = Boolean(changes.review_blocker && changes.validation_item === component.id)
@@ -1266,7 +1318,7 @@ function ChangesTask({
           <li className={ownsReviewBlocker ? 'validation-owner' : undefined} aria-invalid={ownsReviewBlocker || undefined} key={component.id}>
             <span>{component.title.trim() || 'Untitled component'}</span>
             {ownsReviewBlocker && <strong className="validation-marker">Needs attention</strong>}
-            {!acceptanceUnknown && <button className="text-action" type="button" onClick={() => onEdit(component)}>{result.stale || changes.stale ? 'View' : 'Edit'}</button>}
+            {!acceptanceUnknown && <button className="text-action" type="button" onClick={() => onEdit(component)}>{result.stale || changes.stale || changes.legacy_read_only ? 'View' : 'Edit'}</button>}
           </li>
           )
         })}
@@ -1285,7 +1337,7 @@ function ChangesTask({
       {result.action_error && !changes.review_blocker && <p className="review-error" role="alert">{messageForArchitectureAction(result.action_error)}</p>}
       {(!changes.review || result.stale || changes.stale) && !acceptanceUnknown && (
         <div className="change-actions">
-          {!result.stale && !changes.stale && !changes.review && (
+          {!result.stale && !changes.stale && !changes.legacy_read_only && !changes.review && (
             <button className="inline-action" type="button" disabled={busy} onClick={onReview}>{busy ? 'Preparing…' : 'Review changes'}</button>
           )}
           {discardAction}
@@ -1310,6 +1362,14 @@ function ReviewContext({
   onClear: () => void
 }) {
   const titles = new Map(components.map((candidate) => [candidate.id, candidate.title]))
+  if (focus?.kind === 'diagram') {
+    return (
+      <section className="review-context" aria-label="Review context">
+        <div className="review-context-heading"><div><p className="eyebrow">Diagram composition</p><h3>{focus.title}</h3></div><button className="text-action" type="button" onClick={onClear}>Clear focus</button></div>
+        <p>{focus.status === 'added' ? 'This diagram is added with the changes.' : focus.status === 'title_changed' ? 'This diagram title changes.' : 'A component placement changes in this diagram.'}</p>
+      </section>
+    )
+  }
   if (!component) {
     return (
       <section className="review-context review-context-empty" aria-label="Review context">

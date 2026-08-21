@@ -198,7 +198,7 @@ func TestRefreshConclusiveFailuresMakePendingAndRetainedViewReadOnly(t *testing.
 		{
 			name: "unsupported", wantStatus: http.StatusUnprocessableEntity, wantError: errorRefreshUnsupported,
 			arrange: func(t *testing.T, fixture refreshFixture) {
-				unsupported := []byte(strings.Replace(string(fixture.manifest), "version: 1", "version: 3", 1))
+				unsupported := []byte(strings.Replace(string(fixture.manifest), "version: 2", "version: 3", 1))
 				advanceAcceptedToManifest(t, fixture.storePath, fixture.loadedRevision, unsupported, nil)
 			},
 		},

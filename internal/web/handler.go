@@ -63,6 +63,8 @@ type pendingChangeSet struct {
 	baseRevision                   string
 	baseSnapshot                   architecture.Snapshot
 	changes                        []architecture.ComponentChange
+	diagramSetup                   *architecture.DiagramSetupChange
+	newComponentHomes              []architecture.NewComponentHome
 	candidate                      *architecture.Candidate
 	generation                     uint64
 	review                         *reviewBinding
@@ -99,6 +101,7 @@ func newHandler(db *sql.DB, expectedOrigin, uiDirectory, dataDirectory string) (
 	mux.HandleFunc("POST /api/projects/initialize", handler.initializeProject)
 	mux.HandleFunc("POST /api/architecture/components/add", handler.addComponent)
 	mux.HandleFunc("POST /api/architecture/components/edit", handler.editComponent)
+	mux.HandleFunc("POST /api/architecture/diagrams/setup", handler.setupDiagrams)
 	mux.HandleFunc("POST /api/architecture/review", handler.reviewChanges)
 	mux.HandleFunc("POST /api/architecture/accept", handler.acceptChanges)
 	mux.HandleFunc("POST /api/architecture/discard", handler.discardChanges)
@@ -276,6 +279,8 @@ type changesResponse struct {
 	Review                         *reviewResponse              `json:"review,omitempty"`
 	ReviewBlocker                  string                       `json:"review_blocker,omitempty"`
 	Stale                          bool                         `json:"stale,omitempty"`
+	DiagramSetup                   bool                         `json:"diagram_setup,omitempty"`
+	LegacyReadOnly                 bool                         `json:"legacy_read_only,omitempty"`
 }
 
 type reviewResponse struct {
@@ -330,6 +335,8 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 			ValidationRelationshipField:    pending.validationRelationshipField,
 			ReviewBlocker:                  pending.reviewBlocker,
 			Stale:                          pending.stale,
+			DiagramSetup:                   pending.diagramSetup != nil,
+			LegacyReadOnly:                 snapshot.FormatVersion() == 1 && pending.diagramSetup == nil,
 		}
 		if !pending.stale && pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 			before, withChanges, comparison := captureReviewPresentation(pending.baseSnapshot, pending.review.candidate.Snapshot())
@@ -630,6 +637,7 @@ func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Reque
 
 type componentMutationRequest struct {
 	SourceRoot           string                 `json:"source_root"`
+	ExpectedRevision     string                 `json:"expected_revision,omitempty"`
 	ComponentID          string                 `json:"component_id,omitempty"`
 	Title                string                 `json:"title,omitempty"`
 	Description          string                 `json:"description,omitempty"`
@@ -637,6 +645,7 @@ type componentMutationRequest struct {
 	DescriptionChanged   bool                   `json:"description_changed,omitempty"`
 	Relationships        []relationshipResponse `json:"relationships,omitempty"`
 	RelationshipsChanged bool                   `json:"relationships_changed,omitempty"`
+	DiagramID            string                 `json:"diagram_id,omitempty"`
 }
 
 func (h *Handler) addComponent(response http.ResponseWriter, request *http.Request) {
@@ -695,7 +704,11 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		return
 	}
 	snapshot := *h.loadedSnapshot
-	if snapshot.FormatVersion() == 2 {
+	if payload.ExpectedRevision != "" && payload.ExpectedRevision != snapshot.Revision() {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
+	if snapshot.FormatVersion() != 2 {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
 		return
 	}
@@ -713,6 +726,20 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		change = h.architecture.NewComponentChange(snapshot, h.pending.changes, payload.Title, payload.Description)
 		change.Relationships = authoringRelationships(payload.Relationships)
 		change.RelationshipsChanged = true
+		homeDiagramID := payload.DiagramID
+		if homeDiagramID == "" {
+			homeDiagramID = snapshot.RootDiagramID()
+		}
+		if !snapshot.HasDiagram(homeDiagramID) {
+			if len(h.pending.changes) == 0 {
+				h.pending = nil
+			}
+			writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorChangeFailed})
+			return
+		}
+		h.pending.newComponentHomes = append(h.pending.newComponentHomes, architecture.NewComponentHome{
+			ComponentID: change.ID, DiagramID: homeDiagramID,
+		})
 	} else {
 		for index := range h.pending.changes {
 			if h.pending.changes[index].ID == payload.ComponentID {
@@ -750,7 +777,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 	h.pending.generation++
 	h.pending.reviewBlocker = ""
 
-	candidate, err := h.architecture.ConstructCandidate(request.Context(), snapshot, h.pending.changes)
+	candidate, err := h.constructCandidate(request.Context(), snapshot, h.pending)
 	h.pending.candidate = nil
 	h.pending.validationCode = ""
 	h.pending.validationItem = ""
@@ -785,6 +812,47 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		h.pending.candidate = &candidate
 	}
 	writeJSON(response, http.StatusOK, responseForSnapshot(h.loadedProject.sourceRoot, h.loadedProject.projectName, snapshot, h.pending, h.loadedStale, h.acceptedDiff))
+}
+
+func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
+	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
+		DiagramSetup: pending.diagramSetup, NewComponentHomes: pending.newComponentHomes,
+	})
+}
+
+func (h *Handler) setupDiagrams(response http.ResponseWriter, request *http.Request) {
+	payload, ok := h.decodeArchitectureAction(response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.SourceRoot != h.loadedProject.sourceRoot {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+		return
+	}
+	if h.loadedStale {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
+		return
+	}
+	snapshot := *h.loadedSnapshot
+	if snapshot.FormatVersion() != 1 || h.pending != nil {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+		return
+	}
+	setup := snapshot.NewDiagramSetupChange()
+	h.pending = &pendingChangeSet{
+		storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot,
+		diagramSetup: &setup, generation: 1,
+	}
+	candidate, err := h.constructCandidate(request.Context(), snapshot, h.pending)
+	if err != nil {
+		h.pending = nil
+		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
+		return
+	}
+	h.pending.candidate = &candidate
+	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 }
 
 func authoringRelationships(values []relationshipResponse) []architecture.AuthoringRelationship {
@@ -825,7 +893,12 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	candidate, err := h.architecture.ConstructCandidate(request.Context(), snapshot, h.pending.changes)
+	if snapshot.FormatVersion() == 1 && h.pending.diagramSetup == nil {
+		h.stateMutex.Unlock()
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+		return
+	}
+	candidate, err := h.constructCandidate(request.Context(), snapshot, h.pending)
 	h.pending.review = nil
 	h.pending.reviewBlocker = ""
 	if err != nil {

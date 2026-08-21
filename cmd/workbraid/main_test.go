@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v4"
 )
 
 func TestOriginForLoopbackAddress(t *testing.T) {
@@ -138,6 +140,12 @@ func TestRealProcessRestartReopensExactAcceptedComponents(t *testing.T) {
 func processTestAdvanceAcceptedComponents(t *testing.T, storePath, parent string) string {
 	t.Helper()
 	manifest := []byte(processTestGit(t, storePath, "--git-dir", storePath, "show", parent+":architecture.yaml") + "\n")
+	var parsedManifest struct {
+		RootDiagram string `yaml:"root_diagram"`
+	}
+	if err := yaml.Unmarshal(manifest, &parsedManifest); err != nil || parsedManifest.RootDiagram == "" {
+		t.Fatalf("parse bootstrap root Diagram: root=%q err=%v", parsedManifest.RootDiagram, err)
+	}
 	const apiID = "11111111-1111-4111-8111-111111111111"
 	const workerID = "22222222-2222-4222-8222-222222222222"
 	api := []byte("---\nid: \"" + apiID + "\"\nrelationships:\n  - target: \"" + workerID + "\"\n    label: calls\n---\n# API\n\nAPI body\n")
@@ -148,8 +156,11 @@ func processTestAdvanceAcceptedComponents(t *testing.T, storePath, parent string
 	componentTree := processTestGitInput(t, storePath, []byte(
 		"100644 blob "+apiBlob+"\tapi.md\n100755 blob "+workerBlob+"\tworker.md\n",
 	), "--git-dir", storePath, "mktree")
+	rootDiagram := []byte("id: \"" + parsedManifest.RootDiagram + "\"\ntitle: Project\nappearances:\n  - component: \"" + apiID + "\"\n    role: home\n  - component: \"" + workerID + "\"\n    role: home\n")
+	rootDiagramBlob := processTestGitInput(t, storePath, rootDiagram, "--git-dir", storePath, "hash-object", "-w", "--stdin")
+	diagramTree := processTestGitInput(t, storePath, []byte("100644 blob "+rootDiagramBlob+"\troot.yaml\n"), "--git-dir", storePath, "mktree")
 	rootTree := processTestGitInput(t, storePath, []byte(
-		"100644 blob "+manifestBlob+"\tarchitecture.yaml\n040000 tree "+componentTree+"\tcomponents\n",
+		"100644 blob "+manifestBlob+"\tarchitecture.yaml\n040000 tree "+componentTree+"\tcomponents\n040000 tree "+diagramTree+"\tdiagrams\n",
 	), "--git-dir", storePath, "mktree")
 	commit := processTestGitInput(t, storePath, []byte("Add accepted components\n"),
 		"-c", "user.name=WorkBraid Test", "-c", "user.email=test@workbraid.invalid",

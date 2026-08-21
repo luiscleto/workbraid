@@ -54,12 +54,13 @@ type diagramBoundaryResponse struct {
 }
 
 type diagramRelationshipResponse struct {
-	Key               string `json:"key"`
-	SourceNodeKey     string `json:"source_node_key"`
-	TargetNodeKey     string `json:"target_node_key"`
-	SourceComponentID string `json:"source_component_id"`
-	TargetComponentID string `json:"target_component_id"`
-	Label             string `json:"label"`
+	Key                     string `json:"key"`
+	SourceNodeKey           string `json:"source_node_key"`
+	TargetNodeKey           string `json:"target_node_key"`
+	SourceComponentID       string `json:"source_component_id"`
+	TargetComponentID       string `json:"target_component_id"`
+	Label                   string `json:"label"`
+	sourceRelationshipIndex int
 }
 
 type reviewComparisonResponse struct {
@@ -91,14 +92,26 @@ type reviewComponentChangeResponse struct {
 }
 
 type reviewRelationshipChangeResponse struct {
-	Key        string `json:"key"`
-	BeforeKey  string `json:"before_key,omitempty"`
-	SourceID   string `json:"source_id"`
-	TargetID   string `json:"target_id"`
-	Label      string `json:"label"`
-	Status     string `json:"status"`
-	Path       string `json:"path"`
-	Occurrence int    `json:"occurrence"`
+	Key                     string                                        `json:"key"`
+	BeforeKey               string                                        `json:"before_key,omitempty"`
+	SourceID                string                                        `json:"source_id"`
+	TargetID                string                                        `json:"target_id"`
+	SourceTitle             string                                        `json:"source_title"`
+	TargetTitle             string                                        `json:"target_title"`
+	Label                   string                                        `json:"label"`
+	Status                  string                                        `json:"status"`
+	Path                    string                                        `json:"path"`
+	Occurrence              int                                           `json:"occurrence"`
+	DiagramProjections      []reviewRelationshipDiagramProjectionResponse `json:"diagram_projections,omitempty"`
+	sourceRelationshipIndex int
+}
+
+type reviewRelationshipDiagramProjectionResponse struct {
+	Side          string `json:"side"`
+	DiagramID     string `json:"diagram_id"`
+	Key           string `json:"key"`
+	SourceNodeKey string `json:"source_node_key"`
+	TargetNodeKey string `json:"target_node_key"`
 }
 
 type reviewRelationshipFact struct {
@@ -195,6 +208,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 			value.Relationships[itemIndex] = diagramRelationshipResponse{
 				Key: relationship.Key, SourceNodeKey: relationship.SourceNodeKey, TargetNodeKey: relationship.TargetNodeKey,
 				SourceComponentID: relationship.SourceComponentID, TargetComponentID: relationship.TargetComponentID, Label: relationship.Label,
+				sourceRelationshipIndex: relationship.SourceRelationshipIndex,
 			}
 		}
 		result[index] = value
@@ -210,7 +224,33 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 	withChanges := projectSnapshot(candidate, "with")
 	comparison := compareReviewProjections(before.Components, withChanges.Components)
 	comparison.Diagrams, comparison.Appearances = compareDiagramProjections(before.Diagrams, withChanges.Diagrams)
+	attachDiagramRelationshipProjections(comparison.Relationships, before.Diagrams, withChanges.Diagrams)
 	return before, withChanges, comparison
+}
+
+func attachDiagramRelationshipProjections(changes []reviewRelationshipChangeResponse, before, withChanges []diagramResponse) {
+	for index := range changes {
+		diagrams := withChanges
+		side := "with"
+		if changes[index].Status == "removed" {
+			diagrams = before
+			side = "before"
+		}
+		for _, diagram := range diagrams {
+			for _, relationship := range diagram.Relationships {
+				if relationship.SourceComponentID != changes[index].SourceID ||
+					relationship.TargetComponentID != changes[index].TargetID ||
+					relationship.Label != changes[index].Label ||
+					relationship.sourceRelationshipIndex != changes[index].sourceRelationshipIndex {
+					continue
+				}
+				changes[index].DiagramProjections = append(changes[index].DiagramProjections, reviewRelationshipDiagramProjectionResponse{
+					Side: side, DiagramID: diagram.ID, Key: relationship.Key,
+					SourceNodeKey: relationship.SourceNodeKey, TargetNodeKey: relationship.TargetNodeKey,
+				})
+			}
+		}
+	}
 }
 
 func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewDiagramChangeResponse, []reviewAppearanceChangeResponse) {
@@ -294,9 +334,13 @@ func compareReviewProjections(before, withChanges []componentResponse) reviewCom
 	beforeCounts := relationshipFactCounts(before)
 	withCounts := relationshipFactCounts(withChanges)
 	relationshipChanges := make([]reviewRelationshipChangeResponse, 0)
+	withByID := make(map[string]componentResponse, len(withChanges))
+	for _, component := range withChanges {
+		withByID[component.ID] = component
+	}
 	for _, component := range withChanges {
 		seen := make(map[reviewRelationshipFact]int)
-		for _, relationship := range component.Relationships {
+		for relationshipIndex, relationship := range component.Relationships {
 			fact := reviewRelationshipFact{sourceID: component.ID, targetID: relationship.TargetID, label: relationship.Label}
 			seen[fact]++
 			if seen[fact] <= beforeCounts[fact] {
@@ -304,8 +348,9 @@ func compareReviewProjections(before, withChanges []componentResponse) reviewCom
 			}
 			relationshipChanges = append(relationshipChanges, reviewRelationshipChangeResponse{
 				Key: relationship.ProjectionKey, SourceID: component.ID, TargetID: relationship.TargetID,
+				SourceTitle: component.Title, TargetTitle: withByID[relationship.TargetID].Title,
 				Label: relationship.Label, Status: "added", Path: canonicalComponentPath(component.Filename),
-				Occurrence: seen[fact],
+				Occurrence: seen[fact], sourceRelationshipIndex: relationshipIndex,
 			})
 		}
 	}
@@ -320,8 +365,9 @@ func compareReviewProjections(before, withChanges []componentResponse) reviewCom
 			relationshipChanges = append(relationshipChanges, reviewRelationshipChangeResponse{
 				Key:       reviewRelationshipProjectionKey("removed", component.ID, relationshipIndex),
 				BeforeKey: relationship.ProjectionKey, SourceID: component.ID, TargetID: relationship.TargetID,
+				SourceTitle: component.Title, TargetTitle: beforeByID[relationship.TargetID].Title,
 				Label: relationship.Label, Status: "removed", Path: canonicalComponentPath(component.Filename),
-				Occurrence: seen[fact],
+				Occurrence: seen[fact], sourceRelationshipIndex: relationshipIndex,
 			})
 		}
 	}

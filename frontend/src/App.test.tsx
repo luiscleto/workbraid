@@ -10,6 +10,7 @@ const graphHarness = vi.hoisted(() => ({
   }>,
   nodeSelect: undefined as undefined | ((event: { target: { id: () => string } }) => void),
   edgeSelect: undefined as undefined | ((event: { target: { data: () => unknown } }) => void),
+  selectedIDs: [] as string[],
   fail: false,
 }))
 
@@ -25,7 +26,7 @@ vi.mock('cytoscape', () => ({
       destroy: () => undefined,
       fit: () => undefined,
       $: () => ({ unselect: () => undefined }),
-      getElementById: () => ({ select: () => undefined }),
+      getElementById: (id: string) => ({ select: () => graphHarness.selectedIDs.push(id) }),
     }
   },
 }))
@@ -144,6 +145,7 @@ describe('App', () => {
     graphHarness.calls.length = 0
     graphHarness.nodeSelect = undefined
     graphHarness.edgeSelect = undefined
+    graphHarness.selectedIDs.length = 0
     graphHarness.fail = false
   })
 
@@ -678,6 +680,114 @@ describe('App', () => {
     expect(requestBody(fetchMock, 2)).toEqual({
       source_root: '/tmp/example', base_revision: base, candidate_tree: candidate, generation: 1,
     })
+  })
+
+  it('focuses exact v2 internal and boundary relationship edges without classifying relationship-only content changes', async () => {
+    const base = '4'.repeat(40)
+    const candidate = '5'.repeat(40)
+    const root = '11111111-1111-4111-8111-111111111111'
+    const detail = '22222222-2222-4222-8222-222222222222'
+    const gateway = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const records = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const fixture = acceptedV2({ revision: base })
+    const before = {
+      ...fixture,
+      diagrams: fixture.diagrams.map((diagram) => ({
+        ...diagram,
+        relationships: diagram.relationships.map((relationship) => ({
+          ...relationship,
+          key: `diagram:${diagram.id}:${relationship.source_component_id}:${relationship.key.split(':').at(-1)}`,
+        })),
+      })),
+    }
+    const withComponents = before.components.map((component) => component.id === worker ? {
+      ...component,
+      relationships: [{ target_id: records, label: 'writes' }, { target_id: gateway, label: 'reports' }],
+    } : component)
+    const withDiagrams = before.diagrams.map((diagram) => ({
+      ...diagram,
+      relationships: diagram.relationships.map((relationship) => relationship.key === `diagram:${diagram.id}:${worker}:1` ? {
+        ...relationship,
+        target_node_key: diagram.id === detail ? `boundary:${gateway}` : gateway,
+        target_component_id: gateway,
+        label: 'reports',
+      } : relationship),
+    }))
+    const relationshipChanges = [
+      {
+        key: `review:with:${worker}:1`, source_id: worker, target_id: gateway, source_title: 'Worker', target_title: 'Shared',
+        label: 'reports', status: 'added' as const, path: 'components/worker.md', occurrence: 1,
+        diagram_projections: [
+          { side: 'with' as const, diagram_id: root, key: `diagram:${root}:${worker}:1`, source_node_key: worker, target_node_key: gateway },
+          { side: 'with' as const, diagram_id: detail, key: `diagram:${detail}:${worker}:1`, source_node_key: worker, target_node_key: `boundary:${gateway}` },
+        ],
+      },
+      {
+        key: `review:removed:${worker}:1`, before_key: `review:before:${worker}:1`, source_id: worker, target_id: records, source_title: 'Worker', target_title: 'Shared',
+        label: 'writes', status: 'removed' as const, path: 'components/worker.md', occurrence: 2,
+        diagram_projections: [
+          { side: 'before' as const, diagram_id: root, key: `diagram:${root}:${worker}:1`, source_node_key: worker, target_node_key: records },
+          { side: 'before' as const, diagram_id: detail, key: `diagram:${detail}:${worker}:1`, source_node_key: worker, target_node_key: `boundary:${records}` },
+        ],
+      },
+    ]
+    const diff = 'diff --git a/components/worker.md b/components/worker.md\n--- a/components/worker.md\n+++ b/components/worker.md\n@@ -4,2 +4,2 @@\n-    label: writes\n+    label: reports\n'
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [{ ...withComponents.find((component) => component.id === worker), new: false }],
+        review: {
+          diff, base_revision: base, candidate_tree: candidate, generation: 1,
+          before: { ...before, revision: base },
+          with_changes: { ...before, revision: candidate, components: withComponents, diagrams: withDiagrams },
+          comparison: { components: [], relationships: relationshipChanges },
+        },
+      },
+    })
+    mockResponses([reviewed])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+
+    expect(await screen.findByRole('button', { name: 'Added relationship: Worker — reports — Shared' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Removed relationship: Worker — writes — Shared' })).toBeInTheDocument()
+    const rootElements = graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>
+    expect(rootElements.map((element) => element.data.id)).toContain(`diagram:${root}:${worker}:1`)
+    expect(rootElements.find((element) => element.data.id === `diagram:${root}:${worker}:1`)?.data).toMatchObject({
+      reviewStatus: 'added', source: worker, target: gateway, source_title: 'Worker', target_title: 'Shared',
+    })
+    expect(rootElements.find((element) => element.data.id === worker)?.data.reviewStatus).toBe('unchanged')
+
+    await user.click(screen.getByRole('button', { name: 'Added relationship: Worker — reports — Shared' }))
+    expect(graphHarness.selectedIDs).toContain(`diagram:${root}:${worker}:1`)
+    expect(document.activeElement).toHaveAttribute('data-diff-path', 'components/worker.md')
+    expect(screen.getByLabelText('Review context')).toHaveTextContent('WorkerreportsShared')
+
+    await user.click(screen.getByRole('button', { name: 'Removed relationship: Worker — writes — Shared' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    expect(graphHarness.selectedIDs).toContain(`diagram:${root}:${worker}:1`)
+    const removedRootElements = graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>
+    expect(removedRootElements.find((element) => element.data.id === `diagram:${root}:${worker}:1`)?.data).toMatchObject({ reviewStatus: 'removed', source: worker, target: records })
+
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    await user.click(screen.getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    const detailElements = graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>
+    const addedBoundary = detailElements.find((element) => element.data.id === `diagram:${detail}:${worker}:1`)
+    expect(addedBoundary?.data).toMatchObject({ reviewStatus: 'added', source: worker, target: `boundary:${gateway}`, source_id: worker, target_id: gateway })
+    expect(screen.getByRole('button', { name: 'Added relationship: Worker — reports — Shared' })).toBeInTheDocument()
+    expect(screen.queryByText(gateway)).not.toBeInTheDocument()
+
+    await act(async () => {
+      graphHarness.edgeSelect?.({ target: { data: () => addedBoundary?.data } })
+    })
+    expect(graphHarness.selectedIDs).toContain(`diagram:${detail}:${worker}:1`)
+    expect(document.activeElement).toHaveAttribute('data-diff-path', 'components/worker.md')
+    await user.click(screen.getByRole('button', { name: 'Removed relationship: Worker — writes — Shared' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    const removedBoundaryElements = graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>
+    expect(removedBoundaryElements.find((element) => element.data.id === `diagram:${detail}:${worker}:1`)?.data).toMatchObject({ reviewStatus: 'removed', source: worker, target: `boundary:${records}` })
   })
 
   it('turns an invalid quiet pending title into actionable guidance only at review', async () => {

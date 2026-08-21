@@ -764,6 +764,7 @@ export function App() {
       selectComponent(id)
     }
     const selectRelationship = (relationship: ReviewRelationshipSelection) => {
+      if (relationship.review_side && relationship.review_side !== reviewSide) setReviewSide(relationship.review_side)
       setSelectedComponentID(relationship.source_id)
       setReviewFocus({ kind: 'relationship', ...relationship })
     }
@@ -881,6 +882,7 @@ export function App() {
                 reviewSide,
                 reviewComponents: review.comparison.components,
                 reviewRelationships: review.comparison.relationships,
+                reviewDiagramID: activeDiagram?.id,
                 selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
                 onSelectRelationship: selectRelationship,
               } : {})}

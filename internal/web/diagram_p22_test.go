@@ -93,6 +93,111 @@ func TestWritableV2MixedCandidateAssignsNewComponentToServerValidatedActiveDiagr
 	_ = opened
 }
 
+func TestV2ReviewRelationshipDeltasMapToExactInternalAndBoundaryEdges(t *testing.T) {
+	source := createSourceRepository(t)
+	dataDirectory := t.TempDir()
+	db := openWebDatabaseAt(t, filepath.Join(dataDirectory, "workbraid.db"))
+	_, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
+	initialized := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	storeID := associatedStoreID(t, db, filepath.Clean(source))
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	accepted := advanceAcceptedToP21V2(t, storePath, initialized.Revision, storeID, "System")
+	decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+
+	// Retaining one parallel writes fact removes exactly its second occurrence;
+	// reports is one new fact. Both render internally in root and across a
+	// derived boundary in detail, without changing Component content.
+	changed := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: p21WorkerID, RelationshipsChanged: true,
+		Relationships: []relationshipResponse{
+			{TargetID: p21RecordsID, Label: "writes"},
+			{TargetID: p21GatewayID, Label: "reports"},
+		},
+	}))
+	if changed.Changes == nil || !changed.Changes.Valid {
+		t.Fatalf("relationship-only v2 candidate = %+v", changed.Changes)
+	}
+	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
+	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
+		t.Fatalf("relationship-only v2 review = %+v", reviewed.Changes)
+	}
+	review := reviewed.Changes.Review
+	if len(review.Comparison.Components) != 0 || len(review.Comparison.Relationships) != 2 {
+		t.Fatalf("relationship-only review classification = %+v", review.Comparison)
+	}
+
+	var added, removed reviewRelationshipChangeResponse
+	for _, relationship := range review.Comparison.Relationships {
+		switch relationship.Status {
+		case "added":
+			added = relationship
+		case "removed":
+			removed = relationship
+		}
+	}
+	if added.SourceID != p21WorkerID || added.TargetID != p21GatewayID || added.SourceTitle != "Worker" || added.TargetTitle != "Shared" || added.Label != "reports" || added.Occurrence != 1 {
+		t.Fatalf("added fact = %+v", added)
+	}
+	if removed.SourceID != p21WorkerID || removed.TargetID != p21RecordsID || removed.SourceTitle != "Worker" || removed.TargetTitle != "Shared" || removed.Label != "writes" || removed.Occurrence != 2 {
+		t.Fatalf("removed fact = %+v", removed)
+	}
+
+	assertReviewDiagramRelationshipProjection(t, added, "with", p21RootID, p21WorkerID, p21GatewayID, review.WithChanges.Diagrams)
+	assertReviewDiagramRelationshipProjection(t, added, "with", p21DetailID, p21WorkerID, "boundary:"+p21GatewayID, review.WithChanges.Diagrams)
+	assertReviewDiagramRelationshipProjection(t, removed, "before", p21RootID, p21WorkerID, p21RecordsID, review.Before.Diagrams)
+	assertReviewDiagramRelationshipProjection(t, removed, "before", p21DetailID, p21WorkerID, "boundary:"+p21RecordsID, review.Before.Diagrams)
+
+	// Diagram presentation does not participate in the global Relationship
+	// fact comparison. The same facts remain unchanged even if an endpoint's
+	// selected-Diagram node changes between ordinary and boundary presentation.
+	rootWrites := diagramRelationshipByFact(t, diagramResponseByID(t, review.Before.Diagrams, p21RootID), p21WorkerID, p21RecordsID, "writes")
+	detailWrites := diagramRelationshipByFact(t, diagramResponseByID(t, review.Before.Diagrams, p21DetailID), p21WorkerID, p21RecordsID, "writes")
+	if rootWrites.SourceNodeKey != p21WorkerID || rootWrites.TargetNodeKey != p21RecordsID || detailWrites.SourceNodeKey != p21WorkerID || detailWrites.TargetNodeKey != "boundary:"+p21RecordsID {
+		t.Fatalf("same Relationship fact did not project internal/boundary as expected: root=%+v detail=%+v", rootWrites, detailWrites)
+	}
+	compositionOnlyBefore := review.Before.Components
+	compositionOnlyWith := append([]componentResponse(nil), compositionOnlyBefore...)
+	compositionOnly := compareReviewProjections(compositionOnlyBefore, compositionOnlyWith)
+	compositionOnly.Diagrams, compositionOnly.Appearances = compareDiagramProjections(
+		[]diagramResponse{{ID: "composition", Title: "Composition", Appearances: []diagramAppearanceResponse{{ComponentID: p21WorkerID, Role: "home"}, {ComponentID: p21RecordsID, Role: "reference"}}, Relationships: []diagramRelationshipResponse{rootWrites}}},
+		[]diagramResponse{{ID: "composition", Title: "Composition", Appearances: []diagramAppearanceResponse{{ComponentID: p21WorkerID, Role: "home"}}, Boundaries: []diagramBoundaryResponse{{Key: "boundary:" + p21RecordsID, ComponentID: p21RecordsID, Title: "Shared"}}, Relationships: []diagramRelationshipResponse{detailWrites}}},
+	)
+	if len(compositionOnly.Relationships) != 0 || len(compositionOnly.Appearances) == 0 {
+		t.Fatalf("composition-only presentation classification = %+v", compositionOnly)
+	}
+}
+
+func diagramRelationshipByFact(t *testing.T, diagram diagramResponse, sourceID, targetID, label string) diagramRelationshipResponse {
+	t.Helper()
+	for _, relationship := range diagram.Relationships {
+		if relationship.SourceComponentID == sourceID && relationship.TargetComponentID == targetID && relationship.Label == label {
+			return relationship
+		}
+	}
+	t.Fatalf("relationship %s — %s — %s missing from Diagram %+v", sourceID, label, targetID, diagram)
+	return diagramRelationshipResponse{}
+}
+
+func assertReviewDiagramRelationshipProjection(t *testing.T, change reviewRelationshipChangeResponse, side, diagramID, sourceNodeKey, targetNodeKey string, diagrams []diagramResponse) {
+	t.Helper()
+	for _, projection := range change.DiagramProjections {
+		if projection.Side != side || projection.DiagramID != diagramID {
+			continue
+		}
+		if projection.SourceNodeKey != sourceNodeKey || projection.TargetNodeKey != targetNodeKey {
+			t.Fatalf("%s %s projection endpoints = %+v", side, diagramID, projection)
+		}
+		diagram := diagramResponseByID(t, diagrams, diagramID)
+		for _, relationship := range diagram.Relationships {
+			if relationship.Key == projection.Key && relationship.SourceNodeKey == sourceNodeKey && relationship.TargetNodeKey == targetNodeKey && relationship.SourceComponentID == change.SourceID && relationship.TargetComponentID == change.TargetID && relationship.Label == change.Label {
+				return
+			}
+		}
+		t.Fatalf("%s %s projection does not identify an actual rendered edge: %+v diagram=%+v", side, diagramID, projection, diagram.Relationships)
+	}
+	t.Fatalf("%s %s projection missing from %+v", side, diagramID, change.DiagramProjections)
+}
+
 func TestLegacySetUpDiagramsIsOneReviewedV2CandidateAndPreservesFacts(t *testing.T) {
 	source := createSourceRepository(t)
 	dataDirectory := t.TempDir()

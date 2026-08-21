@@ -64,3 +64,52 @@ it('keeps active topology separate from exact added and removed occurrence annot
   expect(edges.find((edge) => edge.data.id === 'review:removed:api:2')?.data.displayLabel).toBe('Removed — reads')
   expect(elements.find((element) => element.data.id === 'api')?.data.displayLabel).toContain('Content changed')
 })
+
+it('maps v2 relationship deltas to exact selected-Diagram internal and boundary edges', () => {
+  const root = 'root'
+  const detail = 'detail'
+  const changes = [
+    {
+      key: 'review:with:worker:1', source_id: 'worker', target_id: 'gateway', source_title: 'Worker', target_title: 'Gateway',
+      label: 'reports', status: 'added' as const, path: 'components/worker.md', occurrence: 1,
+      diagram_projections: [
+        { side: 'with' as const, diagram_id: root, key: 'diagram:root:worker:1', source_node_key: 'worker', target_node_key: 'gateway' },
+        { side: 'with' as const, diagram_id: detail, key: 'diagram:detail:worker:1', source_node_key: 'worker', target_node_key: 'boundary:gateway' },
+      ],
+    },
+    {
+      key: 'review:removed:worker:1', before_key: 'review:before:worker:1', source_id: 'worker', target_id: 'records', source_title: 'Worker', target_title: 'Records',
+      label: 'writes', status: 'removed' as const, path: 'components/worker.md', occurrence: 2,
+      diagram_projections: [
+        { side: 'before' as const, diagram_id: root, key: 'diagram:root:worker:1', source_node_key: 'worker', target_node_key: 'records' },
+        { side: 'before' as const, diagram_id: detail, key: 'diagram:detail:worker:1', source_node_key: 'worker', target_node_key: 'boundary:records' },
+      ],
+    },
+  ]
+  const candidateDetail = projectionElements([
+    { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'boundary:gateway', label: 'reports', projection_key: 'diagram:detail:worker:1' }] },
+    { id: 'boundary:gateway', component_id: 'gateway', title: 'Gateway', node_kind: 'boundary', relationships: [] },
+  ], { reviewSide: 'with', reviewDiagramID: detail, reviewRelationships: changes })
+  const addedBoundary = candidateDetail.find((element) => element.data.id === 'diagram:detail:worker:1')
+  expect(addedBoundary?.data).toMatchObject({ reviewStatus: 'added', source: 'worker', target: 'boundary:gateway', source_id: 'worker', target_id: 'gateway', source_title: 'Worker', target_title: 'Gateway' })
+  expect(candidateDetail.filter((element) => 'source' in element.data)).toHaveLength(1)
+  expect(candidateDetail.find((element) => element.data.id === 'worker')?.data.reviewStatus).toBe('unchanged')
+
+  const baseDetail = projectionElements([
+    { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'boundary:records', label: 'writes', projection_key: 'diagram:detail:worker:1' }] },
+    { id: 'boundary:records', component_id: 'records', title: 'Records', node_kind: 'boundary', relationships: [] },
+  ], { reviewSide: 'before', reviewDiagramID: detail, reviewRelationships: changes })
+  expect(baseDetail.find((element) => element.data.id === 'diagram:detail:worker:1')?.data).toMatchObject({ reviewStatus: 'removed', source: 'worker', target: 'boundary:records', source_id: 'worker', target_id: 'records' })
+
+  const candidateRoot = projectionElements([
+    { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'gateway', label: 'reports', projection_key: 'diagram:root:worker:1' }] },
+    { id: 'gateway', component_id: 'gateway', title: 'Gateway', relationships: [] },
+  ], { reviewSide: 'with', reviewDiagramID: root, reviewRelationships: changes })
+  expect(candidateRoot.find((element) => element.data.id === 'diagram:root:worker:1')?.data).toMatchObject({ reviewStatus: 'added', source: 'worker', target: 'gateway' })
+
+  const baseRoot = projectionElements([
+    { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'records', label: 'writes', projection_key: 'diagram:root:worker:1' }] },
+    { id: 'records', component_id: 'records', title: 'Records', relationships: [] },
+  ], { reviewSide: 'before', reviewDiagramID: root, reviewRelationships: changes })
+  expect(baseRoot.find((element) => element.data.id === 'diagram:root:worker:1')?.data).toMatchObject({ reviewStatus: 'removed', source: 'worker', target: 'records' })
+})

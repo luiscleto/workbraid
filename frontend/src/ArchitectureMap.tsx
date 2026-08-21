@@ -28,15 +28,27 @@ export type ReviewMapRelationshipChange = {
   before_key?: string
   source_id: string
   target_id: string
+  source_title?: string
+  target_title?: string
   label: string
   status: 'added' | 'removed'
   path: string
   occurrence: number
+  diagram_projections?: ReviewDiagramRelationshipProjection[]
+}
+
+type ReviewDiagramRelationshipProjection = {
+  side: 'with' | 'before'
+  diagram_id: string
+  key: string
+  source_node_key: string
+  target_node_key: string
 }
 
 export type ReviewRelationshipSelection = ReviewMapRelationshipChange & {
   source_title: string
   target_title: string
+  review_side?: 'with' | 'before'
 }
 
 type ArchitectureMapProps = {
@@ -49,11 +61,12 @@ type ArchitectureMapProps = {
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
   reviewRelationships?: ReviewMapRelationshipChange[]
+  reviewDiagramID?: string
   selectedRelationshipKey?: string
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID'>
 
 export function ArchitectureMap({
   revision,
@@ -65,6 +78,7 @@ export function ArchitectureMap({
   reviewSide,
   reviewComponents = [],
   reviewRelationships = [],
+  reviewDiagramID,
   selectedRelationshipKey,
   onSelectRelationship,
 }: ArchitectureMapProps) {
@@ -82,6 +96,7 @@ export function ArchitectureMap({
     reviewSide,
     reviewComponents,
     reviewRelationships,
+    reviewDiagramID,
   }), [revision, reviewSide, layoutKey])
 
   useEffect(() => {
@@ -115,6 +130,7 @@ export function ArchitectureMap({
             status: data.status,
             path: data.path,
             occurrence: data.occurrence,
+            review_side: data.review_side,
             source_title: data.source_title,
             target_title: data.target_title,
           })
@@ -145,6 +161,7 @@ export function ArchitectureMap({
       components={components}
       componentChanges={reviewComponents}
       relationshipChanges={reviewRelationships}
+      reviewDiagramID={reviewDiagramID}
       onSelectComponent={onSelect}
       onSelectRelationship={onSelectRelationship}
     />
@@ -178,6 +195,7 @@ function ReviewChangeControls({
   components,
   componentChanges,
   relationshipChanges,
+  reviewDiagramID,
   onSelectComponent,
   onSelectRelationship,
 }: {
@@ -185,12 +203,17 @@ function ReviewChangeControls({
   components: MapComponent[]
   componentChanges: ReviewMapComponentChange[]
   relationshipChanges: ReviewMapRelationshipChange[]
+  reviewDiagramID?: string
   onSelectComponent: (id: string) => void
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
 }) {
   const titles = new Map(components.map((component) => [component.id, component.title]))
   const visibleComponentChanges = componentChanges.filter((change) => titles.has(change.component_id))
-  const visibleRelationshipChanges = relationshipChanges.filter((change) => side === 'with' || change.status === 'removed')
+  const visibleRelationshipChanges = relationshipChanges.filter((change) => {
+    if (!reviewDiagramID) return side === 'with' || change.status === 'removed'
+    if (change.diagram_projections?.some((projection) => projection.side === side && projection.diagram_id === reviewDiagramID)) return true
+    return side === 'with' && change.status === 'removed' && change.diagram_projections?.some((projection) => projection.side === 'before' && projection.diagram_id === reviewDiagramID)
+  })
   const facts = new Map<string, number>()
   for (const relationship of visibleRelationshipChanges) {
     const fact = `${relationship.status}\u0000${relationship.source_id}\u0000${relationship.target_id}\u0000${relationship.label}`
@@ -207,11 +230,22 @@ function ReviewChangeControls({
           return <li key={change.component_id}><button type="button" onClick={() => onSelectComponent(change.component_id)}>{componentStatusLabel(change.status)}: {title}</button></li>
         })}
         {visibleRelationshipChanges.map((change) => {
-          const sourceTitle = titles.get(change.source_id) ?? change.source_id
-          const targetTitle = titles.get(change.target_id) ?? change.target_id
+          const sourceTitle = change.source_title ?? titles.get(change.source_id) ?? 'Component'
+          const targetTitle = change.target_title ?? titles.get(change.target_id) ?? 'Component'
           const fact = `${change.status}\u0000${change.source_id}\u0000${change.target_id}\u0000${change.label}`
           const duplicateContext = (facts.get(fact) ?? 0) > 1 ? `, occurrence ${change.occurrence}` : ''
-          const selection = { ...change, ...(side === 'before' && change.before_key ? { key: change.before_key } : {}), source_title: sourceTitle, target_title: targetTitle }
+          const diagramProjection = reviewDiagramID
+            ? change.diagram_projections?.find((projection) => projection.side === side && projection.diagram_id === reviewDiagramID)
+              ?? (side === 'with' && change.status === 'removed'
+                ? change.diagram_projections?.find((projection) => projection.side === 'before' && projection.diagram_id === reviewDiagramID)
+                : undefined)
+            : undefined
+          const selection = {
+            ...change,
+            ...(diagramProjection ? { key: diagramProjection.key, review_side: diagramProjection.side } : side === 'before' && change.before_key ? { key: change.before_key } : {}),
+            source_title: sourceTitle,
+            target_title: targetTitle,
+          }
           return <li key={change.key}><button type="button" onClick={() => onSelectRelationship?.(selection)}>{relationshipStatusLabel(change.status)}{duplicateContext}: {sourceTitle} — {change.label} — {targetTitle}</button></li>
         })}
       </ul>
@@ -222,10 +256,15 @@ function ReviewChangeControls({
 export function projectionElements(components: MapComponent[], options: ProjectionOptions = {}): ElementDefinition[] {
   const positions = deterministicPositions(options.layoutComponentIDs ?? components.map((component) => component.id))
   const componentStatus = new Map(options.reviewComponents?.map((change) => [change.component_id, change.status]))
-  const relationshipStatus = new Map<string, ReviewMapRelationshipChange>()
+  const relationshipStatus = new Map<string, { change: ReviewMapRelationshipChange; projection?: ReviewDiagramRelationshipProjection }>()
   for (const change of options.reviewRelationships ?? []) {
-    if (change.status === 'added') relationshipStatus.set(change.key, change)
-    if (change.status === 'removed' && change.before_key) relationshipStatus.set(change.before_key, change)
+    if (options.reviewDiagramID && options.reviewSide) {
+      const projection = change.diagram_projections?.find((candidate) => candidate.side === options.reviewSide && candidate.diagram_id === options.reviewDiagramID)
+      if (projection) relationshipStatus.set(projection.key, { change, projection })
+      continue
+    }
+    if (change.status === 'added') relationshipStatus.set(change.key, { change })
+    if (change.status === 'removed' && change.before_key) relationshipStatus.set(change.before_key, { change })
   }
   const titleByID = new Map(components.map((component) => [component.id, component.title]))
   const nodes: ElementDefinition[] = components.map((component) => {
@@ -258,18 +297,20 @@ export function projectionElements(components: MapComponent[], options: Projecti
       seen.set(pair, index + 1)
       const count = grouped.get(pair) ?? 1
       const key = relationship.projection_key ?? `projection:${source.id}:${relationship.target_id}:${index}`
-      const change = relationshipStatus.get(key)
+      const relationshipChange = relationshipStatus.get(key)
+      const change = relationshipChange?.change
+      const reviewProjection = relationshipChange?.projection
       const status = change?.status ?? (options.reviewSide ? 'unchanged' : '')
       edges.push({
         data: {
           id: key,
           key,
-          source: source.id,
-          target: relationship.target_id,
-          source_id: source.id,
-          target_id: relationship.target_id,
-          source_title: source.title,
-          target_title: titleByID.get(relationship.target_id) ?? relationship.target_id,
+          source: reviewProjection?.source_node_key ?? source.id,
+          target: reviewProjection?.target_node_key ?? relationship.target_id,
+          source_id: change?.source_id ?? source.component_id ?? source.id,
+          target_id: change?.target_id ?? components.find((component) => component.id === relationship.target_id)?.component_id ?? relationship.target_id,
+          source_title: change?.source_title ?? source.title,
+          target_title: change?.target_title ?? titleByID.get(relationship.target_id) ?? 'Component',
           label: relationship.label,
           displayLabel: status === 'added' ? `Added — ${relationship.label}` : status === 'removed' ? `Removed — ${relationship.label}` : relationship.label,
           distance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
@@ -278,11 +319,12 @@ export function projectionElements(components: MapComponent[], options: Projecti
           path: change?.path,
           occurrence: change?.occurrence,
           before_key: change?.before_key,
+          review_side: options.reviewSide,
         },
       })
     }
   }
-  if (options.reviewSide === 'with') {
+  if (options.reviewSide === 'with' && !options.reviewDiagramID) {
     const removed = (options.reviewRelationships ?? []).filter((change) => change.status === 'removed')
     const removedGrouped = new Map<string, number>()
     for (const change of removed) {

@@ -139,12 +139,15 @@ type DiagramBoundary struct {
 }
 
 type DiagramRelationship struct {
-	Key               string
-	SourceNodeKey     string
-	TargetNodeKey     string
-	SourceComponentID string
-	TargetComponentID string
-	Label             string
+	Key string
+	// SourceRelationshipIndex is projection-only correspondence to the
+	// source-owned canonical declaration. It is not Relationship identity.
+	SourceRelationshipIndex int
+	SourceNodeKey           string
+	TargetNodeKey           string
+	SourceComponentID       string
+	TargetComponentID       string
+	Label                   string
 }
 
 func (snapshot Snapshot) RootDiagramID() string {
@@ -228,8 +231,9 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 					targetKey = ensureDiagramBoundary(&projection, boundaries, relationship.target, componentsByID, componentTitleCounts, homeByComponent, diagramsByID)
 				}
 				projection.Relationships = append(projection.Relationships, DiagramRelationship{
-					Key:           fmt.Sprintf("diagram:%s:%s:%d", current.id, source.id, relationshipIndex),
-					SourceNodeKey: sourceKey, TargetNodeKey: targetKey,
+					Key:                     fmt.Sprintf("diagram:%s:%s:%d", current.id, source.id, relationshipIndex),
+					SourceRelationshipIndex: relationshipIndex,
+					SourceNodeKey:           sourceKey, TargetNodeKey: targetKey,
 					SourceComponentID: source.id.String(), TargetComponentID: relationship.target.String(), Label: relationship.label,
 				})
 			}

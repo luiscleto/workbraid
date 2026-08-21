@@ -854,6 +854,12 @@ describe('App', () => {
     const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
 
+    const boundaryDock = screen.getByRole('navigation', { name: 'Components that live elsewhere' })
+    const visualChanges = screen.getByLabelText('Visual changes')
+    expect(boundaryDock).toHaveClass('diagram-boundary-dock')
+    expect(visualChanges).toHaveClass('map-review-controls')
+    expect(boundaryDock.closest('.architecture-workbench')).toHaveClass('reviewing')
+
     const addedEdge = (graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>).find((element) => element.data.id === `diagram:${detail}:gateway:0`)
     expect(addedEdge?.data).toMatchObject({
       reviewStatus: 'added', source: `boundary:${gateway}`, target: worker, source_title: 'Shared', target_title: 'Worker',

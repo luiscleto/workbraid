@@ -1091,6 +1091,10 @@ dd {
   text-align: left;
 }
 
+.architecture-workbench.reviewing .diagram-boundary-dock {
+  bottom: calc(14px + 150px + 12px);
+}
+
 .map-review-key {
   display: flex;
   flex-wrap: wrap;
@@ -1677,5 +1681,9 @@ dd {
 
   .map-review-controls {
     max-height: 130px;
+  }
+
+  .architecture-workbench.reviewing .diagram-boundary-dock {
+    bottom: calc(14px + 130px + 12px);
   }
 }

@@ -317,6 +317,7 @@ export function App() {
   const [reviewSide, setReviewSide] = useState<ReviewSide>('with')
   const [reviewFocus, setReviewFocus] = useState<ReviewFocus | null>(null)
   const [reviewSelectionCleared, setReviewSelectionCleared] = useState(false)
+  const [reviewVisible, setReviewVisible] = useState(false)
 
   const enterWorkspace = useCallback((result: ArchitectureResult, task?: WorkspaceTask) => {
     setState({ kind: 'ready', value: result })
@@ -350,11 +351,13 @@ export function App() {
     if (!currentReview) {
       setReviewFocus(null)
       setReviewSelectionCleared(false)
+      setReviewVisible(false)
       return
     }
     setReviewSide('with')
     setReviewFocus(null)
     setReviewSelectionCleared(false)
+    setReviewVisible(true)
     const initialDiagram = currentReview.with_changes.format_version === 2
       ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
         ?? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
@@ -370,9 +373,10 @@ export function App() {
 
   useEffect(() => {
     if (state.kind !== 'ready') return
-    const review = state.value.stale || state.value.changes?.stale || state.value.changes?.legacy_read_only
+    const heldReview = state.value.stale || state.value.changes?.stale || state.value.changes?.legacy_read_only
       ? undefined
       : state.value.changes?.review
+    const review = reviewVisible ? heldReview : undefined
     if (review) {
       const projection = reviewSide === 'with' ? review.with_changes : review.before
       if (reviewSelectionCleared) {
@@ -399,7 +403,7 @@ export function App() {
     if (state.value.format_version === 2) {
       const diagram = state.value.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
         ?? state.value.diagrams?.find((candidate) => candidate.id === state.value.root_diagram_id)
-      if (diagram && diagram.id !== selectedDiagramID) {
+      if (diagram && diagram.id !== selectedDiagramID && !(heldReview && !reviewVisible)) {
         setSelectedDiagramID(diagram.id)
       }
       if (workspaceTask === 'empty') return
@@ -410,7 +414,7 @@ export function App() {
     if (workspaceTask === 'empty' && state.value.components?.length) return
     if (selectedComponentID && state.value.components?.some((component) => component.id === selectedComponentID)) return
     setSelectedComponentID(state.value.components?.[0]?.id)
-  }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSelectionCleared, reviewSide, workspaceTask])
+  }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSelectionCleared, reviewSide, reviewVisible, workspaceTask])
 
   async function inspectProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -628,6 +632,7 @@ export function App() {
       return
     }
     if (intent.kind === 'changes') {
+      if (currentReview) setReviewVisible(false)
       setWorkspaceTask('changes')
       return
     }
@@ -726,9 +731,7 @@ export function App() {
 
   if (state.kind === 'ready') {
     const result = state.value
-    const review = result.stale || result.changes?.stale || result.changes?.legacy_read_only
-      ? undefined
-      : result.changes?.review
+    const review = reviewVisible ? currentReview : undefined
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
     const diagramProjection = activeProjection ?? result
     const activeDiagram = diagramProjection.format_version === 2
@@ -867,11 +870,12 @@ export function App() {
                 <ul className="diagram-tree">
                   {diagramProjection.diagrams?.map((diagram) => {
                     const reviewStatus = diagramReviewStatus.get(diagram.id)
+                    const reviewClass = reviewStatus === 'Added' ? 'review-added' : reviewStatus ? 'review-content-changed' : ''
                     return (
                       <li key={diagram.id}>
                         <button
                           type="button"
-                          className={diagram.id === activeDiagram?.id ? 'selected' : undefined}
+                          className={[diagram.id === activeDiagram?.id ? 'selected' : '', reviewClass].filter(Boolean).join(' ') || undefined}
                           style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
                           aria-label={[diagram.title, diagram.context, reviewStatus].filter(Boolean).join(', ')}
                           aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
@@ -981,6 +985,10 @@ export function App() {
                 selectedReviewComponent={selected}
                 reviewFocus={reviewFocus}
                 onReviewSide={switchReviewSide}
+                onBackToChanges={() => {
+                  setReviewVisible(false)
+                  setWorkspaceTask('changes')
+                }}
                 onClearReviewFocus={() => {
                   setReviewSelectionCleared(true)
                   setSelectedComponentID(undefined)
@@ -1018,6 +1026,7 @@ export function App() {
                 busy={architectureBusy}
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
+                onReturnToReview={currentReview && !acceptanceUnknown ? () => setReviewVisible(true) : undefined}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale || result.changes?.legacy_read_only)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
@@ -1282,6 +1291,8 @@ function ChangesTask({
   selectedReviewComponent,
   reviewFocus,
   onReviewSide,
+  onBackToChanges,
+  onReturnToReview,
   onClearReviewFocus,
   onFocusDiagram,
   onEdit,
@@ -1300,6 +1311,8 @@ function ChangesTask({
   selectedReviewComponent?: AuthoringComponent
   reviewFocus?: ReviewFocus | null
   onReviewSide?: (side: ReviewSide) => void
+  onBackToChanges?: () => void
+  onReturnToReview?: () => void
   onClearReviewFocus?: () => void
   onFocusDiagram?: (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => void
   onEdit: (component: PendingComponent) => void
@@ -1329,6 +1342,7 @@ function ChangesTask({
             <button type="button" aria-pressed={reviewSide === 'with'} onClick={() => onReviewSide('with')}>With changes</button>
             <button type="button" aria-pressed={reviewSide === 'before'} onClick={() => onReviewSide('before')}>Before changes</button>
           </div>
+          {onBackToChanges && <button className="text-action" type="button" onClick={onBackToChanges}>Back to changes</button>}
         </div>
         <p className="review-introduction">Inspect the visual change and complete exact diff before updating the architecture.</p>
         {(changes.review.comparison.diagrams?.length || changes.review.comparison.appearances?.length) ? (
@@ -1406,8 +1420,11 @@ function ChangesTask({
         </div>
       )}
       {result.action_error && !changes.review_blocker && <p className="review-error" role="alert">{messageForArchitectureAction(result.action_error)}</p>}
-      {(!changes.review || readOnly) && !acceptanceUnknown && (
+      {(!changes.review || readOnly || onReturnToReview) && !acceptanceUnknown && (
         <div className="change-actions">
+          {!readOnly && changes.review && onReturnToReview && (
+            <button className="inline-action" type="button" onClick={onReturnToReview}>Return to review</button>
+          )}
           {!result.stale && !changes.stale && !changes.legacy_read_only && !changes.review && (
             <button className="inline-action" type="button" disabled={busy} onClick={onReview}>{busy ? 'Preparing…' : 'Review changes'}</button>
           )}

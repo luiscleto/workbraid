@@ -1048,9 +1048,14 @@ describe('App', () => {
 
     const changedDetail = await within(navigator).findByRole('button', { name: 'Detail, Inside Shared — gateway.md, Changed' })
     expect(changedDetail).toHaveAttribute('aria-current', 'page')
-    expect(within(navigator).getByRole('button', { name: 'System' })).not.toHaveTextContent(/Added|Changed/)
-    expect(within(navigator).getByRole('button', { name: 'Records internals, Inside Shared — records.md, Title changed' })).toBeInTheDocument()
-    expect(within(navigator).getByRole('button', { name: 'Operations, Inside Worker, Added' })).toBeInTheDocument()
+    expect(changedDetail).toHaveClass('selected', 'review-content-changed')
+    const unchangedRoot = within(navigator).getByRole('button', { name: 'System' })
+    const titleChangedDiagram = within(navigator).getByRole('button', { name: 'Records internals, Inside Shared — records.md, Title changed' })
+    const addedDiagram = within(navigator).getByRole('button', { name: 'Operations, Inside Worker, Added' })
+    expect(unchangedRoot).not.toHaveTextContent(/Added|Changed/)
+    expect(unchangedRoot).not.toHaveClass('review-added', 'review-content-changed')
+    expect(titleChangedDiagram).toHaveClass('review-content-changed')
+    expect(addedDiagram).toHaveClass('review-added')
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
     expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
 
@@ -1069,6 +1074,94 @@ describe('App', () => {
     expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigator).queryByRole('button', { name: /Operations/ })).not.toBeInTheDocument()
     expect(screen.getByText('That diagram exists only with the changes. Before changes shows the earlier architecture map.')).toBeInTheDocument()
+  })
+
+  it('moves between one held review and accepted-state Changes without rebuilding the review', async () => {
+    const base = 'e'.repeat(40)
+    const candidate = 'f'.repeat(40)
+    const root = '11111111-1111-4111-8111-111111111111'
+    const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const queue = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const before = acceptedV2({ revision: base })
+    const workerChange = { ...before.components.find((component) => component.id === worker)!, description: 'Worker candidate documentation.\n', new: false }
+    const queueChange = { id: queue, title: 'Queue', filename: 'queue.md', description: 'Candidate-only queue.\n', relationships: [], new: true }
+    const withComponents = [
+      ...before.components.map((component) => component.id === worker ? { ...component, description: workerChange.description } : component),
+      queueChange,
+    ]
+    const withDiagrams = before.diagrams.map((diagram) => diagram.id === root ? {
+      ...diagram,
+      appearances: [...diagram.appearances, { component_id: queue, role: 'home' }],
+    } : diagram)
+    const diff = 'diff --git a/components/worker.md b/components/worker.md\n-Worker documentation.\n+Worker candidate documentation.\ndiff --git a/components/queue.md b/components/queue.md\n+Candidate-only queue.\n'
+    const reviewed = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [workerChange, queueChange],
+        review: {
+          diff, base_revision: base, candidate_tree: candidate, generation: 4,
+          before,
+          with_changes: { ...before, revision: candidate, components: withComponents, diagrams: withDiagrams },
+          comparison: {
+            components: [
+              { component_id: worker, status: 'content_changed', path: 'components/worker.md' },
+              { component_id: queue, status: 'added', path: 'components/queue.md' },
+            ],
+            relationships: [],
+            appearances: [{ diagram_id: root, component_id: queue, role: 'home', status: 'added', path: 'diagrams/root.yaml' }],
+          },
+        },
+      },
+    })
+    const pendingAfterMutation = acceptedV2({
+      revision: base,
+      changes: {
+        valid: true,
+        components: [{ ...workerChange, description: 'Worker corrected after review.\n' }, queueChange],
+      },
+    })
+    const fetchMock = mockResponses([reviewed, pendingAfterMutation])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    const reviewDetails = screen.getByText('Review details').closest('details') as HTMLElement
+    expect(within(reviewDetails).getByText(base)).toBeInTheDocument()
+    expect(within(reviewDetails).getByText(candidate)).toBeInTheDocument()
+    expect(within(reviewDetails).getByText('4')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to changes' }))
+    const changesSection = await screen.findByRole('heading', { name: 'Changes in progress' }).then((heading) => heading.closest('section') as HTMLElement)
+    expect(within(changesSection).getByRole('button', { name: 'Return to review' })).toBeInTheDocument()
+    expect(within(changesSection).getAllByRole('button', { name: 'Edit' })).toHaveLength(2)
+    expect(within(navigator).queryByRole('button', { name: 'Queue' })).not.toBeInTheDocument()
+    const acceptedMapElements = graphHarness.calls.at(-1)?.elements as Array<{ data: { id?: string } }>
+    expect(acceptedMapElements.some((element) => element.data.id === queue)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await user.click(within(changesSection).getByRole('button', { name: 'Return to review' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    const returnedDetails = screen.getByText('Review details').closest('details') as HTMLElement
+    expect(within(returnedDetails).getByText(base)).toBeInTheDocument()
+    expect(within(returnedDetails).getByText(candidate)).toBeInTheDocument()
+    expect(within(returnedDetails).getByText('4')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: 'Back to changes' }))
+    const returnedChanges = screen.getByRole('heading', { name: 'Changes in progress' }).closest('section') as HTMLElement
+    const workerRow = within(returnedChanges).getByText('Worker', { exact: true }).closest('li') as HTMLElement
+    await user.click(within(workerRow).getByRole('button', { name: 'Edit' }))
+    await user.clear(screen.getByLabelText('Description'))
+    await user.type(screen.getByLabelText('Description'), 'Worker corrected after review.\n')
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(await screen.findByRole('button', { name: 'Review changes' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Return to review' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/components/edit')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it.each([

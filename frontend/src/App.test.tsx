@@ -904,6 +904,35 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: 'Keep change' })).not.toBeInTheDocument()
   })
 
+  it('treats legacy pending evidence as inspect and whole-set Discard only even without a stale response flag', async () => {
+    const current = {
+      source_root: '/tmp/example', project_name: 'example', state: 'ready', revision: '1'.repeat(40), format_version: 1,
+      component_count: 1, component_titles: ['Legacy accepted'],
+      components: [{ id: 'accepted', title: 'Legacy accepted', filename: 'accepted.md', description: 'Accepted.\n', relationships: [] }],
+      changes: {
+        legacy_read_only: true, valid: false, validation_code: 'relationship_label_required', validation_item: 'pending',
+        validation_relationship_position: 1, validation_relationship_field: 'label', review_blocker: 'relationship_label_required',
+        components: [{ id: 'pending', title: 'Pending evidence', description: 'Earlier pending body.\n', new: false, relationships: [{ target_id: 'target', label: '' }] }],
+        relationship_targets: [{ id: 'target', title: 'Earlier target' }],
+      },
+    }
+    mockResponses([current])
+    render(<App />)
+    await submitPath('/tmp/example')
+
+    expect(await screen.findByText('These changes started from an older architecture and are read-only.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discard changes' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /fix relationship|review changes|update architecture/i })).not.toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'View' }))
+    expect(screen.getByRole('heading', { name: 'Change details' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Title')).toHaveAttribute('readonly')
+    expect(screen.getByLabelText('Description')).toHaveAttribute('readonly')
+    expect(screen.getByLabelText('Target')).toBeDisabled()
+    expect(screen.getByLabelText('Label')).toHaveAttribute('readonly')
+    expect(screen.queryByRole('button', { name: /keep change|add relationship|remove relationship/i })).not.toBeInTheDocument()
+  })
+
   it.each([
     ['refresh_invalid', 'The current architecture could not be read. This earlier view is read-only.'],
     ['refresh_unsupported', 'The current architecture uses features this version of WorkBraid cannot open.'],

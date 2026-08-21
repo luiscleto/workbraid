@@ -48,14 +48,14 @@ func TestPendingComponentAuthoringUsesOneBackendCandidateAndLeavesAcceptedUnchan
 	reachableBefore := runGit(t, dataDirectory, "--git-dir", storePath, "rev-list", "--objects", "--all")
 
 	edited := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: apiID, Title: "  Gateway  ", Description: "\nChanged API body\n", TitleChanged: true, DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: apiID, Title: "  Gateway  ", Description: "\nChanged API body\n", TitleChanged: true, DescriptionChanged: true,
 	})
 	editedBody := decodeArchitectureResponse(t, edited)
 	if edited.Code != http.StatusOK || editedBody.Changes == nil || !editedBody.Changes.Valid || len(editedBody.Changes.Components) != 1 || editedBody.Changes.Components[0].Title != "Gateway" {
 		t.Fatalf("edit response status=%d body=%s", edited.Code, edited.Body.String())
 	}
 	added := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "  API  ", Description: "\nNew API body",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, Title: "  API  ", Description: "\nNew API body",
 	})
 	addedBody := decodeArchitectureResponse(t, added)
 	if added.Code != http.StatusOK || addedBody.Changes == nil || !addedBody.Changes.Valid || len(addedBody.Changes.Components) != 2 {
@@ -78,7 +78,7 @@ func TestPendingComponentAuthoringUsesOneBackendCandidateAndLeavesAcceptedUnchan
 	}
 
 	invalid := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: newID, Title: "   ", TitleChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: newID, Title: "   ", TitleChanged: true,
 	})
 	invalidBody := decodeArchitectureResponse(t, invalid)
 	if invalid.Code != http.StatusOK || invalidBody.Changes == nil || invalidBody.Changes.Valid || invalidBody.Changes.ValidationCode != "title_required" || invalidBody.Changes.ValidationItem != newID || len(invalidBody.Changes.Components) != 2 {
@@ -97,7 +97,7 @@ func TestPendingComponentAuthoringUsesOneBackendCandidateAndLeavesAcceptedUnchan
 		t.Fatalf("same-process reload lost pending state: %+v", reloaded.Changes)
 	}
 	corrected := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: newID, Title: "  API helper  ", TitleChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: newID, Title: "  API helper  ", TitleChanged: true,
 	})
 	correctedBody := decodeArchitectureResponse(t, corrected)
 	if correctedBody.Changes == nil || !correctedBody.Changes.Valid || len(correctedBody.Changes.Components) != 2 {
@@ -170,7 +170,7 @@ func TestPendingFieldIntentPreservesUntouchedCanonicalSections(t *testing.T) {
 	}
 
 	titleEdited := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: titleOnlyID, Title: "Renamed", Description: "\nExact body  \nSecond exact\n", TitleChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: titleOnlyID, Title: "Renamed", Description: "\nExact body  \nSecond exact\n", TitleChanged: true,
 	})
 	if body := decodeArchitectureResponse(t, titleEdited); titleEdited.Code != http.StatusOK || body.Changes == nil || !body.Changes.Valid {
 		t.Fatalf("title-only edit status=%d body=%s", titleEdited.Code, titleEdited.Body.String())
@@ -182,7 +182,7 @@ func TestPendingFieldIntentPreservesUntouchedCanonicalSections(t *testing.T) {
 	}
 
 	descriptionEdited := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: descriptionOnlyID, Title: "First line second line", Description: "Changed body\n", DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: descriptionOnlyID, Title: "First line second line", Description: "Changed body\n", DescriptionChanged: true,
 	})
 	if body := decodeArchitectureResponse(t, descriptionEdited); descriptionEdited.Code != http.StatusOK || body.Changes == nil || !body.Changes.Valid {
 		t.Fatalf("description-only edit status=%d body=%s", descriptionEdited.Code, descriptionEdited.Body.String())
@@ -214,8 +214,8 @@ func TestConcurrentComponentMutationsAccumulateWithoutLostChanges(t *testing.T) 
 	}
 
 	requests := []componentMutationRequest{
-		{SourceRoot: filepath.Clean(source), ComponentID: firstID, Title: "First changed", TitleChanged: true},
-		{SourceRoot: filepath.Clean(source), ComponentID: secondID, Title: "Second changed", TitleChanged: true},
+		{SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: firstID, Title: "First changed", TitleChanged: true},
+		{SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: secondID, Title: "Second changed", TitleChanged: true},
 	}
 	responses := make([]*httptest.ResponseRecorder, len(requests))
 	var wait sync.WaitGroup
@@ -252,8 +252,8 @@ func TestComponentMutationsEnforceOriginAndLoadedProject(t *testing.T) {
 	db := openWebTestDatabase(t)
 	source := createSourceRepository(t)
 	handler := NewHandler(db, testOrigin, t.TempDir(), t.TempDir())
-	decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
-	payload := componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Worker", Description: "Body"}
+	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	payload := componentMutationRequest{SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Worker", Description: "Body"}
 
 	wrongOrigin := postComponentMutation(t, handler, "http://127.0.0.1:9999", "/api/architecture/components/add", payload)
 	if wrongOrigin.Code != http.StatusForbidden || wrongOrigin.Header().Get("Access-Control-Allow-Origin") != "" || !strings.Contains(wrongOrigin.Body.String(), errorOriginMismatch) {

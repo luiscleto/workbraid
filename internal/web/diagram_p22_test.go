@@ -1,7 +1,9 @@
 package web
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,6 +193,148 @@ func TestLegacyNonSetupPendingEvidenceIsReadOnlyDiscardOnly(t *testing.T) {
 	if setup.Changes == nil || !setup.Changes.DiagramSetup {
 		t.Fatalf("setup unavailable after discard: %+v", setup)
 	}
+}
+
+func TestSetUpDiagramsSerializesWithExistingWorkspaceTransitions(t *testing.T) {
+	t.Run("late legacy mutation", func(t *testing.T) {
+		state, handler, source, _, v1 := newLegacySetupFixture(t)
+		setup, other := raceSetupAction(t, handler, source, func() *httptest.ResponseRecorder {
+			return postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
+				SourceRoot: filepath.Clean(source), ExpectedRevision: v1, Title: "Legacy write must not exist",
+			})
+		})
+		if setup.Code != http.StatusOK || other.Code != http.StatusConflict || state.pending == nil || state.pending.diagramSetup == nil || len(state.pending.changes) != 0 {
+			t.Fatalf("setup/mutation race mixed state: setup=%d mutation=%d pending=%+v", setup.Code, other.Code, state.pending)
+		}
+	})
+
+	t.Run("project switch", func(t *testing.T) {
+		state, handler, source, dataDirectory, _ := newLegacySetupFixture(t)
+		otherSource := createSourceRepository(t)
+		setupOther := NewHandler(state.db, testOrigin, t.TempDir(), dataDirectory)
+		decodeArchitectureResponse(t, postInitializeProject(t, setupOther, testOrigin, otherSource))
+		setup, other := raceSetupAction(t, handler, source, func() *httptest.ResponseRecorder {
+			return postOpenProject(t, handler, testOrigin, otherSource)
+		})
+		setupWon := setup.Code == http.StatusOK && other.Code == http.StatusConflict
+		switchWon := setup.Code == http.StatusConflict && other.Code == http.StatusOK
+		if !setupWon && !switchWon {
+			t.Fatalf("setup/project race outcomes: setup=%d project=%d", setup.Code, other.Code)
+		}
+		if setupWon && (state.loadedProject == nil || state.loadedProject.sourceRoot != filepath.Clean(source) || state.pending == nil || state.pending.diagramSetup == nil) {
+			t.Fatalf("setup-first project race mixed state: project=%+v pending=%+v", state.loadedProject, state.pending)
+		}
+		if switchWon && (state.loadedProject == nil || state.loadedProject.sourceRoot != filepath.Clean(otherSource) || state.pending != nil) {
+			t.Fatalf("switch-first setup race mixed state: project=%+v pending=%+v", state.loadedProject, state.pending)
+		}
+	})
+
+	t.Run("Refresh", func(t *testing.T) {
+		state, handler, source, dataDirectory, v1 := newLegacySetupFixture(t)
+		storeID := associatedStoreID(t, state.db, filepath.Clean(source))
+		storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+		externalV2 := advanceAcceptedToP21V2(t, storePath, v1, storeID, "Externally current")
+		setup, refresh := raceSetupAction(t, handler, source, func() *httptest.ResponseRecorder {
+			return postArchitectureAction(t, handler, testOrigin, "/api/architecture/refresh", source)
+		})
+		if refresh.Code != http.StatusOK || (setup.Code != http.StatusOK && setup.Code != http.StatusConflict) || state.loadedSnapshot == nil || state.loadedSnapshot.Revision() != externalV2 || state.loadedSnapshot.FormatVersion() != 2 {
+			t.Fatalf("setup/Refresh race outcomes: setup=%d refresh=%d snapshot=%+v", setup.Code, refresh.Code, state.loadedSnapshot)
+		}
+		if state.pending != nil && (!state.pending.stale || state.pending.diagramSetup == nil || state.pending.baseRevision != v1) {
+			t.Fatalf("setup/Refresh produced mixed pending state: %+v", state.pending)
+		}
+	})
+
+	t.Run("Discard", func(t *testing.T) {
+		state, handler, source, _, _ := newLegacySetupFixture(t)
+		decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source))
+		setup, discard := raceSetupAction(t, handler, source, func() *httptest.ResponseRecorder {
+			return postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source)
+		})
+		if discard.Code != http.StatusOK || (setup.Code != http.StatusOK && setup.Code != http.StatusConflict) {
+			t.Fatalf("setup/Discard race outcomes: setup=%d discard=%d", setup.Code, discard.Code)
+		}
+		if state.pending != nil && (state.pending.diagramSetup == nil || state.pending.stale || len(state.pending.changes) != 0) {
+			t.Fatalf("setup/Discard produced mixed pending state: %+v", state.pending)
+		}
+	})
+
+	t.Run("confirmation", func(t *testing.T) {
+		state, handler, source, _, _ := newLegacySetupFixture(t)
+		decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source))
+		reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
+		setup, confirmation := raceSetupAction(t, handler, source, func() *httptest.ResponseRecorder {
+			return postAcceptChanges(t, handler, testOrigin, source, *reviewed.Changes.Review)
+		})
+		if setup.Code != http.StatusConflict || confirmation.Code != http.StatusOK || state.pending != nil || state.loadedSnapshot == nil || state.loadedSnapshot.FormatVersion() != 2 {
+			t.Fatalf("setup/confirmation race mixed state: setup=%d confirmation=%d pending=%+v snapshot=%+v", setup.Code, confirmation.Code, state.pending, state.loadedSnapshot)
+		}
+	})
+}
+
+func TestSetUpDiagramsPostCASPublicationFailureConsumesAndReloadsCanonicalSuccessor(t *testing.T) {
+	state, handler, source, dataDirectory, v1 := newLegacySetupFixture(t)
+	setup := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source))
+	if setup.Changes == nil || !setup.Changes.DiagramSetup {
+		t.Fatalf("setup pending missing: %+v", setup)
+	}
+	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
+	review := *reviewed.Changes.Review
+	state.publicationFailure = func() error { return errors.New("focused setup publication failure") }
+	response := postAcceptChanges(t, handler, testOrigin, source, review)
+	updated := decodeArchitectureResponse(t, response)
+	if response.Code != http.StatusInternalServerError || updated.ActionError != errorUpdatedReload || updated.Revision == v1 || updated.FormatVersion != 2 || updated.Changes != nil || state.pending != nil {
+		t.Fatalf("setup post-CAS response status=%d body=%s pending=%+v", response.Code, response.Body.String(), state.pending)
+	}
+	storeID := associatedStoreID(t, state.db, filepath.Clean(source))
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	if accepted := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted"); accepted != updated.Revision {
+		t.Fatalf("setup post-CAS accepted=%q response=%q", accepted, updated.Revision)
+	}
+	if duplicate := postAcceptChanges(t, handler, testOrigin, source, review); duplicate.Code != http.StatusConflict {
+		t.Fatalf("setup post-CAS retry status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	freshDB := openWebDatabaseAt(t, filepath.Join(dataDirectory, "workbraid.db"))
+	fresh := NewHandler(freshDB, testOrigin, t.TempDir(), dataDirectory)
+	reopened := decodeArchitectureResponse(t, postOpenProject(t, fresh, testOrigin, source))
+	if reopened.Revision != updated.Revision || reopened.FormatVersion != 2 || reopened.RootDiagramID == "" || reopened.Changes != nil {
+		t.Fatalf("fresh setup post-CAS reconstruction = %+v", reopened)
+	}
+}
+
+func newLegacySetupFixture(t *testing.T) (*Handler, http.Handler, string, string, string) {
+	t.Helper()
+	source := createSourceRepository(t)
+	dataDirectory := t.TempDir()
+	db := openWebDatabaseAt(t, filepath.Join(dataDirectory, "workbraid.db"))
+	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
+	initialized := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	storeID := associatedStoreID(t, db, filepath.Clean(source))
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	manifest := []byte("format: workbraid-architecture\nversion: 1\nstore_id: \"" + storeID + "\"\nproject:\n  name: Legacy\n  source_hint: " + filepath.Clean(source) + "\n")
+	v1 := advanceAcceptedToManifest(t, storePath, initialized.Revision, manifest, nil)
+	opened := decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+	if opened.Revision != v1 || opened.FormatVersion != 1 {
+		t.Fatalf("legacy setup fixture = %+v", opened)
+	}
+	return state, handler, source, dataDirectory, v1
+}
+
+func raceSetupAction(t *testing.T, handler http.Handler, source string, other func() *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
+	t.Helper()
+	start := make(chan struct{})
+	setupDone := make(chan *httptest.ResponseRecorder, 1)
+	otherDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		<-start
+		setupDone <- postArchitectureAction(t, handler, testOrigin, "/api/architecture/diagrams/setup", source)
+	}()
+	go func() {
+		<-start
+		otherDone <- other()
+	}()
+	close(start)
+	return <-setupDone, <-otherDone
 }
 
 func diagramHasComponent(diagram diagramResponse, componentID, role string) bool {

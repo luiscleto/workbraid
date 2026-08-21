@@ -43,10 +43,10 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 	acceptedWorkerEntry := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", accepted, "components/worker.md")
 
 	textEdited := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: workerID, Description: "Worker body changed\n", DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: workerID, Description: "Worker body changed\n", DescriptionChanged: true,
 	}))
 	created := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Queue", Description: "Pending queue\n",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, Title: "Queue", Description: "Pending queue\n",
 	}))
 	if textEdited.Changes == nil || created.Changes == nil || len(created.Changes.Components) != 2 {
 		t.Fatalf("text/new pending changes missing: %+v", created.Changes)
@@ -63,7 +63,7 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 
 	label := "  publishes: [events] # α\nnext line  "
 	relationshipEdited := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: sourceID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{
 			{TargetID: workerID, Label: "calls"},
 			{TargetID: pendingID, Label: label},
@@ -72,7 +72,7 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 		},
 	}))
 	cycled := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: pendingID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: pendingID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{{TargetID: sourceID, Label: "reports to"}},
 	}))
 	if relationshipEdited.Changes == nil || cycled.Changes == nil || !cycled.Changes.Valid || len(cycled.Changes.Components) != 3 {
@@ -108,7 +108,7 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 	}
 
 	blank := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: sourceID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{{TargetID: workerID, Label: "calls"}, {TargetID: pendingID, Label: "  \n "}},
 	}))
 	if blank.Changes == nil || blank.Changes.Valid || blank.Changes.ValidationCode != "relationship_label_required" ||
@@ -122,7 +122,7 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 	}
 
 	missing := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: sourceID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{{TargetID: workerID, Label: "calls"}, {TargetID: "", Label: "reads from"}},
 	}))
 	if missing.Changes == nil || missing.Changes.Valid || missing.Changes.ValidationCode != "relationship_target_required" ||
@@ -136,7 +136,7 @@ func TestRelationshipAuthoringUsesCompleteCandidateAndExistingAcceptancePath(t *
 	}
 
 	corrected := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: sourceID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{
 			{TargetID: workerID, Label: "calls"},
 			{TargetID: pendingID, Label: label},
@@ -204,7 +204,7 @@ func TestConcurrentRelationshipAndTextMutationMergeAndInvalidateReview(t *testin
 	})
 	decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: sourceID, Description: "Reviewed body\n", DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, Description: "Reviewed body\n", DescriptionChanged: true,
 	}))
 	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
@@ -213,8 +213,8 @@ func TestConcurrentRelationshipAndTextMutationMergeAndInvalidateReview(t *testin
 	oldReview := *reviewed.Changes.Review
 
 	requests := []componentMutationRequest{
-		{SourceRoot: filepath.Clean(source), ComponentID: sourceID, Title: "Changed source", TitleChanged: true},
-		{SourceRoot: filepath.Clean(source), ComponentID: sourceID, RelationshipsChanged: true, Relationships: []relationshipResponse{{TargetID: targetID, Label: "calls"}}},
+		{SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, Title: "Changed source", TitleChanged: true},
+		{SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: sourceID, RelationshipsChanged: true, Relationships: []relationshipResponse{{TargetID: targetID, Label: "calls"}}},
 	}
 	statuses := make([]int, len(requests))
 	var wait sync.WaitGroup

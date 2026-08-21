@@ -922,7 +922,7 @@ export function App() {
                   setSelectedComponentID(undefined)
                   setReviewFocus(focus)
                 }}
-                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
+                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale || result.changes?.legacy_read_only)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
@@ -948,7 +948,7 @@ export function App() {
                 busy={architectureBusy}
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
-                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
+                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale || result.changes?.legacy_read_only)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
@@ -1242,6 +1242,7 @@ function ChangesTask({
 }) {
   const changes = result.changes
   if (!changes) return null
+  const readOnly = Boolean(result.stale || changes.stale || changes.legacy_read_only)
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field
     ? changes.components.find((component) => component.id === changes.validation_item)
     : undefined
@@ -1249,7 +1250,7 @@ function ChangesTask({
   const discardAction = !acceptanceUnknown
     ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Discard changes</button>
     : null
-  if (changes.review && !result.stale && !changes.stale && reviewSide && onReviewSide && onClearReviewFocus) {
+  if (changes.review && !readOnly && reviewSide && onReviewSide && onClearReviewFocus) {
     return (
       <section className="changes-in-progress review-workspace-pane" aria-labelledby="review-heading">
         <div className="review-heading-row">
@@ -1318,7 +1319,7 @@ function ChangesTask({
           <li className={ownsReviewBlocker ? 'validation-owner' : undefined} aria-invalid={ownsReviewBlocker || undefined} key={component.id}>
             <span>{component.title.trim() || 'Untitled component'}</span>
             {ownsReviewBlocker && <strong className="validation-marker">Needs attention</strong>}
-            {!acceptanceUnknown && <button className="text-action" type="button" onClick={() => onEdit(component)}>{result.stale || changes.stale || changes.legacy_read_only ? 'View' : 'Edit'}</button>}
+            {!acceptanceUnknown && <button className="text-action" type="button" onClick={() => onEdit(component)}>{readOnly ? 'View' : 'Edit'}</button>}
           </li>
           )
         })}
@@ -1327,9 +1328,9 @@ function ChangesTask({
         <div className="review-error" role="alert">
           {relationshipIssueComponent ? (
             <>
-              <p><strong>{relationshipIssueName}</strong> has a relationship {result.stale || changes.stale ? 'issue in these read-only changes.' : 'to fix.'}</p>
-              <p>{result.stale || changes.stale ? messageForReadOnlyReviewBlocker(changes.review_blocker) : messageForReviewBlocker(changes.review_blocker)}</p>
-              {!result.stale && !changes.stale && <button className="inline-action fix-relationship" type="button" onClick={() => onFixRelationship(relationshipIssueComponent)}>Fix relationship</button>}
+              <p><strong>{relationshipIssueName}</strong> has a relationship {readOnly ? 'issue in these read-only changes.' : 'to fix.'}</p>
+              <p>{readOnly ? messageForReadOnlyReviewBlocker(changes.review_blocker) : messageForReviewBlocker(changes.review_blocker)}</p>
+              {!readOnly && <button className="inline-action fix-relationship" type="button" onClick={() => onFixRelationship(relationshipIssueComponent)}>Fix relationship</button>}
             </>
           ) : <p>{messageForReviewBlocker(changes.review_blocker)}</p>}
         </div>

@@ -704,7 +704,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		return
 	}
 	snapshot := *h.loadedSnapshot
-	if payload.ExpectedRevision != "" && payload.ExpectedRevision != snapshot.Revision() {
+	if payload.ExpectedRevision == "" || payload.ExpectedRevision != snapshot.Revision() {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return
 	}

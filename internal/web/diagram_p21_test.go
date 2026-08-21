@@ -103,7 +103,7 @@ func TestRefreshFromV1ToV2MakesOldPendingStaleAndRejectsLateMutation(t *testing.
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	initialized := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	kept := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Pending v1", Description: "Old-base work.",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: initialized.Revision, Title: "Pending work", Description: "Old-base work.",
 	}))
 	if kept.Changes == nil || state.pending == nil {
 		t.Fatal("v1 pending work was not created")
@@ -122,7 +122,7 @@ func TestRefreshFromV1ToV2MakesOldPendingStaleAndRejectsLateMutation(t *testing.
 	if err := json.Unmarshal(late.Body.Bytes(), &failure); err != nil {
 		t.Fatal(err)
 	}
-	if late.Code != http.StatusConflict || failure.Code != errorChangesElsewhere || len(state.pending.changes) != 1 || state.pending.changes[0].Title != "Pending v1" {
+	if late.Code != http.StatusConflict || failure.Code != errorChangesElsewhere || len(state.pending.changes) != 1 || state.pending.changes[0].Title != "Pending work" {
 		t.Fatalf("late mutation changed stale pending: status=%d failure=%+v pending=%+v", late.Code, failure, state.pending)
 	}
 	discarded := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source))
@@ -164,7 +164,13 @@ func TestRefreshToAcceptedV2RejectsLateOldRevisionMutation(t *testing.T) {
 	initialized := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	storeID := associatedStoreID(t, db, filepath.Clean(source))
 	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	accepted := advanceAcceptedToP21V2(t, storePath, initialized.Revision, storeID, "System")
+	v1Manifest := []byte("format: workbraid-architecture\nversion: 1\nstore_id: \"" + storeID + "\"\nproject:\n  name: Legacy\n  source_hint: " + filepath.Clean(source) + "\n")
+	v1 := advanceAcceptedToManifest(t, storePath, initialized.Revision, v1Manifest, nil)
+	opened := decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+	if opened.Revision != v1 || opened.FormatVersion != 1 {
+		t.Fatalf("legacy fixture open = %+v", opened)
+	}
+	accepted := advanceAcceptedToP21V2(t, storePath, v1, storeID, "System")
 
 	refreshAtFinalObservation := make(chan struct{})
 	releaseRefresh := make(chan struct{})
@@ -183,7 +189,7 @@ func TestRefreshToAcceptedV2RejectsLateOldRevisionMutation(t *testing.T) {
 	go func() {
 		close(mutationStarted)
 		mutationDone <- postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-			SourceRoot: filepath.Clean(source), ExpectedRevision: initialized.Revision, Title: "Late mutation", Description: "Must not persist.",
+			SourceRoot: filepath.Clean(source), Title: "Pre-P2.2 legacy mutation", Description: "Must not persist.",
 		})
 	}()
 	<-mutationStarted

@@ -18,7 +18,7 @@ func TestDiscardChangesClearsOnlyInProcessPendingAndReviewState(t *testing.T) {
 	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
 
 	changed := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Worker", Description: "Does work.",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: initialized.Revision, Title: "Worker", Description: "Does work.",
 	}))
 	if changed.Changes == nil || !changed.Changes.Valid {
 		t.Fatalf("pending change not created: %+v", changed)
@@ -58,7 +58,7 @@ func TestDiscardChangesClearsOnlyInProcessPendingAndReviewState(t *testing.T) {
 		t.Fatalf("discarded review remained confirmable: status=%d body=%s", oldConfirmation.Code, oldConfirmation.Body.String())
 	}
 	newPending := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Gateway", Description: "Routes calls.",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: initialized.Revision, Title: "Gateway", Description: "Routes calls.",
 	}))
 	if newPending.Changes == nil || state.pending == nil || state.pending.baseRevision != initialized.Revision {
 		t.Fatalf("new pending did not bind to loaded accepted revision: %+v", newPending.Changes)
@@ -69,9 +69,9 @@ func TestDiscardChangesEnforcesOrigin(t *testing.T) {
 	db := openWebTestDatabase(t)
 	source := createSourceRepository(t)
 	handler := NewHandler(db, testOrigin, t.TempDir(), t.TempDir())
-	decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Worker",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Worker",
 	}))
 
 	for _, origin := range []string{"", "http://127.0.0.1:9999"} {
@@ -92,7 +92,7 @@ func TestOpenAnotherProjectIsAtomicWithPendingMutation(t *testing.T) {
 	second := createSourceRepository(t)
 	dataDirectory := t.TempDir()
 	setupFirst := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
-	decodeArchitectureResponse(t, postInitializeProject(t, setupFirst, testOrigin, first))
+	firstBase := decodeArchitectureResponse(t, postInitializeProject(t, setupFirst, testOrigin, first))
 	setupSecond := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	decodeArchitectureResponse(t, postInitializeProject(t, setupSecond, testOrigin, second))
 
@@ -106,7 +106,7 @@ func TestOpenAnotherProjectIsAtomicWithPendingMutation(t *testing.T) {
 		defer wait.Done()
 		<-start
 		response := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-			SourceRoot: filepath.Clean(first), Title: "Worker",
+			SourceRoot: filepath.Clean(first), ExpectedRevision: firstBase.Revision, Title: "Worker",
 		})
 		responses[0] = responseResult{status: response.Code, body: response.Body.String()}
 	}()
@@ -146,9 +146,9 @@ func TestLeaveProjectRequiresDiscardWhenChangesExist(t *testing.T) {
 	db := openWebTestDatabase(t)
 	source := createSourceRepository(t)
 	state, handler := newHandler(db, testOrigin, t.TempDir(), t.TempDir())
-	decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Worker",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Worker",
 	}))
 
 	blocked := postArchitectureAction(t, handler, testOrigin, "/api/projects/leave", source)
@@ -169,7 +169,7 @@ func TestLeaveProjectIsAtomicWithPendingMutation(t *testing.T) {
 	setup := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	decodeArchitectureResponse(t, postInitializeProject(t, setup, testOrigin, source))
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
-	decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+	base := decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
 
 	start := make(chan struct{})
 	var responses [2]responseResult
@@ -179,7 +179,7 @@ func TestLeaveProjectIsAtomicWithPendingMutation(t *testing.T) {
 		defer wait.Done()
 		<-start
 		response := postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-			SourceRoot: filepath.Clean(source), Title: "Worker",
+			SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Worker",
 		})
 		responses[0] = responseResult{status: response.Code, body: response.Body.String()}
 	}()

@@ -39,10 +39,10 @@ func TestReviewAcceptAndFreshApplicationReconstructsExactSuccessor(t *testing.T)
 	recordsEntryBefore := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", base.Revision, "components/records.md")
 
 	first := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: gatewayID, Title: "Public Gateway", Description: "Receives requests.", TitleChanged: true, DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: gatewayID, Title: "Public Gateway", Description: "Receives requests.", TitleChanged: true, DescriptionChanged: true,
 	}))
 	second := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Worker", Description: "Processes\x00jobs and literal \\x00.",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, Title: "Worker", Description: "Processes\x00jobs and literal \\x00.",
 	}))
 	if first.Changes == nil || second.Changes == nil || len(second.Changes.Components) != 2 {
 		t.Fatalf("multi-file pending state missing: %+v", second.Changes)
@@ -69,7 +69,7 @@ func TestReviewAcceptAndFreshApplicationReconstructsExactSuccessor(t *testing.T)
 	// that newer generation before browser A submits its older confirmation.
 	firstID := second.Changes.Components[0].ID
 	mutated := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: firstID, Description: "Receives public requests.", DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: firstID, Description: "Receives public requests.", DescriptionChanged: true,
 	}))
 	if mutated.Changes == nil || mutated.Changes.Review != nil || state.pending.generation != 3 {
 		t.Fatalf("mutation did not invalidate review: response=%+v pending=%+v", mutated.Changes, state.pending)
@@ -157,7 +157,7 @@ func TestInvalidReviewBlocksConfirmationAndRetainsPendingAcrossBrowserReload(t *
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	invalid := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "   ", Description: "Useful description\n",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "   ", Description: "Useful description\n",
 	}))
 	if invalid.Changes == nil || invalid.Changes.Valid {
 		t.Fatalf("invalid pending state missing: %+v", invalid.Changes)
@@ -195,7 +195,7 @@ func TestStalePreObservationPreservesPendingAndCreatesNoSuccessor(t *testing.T) 
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Gateway", Description: "Body\n",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway", Description: "Body\n",
 	}))
 	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 	storePath := filepath.Join(dataDirectory, "architecture", associatedStoreID(t, db, filepath.Clean(source))+".git")
@@ -233,7 +233,7 @@ func TestReopenAfterExternalAdvanceKeepsPendingVisibleAsStale(t *testing.T) {
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Gateway", Description: "Body",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway", Description: "Body",
 	}))
 	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
@@ -274,7 +274,7 @@ func TestProductionHandlerFinalCASRacePreservesPendingAndMarksSnapshotStale(t *t
 	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 	base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Gateway", Description: "Body\n",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway", Description: "Body\n",
 	}))
 	reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 	storePath := filepath.Join(dataDirectory, "architecture", associatedStoreID(t, db, filepath.Clean(source))+".git")
@@ -311,7 +311,7 @@ func TestRefLockFailurePreservesPendingAndPostCASPublicationFailureConsumesIt(t 
 		dataDirectory := t.TempDir()
 		state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 		base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
-		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Gateway"}))
+		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway"}))
 		reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 		storePath := filepath.Join(dataDirectory, "architecture", associatedStoreID(t, db, filepath.Clean(source))+".git")
 		lock := filepath.Join(storePath, "refs", "heads", "accepted.lock")
@@ -333,7 +333,7 @@ func TestRefLockFailurePreservesPendingAndPostCASPublicationFailureConsumesIt(t 
 		dataDirectory := t.TempDir()
 		state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 		base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
-		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Gateway"}))
+		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway"}))
 		reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 		payload := acceptChangesRequest{
 			SourceRoot: filepath.Clean(source), BaseRevision: reviewed.Changes.Review.BaseRevision,
@@ -367,7 +367,7 @@ func TestRefLockFailurePreservesPendingAndPostCASPublicationFailureConsumesIt(t 
 		dataDirectory := t.TempDir()
 		state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 		base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
-		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Gateway"}))
+		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway"}))
 		reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 		reported := 0
 		state.acceptedUpdateReportFailure = func() error {
@@ -398,7 +398,7 @@ func TestRefLockFailurePreservesPendingAndPostCASPublicationFailureConsumesIt(t 
 		db := openWebDatabaseAt(t, databasePath)
 		state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 		base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
-		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), Title: "Gateway"}))
+		decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway"}))
 		reviewed := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
 		state.publicationFailure = func() error { return errors.New("focused publication failure") }
 		response := postAcceptChanges(t, handler, testOrigin, source, *reviewed.Changes.Review)

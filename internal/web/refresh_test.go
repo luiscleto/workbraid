@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,7 +68,7 @@ func (fixture refreshFixture) advance(t *testing.T, parent, sourceTitle, targetT
 func (fixture refreshFixture) keepAndReview(t *testing.T) architectureResponse {
 	t.Helper()
 	kept := decodeArchitectureResponse(t, postComponentMutation(t, fixture.handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(fixture.source), ComponentID: refreshSourceID,
+		SourceRoot: filepath.Clean(fixture.source), ExpectedRevision: fixture.loadedRevision, ComponentID: refreshSourceID,
 		Title: "Pending source", TitleChanged: true,
 		Relationships: []relationshipResponse{{TargetID: refreshTargetID, Label: "pending calls"}}, RelationshipsChanged: true,
 	}))
@@ -140,7 +141,7 @@ func TestRefreshAdoptsValidExternalStateAndPreservesOldPendingContextAsStale(t *
 		t.Fatalf("discard changed current accepted state: %+v", discarded)
 	}
 	newPending := decodeArchitectureResponse(t, postComponentMutation(t, fixture.handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(fixture.source), ComponentID: refreshSourceID,
+		SourceRoot: filepath.Clean(fixture.source), ExpectedRevision: external, ComponentID: refreshSourceID,
 		Description: "New-base work.", DescriptionChanged: true,
 	}))
 	if newPending.Changes == nil || fixture.state.pending.baseRevision != external || fixture.state.pending.stale {
@@ -395,7 +396,7 @@ func TestRefreshSerializesWithPendingMutation(t *testing.T) {
 	mutationDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		mutationDone <- postComponentMutation(t, fixture.handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-			SourceRoot: filepath.Clean(fixture.source), ComponentID: refreshSourceID,
+			SourceRoot: filepath.Clean(fixture.source), ExpectedRevision: fixture.loadedRevision, ComponentID: refreshSourceID,
 			Description: "Serialized work.", DescriptionChanged: true,
 		})
 	}()
@@ -406,8 +407,12 @@ func TestRefreshSerializesWithPendingMutation(t *testing.T) {
 	}
 	close(release)
 	refreshed := decodeArchitectureResponse(t, <-refreshDone)
-	mutated := decodeArchitectureResponse(t, <-mutationDone)
-	if refreshed.Revision != external || mutated.Revision != external || mutated.Changes == nil || fixture.state.pending.baseRevision != external {
-		t.Fatalf("serialized transitions mixed revisions: refreshed=%+v mutated=%+v pending=%+v", refreshed, mutated, fixture.state.pending)
+	mutationResponse := <-mutationDone
+	var failure errorResponse
+	if err := json.Unmarshal(mutationResponse.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Revision != external || mutationResponse.Code != http.StatusConflict || failure.Code != errorChangesElsewhere || fixture.state.pending != nil {
+		t.Fatalf("serialized transitions mixed revisions: refreshed=%+v mutation status=%d failure=%+v pending=%+v", refreshed, mutationResponse.Code, failure, fixture.state.pending)
 	}
 }

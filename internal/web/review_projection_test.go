@@ -40,7 +40,7 @@ func TestReviewVisualProjectionUsesOneBoundRealGitCandidateAndExactComparison(t 
 	}
 
 	added := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), Title: "Telemetry", Description: "New component.\n",
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, Title: "Telemetry", Description: "New component.\n",
 	}))
 	telemetryID := added.Changes.Components[0].ID
 	for _, change := range added.Changes.Components {
@@ -49,7 +49,7 @@ func TestReviewVisualProjectionUsesOneBoundRealGitCandidateAndExactComparison(t 
 		}
 	}
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: gatewayID, Title: "Public Gateway", TitleChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: gatewayID, Title: "Public Gateway", TitleChanged: true,
 		RelationshipsChanged: true,
 		Relationships: []relationshipResponse{
 			{TargetID: telemetryID, Label: "calls"},
@@ -61,17 +61,17 @@ func TestReviewVisualProjectionUsesOneBoundRealGitCandidateAndExactComparison(t 
 		},
 	}))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: workerID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: workerID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{{TargetID: gatewayID, Label: "returns differently"}},
 	}))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: docsID, Description: "New documentation.\n", DescriptionChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: docsID, Description: "New documentation.\n", DescriptionChanged: true,
 	}))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: titleID, Title: "Public name", TitleChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: titleID, Title: "Public name", TitleChanged: true,
 	}))
 	decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-		SourceRoot: filepath.Clean(source), ComponentID: telemetryID, RelationshipsChanged: true,
+		SourceRoot: filepath.Clean(source), ExpectedRevision: externalBase, ComponentID: telemetryID, RelationshipsChanged: true,
 		Relationships: []relationshipResponse{{TargetID: gatewayID, Label: "cycles"}},
 	}))
 
@@ -162,7 +162,7 @@ func TestVisualReviewCaptureIsCoherentAcrossConcurrentInvalidation(t *testing.T)
 			state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
 			base := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
 			pending := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
-				SourceRoot: filepath.Clean(source), Title: "Gateway", Description: "First generation.\n",
+				SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, Title: "Gateway", Description: "First generation.\n",
 			}))
 			componentID := pending.Changes.Components[0].ID
 
@@ -184,7 +184,7 @@ func TestVisualReviewCaptureIsCoherentAcrossConcurrentInvalidation(t *testing.T)
 			var invalidated architectureResponse
 			if action == "mutation" {
 				invalidated = decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/edit", componentMutationRequest{
-					SourceRoot: filepath.Clean(source), ComponentID: componentID, Description: "Second generation.\n", DescriptionChanged: true,
+					SourceRoot: filepath.Clean(source), ExpectedRevision: base.Revision, ComponentID: componentID, Description: "Second generation.\n", DescriptionChanged: true,
 				}))
 			} else {
 				invalidated = decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/discard", source))

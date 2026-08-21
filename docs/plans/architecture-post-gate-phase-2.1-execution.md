@@ -299,3 +299,33 @@ Do not introduce:
 - automatic Refresh, watcher, polling, retry, fallback, repair, initialization, merge/rebase/reconciliation, history, revert, proposal, export, or sync behavior;
 - syntax highlighting, rendered/semantic Markdown diff, URL restoration, themed-scrollbar project, or other non-gating polish;
 - UML/class semantics, additional Diagram kinds, isometric rendering, Planning, Agent Control, or another vertical.
+
+## Execution result
+
+Status: Complete — human checkpoint **PASS** on 2026-08-21
+
+- Exact Phase 2 documentation baseline: `8fb794137c943942d7761203967722b392f7c0b6`.
+- Approved Phase 2 plan: `5ca24c23b799323182e9b3164d2cfbf498e19734`.
+- Approved docs-inclusive worker base and P2.1 execution-packet commit: `ea0daec7906f2b2239538f7306fd30556847a48f`.
+- Initial implementation: `8fad0a3029881e0995d94b17aa7e270d6ceb57aa`.
+- Final integrated implementation after independently reviewed corrections: `db2451e2dc46abe3d34d5dd5fb6e5564ca2580a6`.
+- Independent review: the first review removed unused future Diagram serialization fields and required real non-blob Diagram-entry evidence. Rereview found the first non-ordinary fixture was still a blob, so `6a429af16c8e7ca6e66f27021ed4dfee173b4d1d` added an actual tree object at `diagrams/root.yaml`. A subsequent audit found that explicitly empty `detail_diagram` values were not distinguished from omission and that an empty selected Diagram used whole-Architecture empty-state copy; `db2451e2dc46abe3d34d5dd5fb6e5564ca2580a6` corrected both. A fresh acceptance review of the complete worker-base-to-head range reported no actionable findings.
+- Automated validation: PASS for `git diff --check`, full uncached Go tests, full race-enabled Go tests, Go vet, module verification, 75 ordinary frontend tests, the production frontend build, the bounded P2.1 production-browser scenario, and the existing Phase 1 and Gate 1 production-browser scenarios. No abnormal resource use or lingering WorkBraid, Playwright, Vitest, npm, Node, or Chromium process was observed. The existing approximately 833 kB production-chunk warning remains non-blocking.
+
+### Human checkpoint evidence
+
+- Persistent checkpoint runtime: `/home/luisc/workbraid/frontend/dist/p21-human-runtime`; accepted-v1 source: `/home/luisc/workbraid/frontend/dist/p21-human-runtime/source-v1`; accepted-v2 source: `/home/luisc/workbraid/frontend/dist/p21-human-runtime/source-v2`. The fixture was technically prepared in the ignored build area because P2.1 intentionally has no v2 authoring path.
+- Accepted v1 remained fully editable. The human made and discarded a harmless pending change through the normal UI; no **View only** staging appeared and accepted stayed at exact revision `35219560d9d62ea05f92a5f8f1a6de3911991fff`.
+- Accepted v2 opened at its root Diagram with the restrained **View only** treatment and no usable Component, Relationship, Diagram, or Changes mutation controls. The human navigated both detail Diagrams, including the empty Records detail, through the Diagram tree and breadcrumbs.
+- Diagram projections: PASS. Home and **Also shown here** appearances opened the same canonical documentation. **Lives in** references navigated to external Components in their home Diagram. Gateway and Records were correctly derived as external to System A's detail. One boundary reference represented each absent external Component while all directed labels and parallel occurrences remained visible.
+- Duplicate Diagram and Component titles remained understandable without general ID/path chrome. Map selection, clear/deselect, Fit, and safe inert Markdown behavior passed. The selected empty Diagram correctly said `This diagram has no components.`
+- Explicit Refresh: the externally selected valid non-linear v2 revision remained invisible until Refresh. Refresh atomically advanced the tree, selected Diagram context, index, map, documentation, appearances, boundaries, relationships, and revision from `c9c7e334ad9bafb6be64f0548ac47b4c4cd3903a` to `5f16f5998b5739c3427a16ed4bca57175e03647a`; valid-current **View only** staging remained truthful.
+- Project switching and return: PASS. No pending work was invented or stranded.
+- Restart reconstruction: PASS. WorkBraid stopped completely. A genuinely new process using the same application-data directory reopened exact accepted revision `5f16f5998b5739c3427a16ed4bca57175e03647a` with the identical root/detail hierarchy, appearances, boundaries, relationships, documentation, and navigation reconstructed from canonical Git.
+- Source isolation: PASS for both source repositories. Their recorded HEAD, status, files, modes, and checksums remained exact.
+- SQLite isolation: PASS. The only table is `source_architecture_associations`, containing the two expected operational association rows and no Architecture, Diagram, graph, document, boundary, navigation, layout, or pending projection.
+- Non-gating observation: the green hover treatment can reduce the contrast of the `System A` breadcrumb text. The human explicitly treated this as minor polish that does not block P2.1 or require another review.
+- Human checkpoint result: **PASS**.
+- Scope: no v1-to-v2 migration, v2 candidate or mutation path, Diagram authoring, canonical presentation state, persisted layout, graphical editing, P2.2 behavior, or another vertical entered this increment.
+
+P2.1 is complete. Stop here; P2.2 remains unstarted.

@@ -48,7 +48,7 @@ The Diagram tree, component index, map, and documentation are projections of the
 
 The component index is not a management or dashboard surface. It selects components by stable identity and primarily shows their titles, plus only the minimal component-creation affordance needed. When titles collide, show the minimum filename or shortened-ID context needed to disambiguate them. Do not make IDs or paths general index chrome, and do not add status columns, per-component management controls, filters, or speculative controls.
 
-Selecting a component from the map or index focuses the same accepted component and shows its documentation in the working pane. Add/Edit uses that pane for structured component and relationship authoring. The accepted map does not preview pending topology.
+Selecting a component from the map or index focuses the same accepted component and shows its documentation in the working pane. For a writable accepted Architecture, Add/Edit uses that pane for structured component and relationship authoring. The accepted map does not preview pending topology.
 
 **Changes in progress** is a compact visible workspace affordance. It reuses the working area for pending editing, review, and acceptance rather than becoming another permanent region. Exact diff review may temporarily expand into more of the workspace when the task requires it.
 
@@ -113,7 +113,13 @@ IDs, Diagram filenames, YAML roles, and hierarchy keys remain out of normal navi
 
 Diagram authoring reuses the contextual working pane. The first Diagram slice provides structured tasks to create and title a detail Diagram, move a Component's home, and also show or stop showing a Component by reference. Creating a Component inside an active Diagram places it there; root is the fallback only when no Diagram context exists. Diagram deletion and general hierarchy management are not shown.
 
-When the first Diagram action begins against format v1, WorkBraid clearly says that it will set up Diagrams as part of the requested change. This is a concise confirmation, not a migration/configuration form. Existing Changes in progress remain part of the same pending set, and pending-new Components receive homes in the resulting complete candidate. The v1 Architecture remains unchanged until that complete candidate is reviewed and deliberately accepted; cancel or discard leaves it untouched.
+Newly initialized Architecture is already ready for Diagram and Component authoring and receives no setup or migration explanation.
+
+A valid accepted v1 Architecture remains readable and navigable through its implicit all-components map, but normal Add/Edit and relationship authoring are not shown. When no Changes in progress exist, it offers one concise **Set up diagrams** action with product language such as **Set up diagrams to start editing this architecture.** Do not mention format versions, migration, schemas, YAML, root identity, or upgrade steps.
+
+**Set up diagrams** creates one reviewable pending change containing only the Diagram setup. It does not also begin detail-Diagram or Component authoring. Because its complete candidate is the writable Architecture shape, the human reviews and deliberately updates Architecture through the normal Changes-in-progress and Review-changes workspace. Cancel or whole-set discard leaves the accepted Architecture untouched.
+
+If non-setup pending work somehow already exists for this readable older Architecture, keep it visibly read-only under **Changes in progress**. Show no Edit, Fix, Review changes, or Update architecture action for that work. Whole-set **Discard changes** remains available; **Set up diagrams** stays unavailable until discard clears it. Do not merge, reinterpret, accept, recover, or persist this defensive transitional state.
 
 Automatic Diagram layout remains disposable presentation. No drag position, route, bend point, size, shape, or view state is implied or persisted.
 

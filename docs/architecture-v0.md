@@ -96,7 +96,7 @@ Its exact v1 fields and types are:
 
 The v1 manifest schema is closed. Unknown keys at the top level or inside `project` are invalid rather than ignored. Future semantic fields require format evolution.
 
-Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. Migration/version-negotiation machinery is deferred until needed.
+Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. The one deliberate format-v1-to-v2 transition defined below is supported; no general migration or version-negotiation machinery is implied.
 
 The WorkBraid store ID is the store's stable identity. Project name and source hint are recovery information only:
 
@@ -317,17 +317,17 @@ For one active Diagram:
 
 Within one active Diagram, WorkBraid derives at most one boundary/external reference for each absent external Component. Every crossing Relationship occurrence to or from that Component connects to that one derived reference while retaining its exact direction, label, and multiplicity. Derived boundary references have no canonical identity, membership, or separate Architecture meaning. Activating one navigates to the external Component's home Diagram. A canonical reference appearance is a real Diagram appearance and therefore uses an ordinary Component node and Relationship edge rather than a boundary reference.
 
-#### v1 compatibility and deliberate migration
+#### v1 compatibility and deliberate Diagram setup
 
 Valid format v1 remains fully loadable as its existing implicit all-components map. Opening v1 never creates a Diagram ID or rewrites canonical Git.
 
-The first Diagram-creating action on v1 explicitly tells the human that Diagrams will be set up. The same pending candidate contains both the v1-to-v2 conversion and the requested Diagram operation. If v1 already has backend-held pending Component or Relationship changes, migration is composed into that same pending change set and complete candidate rather than replacing, discarding, or separately accepting those changes. Migration first constructs a root Diagram, with a newly generated stable Diagram ID and an initially derived human-readable title based on the existing project name, and gives every accepted and pending-new Component a home appearance there. The root title is then mutable independently of the project name. Migration then applies the requested detail Diagram and membership changes.
+Accepted v1 is readable and navigable but is not a normal writable Architecture format. Normal Component and Relationship authoring applies to accepted v2. Mutation eligibility is decided from the synchronized server-owned loaded project, snapshot format, and authority state; a request against current accepted v1 creates no pending work, regardless of browser assumptions.
 
-Migration preserves every existing Component ID, path, blob, regular-file mode, Markdown byte, and Relationship exactly. It changes the v1 manifest to the v2 manifest and adds Diagram files. Membership-only and Diagram-only changes likewise reuse every unchanged Component tree entry and blob exactly.
+When no backend-held pending change set exists, valid accepted v1 offers one deliberate **Set up diagrams** action. It creates one ordinary pending candidate containing only the format transition: the manifest becomes the normative v2 manifest, one newly generated stable root Diagram is created with a title initially derived from the existing project name, and every accepted Component receives exactly one home appearance in that root. The root title is independently mutable after acceptance and does not track later project-name changes. The transition does not also perform a detail-Diagram or other authoring operation.
 
-Migration remains non-canonical until the existing complete-candidate validation, review, confirmation, and compare-and-swap acceptance path succeeds. Cancel or whole-set discard leaves v1 untouched. The review's v1 **Before changes** side is the real implicit v1 all-components map and does not receive a fabricated canonical Diagram identity.
+The transition preserves every existing Component ID, path, blob, regular-file mode, Markdown byte, and Relationship exactly. It uses the normal complete-candidate construction, version-aware validation, exact unified diff, review binding, confirmation, stale protection, accepted-ref compare-and-swap, publication, and restart-reconstruction paths. Its complete candidate is format v2, so this setup pending set may be reviewed and deliberately accepted. A transition-only accepted revision is valid. Cancel or whole-set discard leaves v1 untouched. The review's v1 **Before changes** side is the real implicit v1 all-components map and does not receive a fabricated canonical Diagram identity. There is no v2-to-v1 downgrade.
 
-New-store bootstrap remains format v1 for this Phase 2 design. Changing initialization to create v2 directly requires a later explicit implementation-plan decision.
+**Set up diagrams** is unavailable while any backend-held pending set exists. If a non-setup v1 pending set somehow already exists, WorkBraid retains it visibly as read-only evidence. It permits no further editing, Review changes, or acceptance into another v1 revision; it does not reinterpret or combine that work with setup. Whole-set Discard remains available and clears only that non-canonical pending set through the existing discard semantics. **Set up diagrams** becomes available only after the old pending set is discarded. This is defensive transitional handling only: it adds no persistence, recovery, migration state machine, migration table, conversion or reconciliation machinery, alternate candidate representation, or special acceptance authority.
 
 ## 4. Initialization and loading
 
@@ -342,7 +342,13 @@ Initialization succeeds only when:
 
 Any earlier failure is incomplete initialization, not provisional canonical state.
 
-The bootstrap revision contains only the required format-v1 `architecture.yaml`. Zero components and zero relationships are valid. Initialization creates no placeholder files, Component registry, Diagram, or other scaffolding. Format v2 remains a deliberate reviewed transition when the first Diagram operation is requested.
+The parentless bootstrap revision is valid format v2. It contains:
+
+- the normative v2 `architecture.yaml`, written as mode `100644`;
+- one newly generated stable root Diagram ID named by manifest `root_diagram`; and
+- one ordinary `diagrams/root.yaml` blob, written as mode `100644`, whose title is initially derived from the project name and whose appearances are empty.
+
+Zero Components and zero Relationships are valid. `diagrams/root.yaml` is only WorkBraid's creation-time filename convention: it carries no identity and does not designate the root. Normal loading continues to accept any conforming non-recursive `diagrams/*.yaml` filename, and manifest `root_diagram` remains the sole root designation. After initialization, the root title is independently mutable and does not track later project-name changes.
 
 Opening distinguishes:
 
@@ -390,7 +396,7 @@ The review contains one immutable snapshot reconstructed from the exact base com
 
 Within review, the selected base or candidate snapshot supplies the Diagram tree or v1 implicit-map context, selected Diagram, component index, map topology, selected documentation/detail, titles, boundary references, and relationship resolution together. A surface must never combine data from the two snapshots. The base side remains the review's exact bound base; it is not replaced by newly observed accepted Architecture. If external authority moves after review, the review becomes stale under the existing stale-base rules.
 
-If the current review selection is a Diagram that exists only in **With changes**, switching to **Before changes** uses a base-owned fallback rather than leaking candidate state. For a v2 base, WorkBraid selects the nearest ancestor of that candidate Diagram which exists in the bound base snapshot; if no such ancestor survives, it selects the bound base root Diagram. For a v1 base during migration, it selects the real v1 implicit all-components map because no canonical Diagram identity exists there. The review shows a restrained note that the previously selected Diagram exists only with the changes. Its candidate-only composition, index, documentation context, boundary references, and topology never appear on the base side. Restoring exact focus when returning to **With changes** is disposable UI behavior rather than an Architecture invariant.
+If the current review selection is a Diagram that exists only in **With changes**, switching to **Before changes** uses a base-owned fallback rather than leaking candidate state. For a v2 base, WorkBraid selects the nearest ancestor of that candidate Diagram which exists in the bound base snapshot; if no such ancestor survives, it selects the bound base root Diagram. For a v1 base during **Set up diagrams**, it selects the real v1 implicit all-components map because no canonical Diagram identity exists there. The review shows a restrained note that the previously selected Diagram exists only with the changes. Its candidate-only composition, index, documentation context, boundary references, and topology never appear on the base side. Restoring exact focus when returning to **With changes** is disposable UI behavior rather than an Architecture invariant.
 
 Invalid pending state does not produce reviewed snapshots. It remains non-canonical work under Changes in progress with actionable validation guidance.
 
@@ -480,7 +486,7 @@ Proposal approval is a separate future workflow.
 
 ## 7. First-slice authoring
 
-The browser provides structured Architecture authoring rather than raw-frontmatter editing as the normal flow.
+For accepted v2, the browser provides structured Architecture authoring rather than raw-frontmatter editing as the normal flow. Accepted v1 retains readable implicit-map navigation and the deliberate **Set up diagrams** transition defined above, but not ordinary Component or Relationship mutation.
 
 Initial controls include:
 
@@ -674,8 +680,8 @@ Using the real WorkBraid application through production code paths:
 1. Open a real throwaway source repository.
 2. Verify that WorkBraid does not modify its files, working tree, or Git history.
 3. Explicitly initialize its private Architecture store.
-4. Verify the minimal bootstrap commit and `accepted` ref.
-5. Verify that `architecture.yaml` contains stable store identity and human-readable association hints.
+4. Verify the parentless format-v2 bootstrap commit, its manifest-identified empty root Diagram, and the `accepted` ref.
+5. Verify that `architecture.yaml` contains stable store identity, human-readable association hints, and the root Diagram identity while `diagrams/root.yaml` carries no authority beyond its canonical contents.
 6. Create a tiny Architecture through WorkBraid.
 7. Review and deliberately commit its exact candidate diff.
 8. See the accepted map and navigate component documentation.

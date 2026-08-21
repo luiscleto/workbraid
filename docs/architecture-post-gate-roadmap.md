@@ -44,10 +44,12 @@ Approved domain direction:
 - only a parent Diagram's home appearance may own its one optional detail-Diagram link;
 - global Relationships crossing the active Diagram boundary use derived external references rather than copied facts or implicit membership;
 - automatic layout remains disposable and non-canonical;
-- valid v1 remains loadable without rewrite, while the first explicit Diagram operation creates one reviewed v1-to-v2 candidate preserving Component blobs, IDs, modes, paths, and Relationships exactly;
+- new stores initialize directly as writable v2 with one empty manifest-identified root Diagram;
+- valid v1 remains readable without rewrite and has one deliberate reviewed **Set up diagrams** transition which creates only the v2 root and home appearances while preserving Component blobs, IDs, modes, paths, and Relationships exactly;
+- normal Architecture authoring is v2-only; the bounded v1 transition does not preserve ordinary v1 mutation or compose with arbitrary existing pending work;
 - candidate-aware Diagram review extends the existing exact base/candidate snapshots, unified diff, binding, confirmation, and accepted-ref CAS path.
 
-The smallest useful product slice is root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
+The smallest useful product slice includes direct-v2 initialization and normal v2 Component/Relationship authoring, the bounded v1 setup transition, root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
 
 ## Phase 3 — Durable rich diagram editing
 

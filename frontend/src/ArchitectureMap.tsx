@@ -157,11 +157,7 @@ export function ArchitectureMap({
     else if (selectedID) instance.getElementById(selectedID).select()
   }, [selectedID, selectedRelationshipKey])
 
-  const visibleReviewComponentChanges = reviewComponents.filter((change) => components.some((component) => component.id === change.component_id))
-  const visibleReviewRelationshipChanges = reviewSide
-    ? reviewRelationships.filter((change) => reviewRelationshipVisible(change, reviewSide, reviewDiagramID))
-    : []
-  const reviewControls = reviewSide && (visibleReviewComponentChanges.length || visibleReviewRelationshipChanges.length) ? (
+  const reviewControls = reviewSide ? (
     <ReviewChangeControls
       side={reviewSide}
       components={components}
@@ -256,7 +252,9 @@ function ReviewChangeControls({
     const fact = `${relationship.status}\u0000${relationship.source_id}\u0000${relationship.target_id}\u0000${relationship.label}`
     facts.set(fact, (facts.get(fact) ?? 0) + 1)
   }
-  if (!visibleComponentChanges.length && !visibleRelationshipChanges.length) return null
+  if (!visibleComponentChanges.length && !visibleRelationshipChanges.length) {
+    return <p className="map-review-empty">No visual changes in this {reviewDiagramID ? 'diagram' : 'view'}.</p>
+  }
   return (
     <div className="map-review-controls" aria-label="Visual changes">
       <p className="map-review-key"><span>＋ Added</span><span>△ Content changed</span><span>− − Removed relationship</span></p>

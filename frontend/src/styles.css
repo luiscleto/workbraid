@@ -1083,6 +1083,13 @@ dd {
   text-align: left;
 }
 
+.map-review-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted-ink);
+  font-size: 0.76rem;
+}
+
 .map-bottom-dock {
   position: absolute;
   right: 14px;

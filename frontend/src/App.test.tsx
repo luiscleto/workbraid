@@ -860,6 +860,12 @@ describe('App', () => {
     const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
 
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
+    expect(screen.queryByRole('tablist', { name: 'Map information' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Changes' })).toHaveTextContent('No visual changes in this diagram.')
+    expect(screen.queryByRole('navigation', { name: 'Components that live elsewhere' })).not.toBeInTheDocument()
+    await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+
     const dockTabs = screen.getByRole('tablist', { name: 'Map information' })
     const changesTab = within(dockTabs).getByRole('tab', { name: 'Changes' })
     const externalTab = within(dockTabs).getByRole('tab', { name: 'External references' })

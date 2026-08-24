@@ -1,5 +1,5 @@
 import cytoscape, { Core, ElementDefinition } from 'cytoscape'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 export type MapRelationship = {
   target_id: string
@@ -64,6 +64,7 @@ type ArchitectureMapProps = {
   reviewDiagramID?: string
   selectedRelationshipKey?: string
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
+  externalReferences?: ReactNode
 }
 
 type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID'>
@@ -81,6 +82,7 @@ export function ArchitectureMap({
   reviewDiagramID,
   selectedRelationshipKey,
   onSelectRelationship,
+  externalReferences,
 }: ArchitectureMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
@@ -155,7 +157,11 @@ export function ArchitectureMap({
     else if (selectedID) instance.getElementById(selectedID).select()
   }, [selectedID, selectedRelationshipKey])
 
-  const reviewControls = reviewSide ? (
+  const visibleReviewComponentChanges = reviewComponents.filter((change) => components.some((component) => component.id === change.component_id))
+  const visibleReviewRelationshipChanges = reviewSide
+    ? reviewRelationships.filter((change) => reviewRelationshipVisible(change, reviewSide, reviewDiagramID))
+    : []
+  const reviewControls = reviewSide && (visibleReviewComponentChanges.length || visibleReviewRelationshipChanges.length) ? (
     <ReviewChangeControls
       side={reviewSide}
       components={components}
@@ -166,18 +172,53 @@ export function ArchitectureMap({
       onSelectRelationship={onSelectRelationship}
     />
   ) : null
+  const hasExternalReferences = Boolean(externalReferences)
+  const hasReviewControls = Boolean(reviewControls)
+  const reviewDockIdentity = reviewSide ? revision : ''
+  const [dockPane, setDockPane] = useState<'changes' | 'external'>('changes')
+  const [dockCollapsed, setDockCollapsed] = useState(false)
+
+  useEffect(() => {
+    if (reviewDockIdentity && hasReviewControls) {
+      setDockPane('changes')
+      return
+    }
+    if (!hasReviewControls && hasExternalReferences) setDockPane('external')
+  }, [reviewDockIdentity, hasReviewControls, hasExternalReferences])
+
+  const visibleDockPane = dockPane === 'changes' && hasReviewControls
+    ? 'changes'
+    : hasExternalReferences ? 'external' : 'changes'
+  const bottomDock = hasReviewControls || hasExternalReferences ? (
+    <div className={`map-bottom-dock ${dockCollapsed ? 'collapsed' : ''}`}>
+      <div className="map-bottom-dock-header">
+        {hasReviewControls && hasExternalReferences ? (
+          <div className="map-bottom-dock-tabs" role="tablist" aria-label="Map information">
+            <button type="button" role="tab" aria-selected={visibleDockPane === 'changes'} aria-controls="map-bottom-dock-panel" onClick={() => setDockPane('changes')}>Changes</button>
+            <button type="button" role="tab" aria-selected={visibleDockPane === 'external'} aria-controls="map-bottom-dock-panel" onClick={() => setDockPane('external')}>External references</button>
+          </div>
+        ) : <strong>{hasReviewControls ? 'Changes' : 'External references'}</strong>}
+        <button className="map-bottom-dock-collapse" type="button" aria-expanded={!dockCollapsed} aria-controls="map-bottom-dock-panel" onClick={() => setDockCollapsed((collapsed) => !collapsed)}>{dockCollapsed ? 'Expand' : 'Collapse'}</button>
+      </div>
+      {!dockCollapsed && (
+        <div className="map-bottom-dock-body" id="map-bottom-dock-panel" role={hasReviewControls && hasExternalReferences ? 'tabpanel' : 'region'} aria-label={visibleDockPane === 'changes' ? 'Changes' : 'External references'}>
+          {visibleDockPane === 'changes' ? reviewControls : externalReferences}
+        </div>
+      )}
+    </div>
+  ) : null
 
   if (components.length === 0) {
     return (
       <div className="map-empty">
         {reviewSide === 'before' ? 'Before changes has no components.' : emptyMessage ?? 'The architecture has no components yet.'}
-        {reviewControls}
+        {bottomDock}
       </div>
     )
   }
 
   return (
-    <section className="map-surface" aria-label={reviewSide ? `${reviewSide === 'with' ? 'With changes' : 'Before changes'} architecture map` : 'Architecture map'}>
+    <section className={`map-surface ${bottomDock ? 'has-bottom-dock' : ''}`.trim()} aria-label={reviewSide ? `${reviewSide === 'with' ? 'With changes' : 'Before changes'} architecture map` : 'Architecture map'}>
       {renderFailed ? (
         <div className="map-failure" role="alert">
           <strong>The architecture map could not be shown.</strong>
@@ -185,7 +226,7 @@ export function ArchitectureMap({
         </div>
       ) : <div ref={container} className="map-canvas" data-testid="architecture-map" />}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => graph.current?.fit(undefined, 34)}>Fit map</button>}
-      {reviewControls}
+      {bottomDock}
     </section>
   )
 }
@@ -209,11 +250,7 @@ function ReviewChangeControls({
 }) {
   const titles = new Map(components.map((component) => [component.id, component.title]))
   const visibleComponentChanges = componentChanges.filter((change) => titles.has(change.component_id))
-  const visibleRelationshipChanges = relationshipChanges.filter((change) => {
-    if (!reviewDiagramID) return side === 'with' || change.status === 'removed'
-    if (change.diagram_projections?.some((projection) => projection.side === side && projection.diagram_id === reviewDiagramID)) return true
-    return side === 'with' && change.status === 'removed' && change.diagram_projections?.some((projection) => projection.side === 'before' && projection.diagram_id === reviewDiagramID)
-  })
+  const visibleRelationshipChanges = relationshipChanges.filter((change) => reviewRelationshipVisible(change, side, reviewDiagramID))
   const facts = new Map<string, number>()
   for (const relationship of visibleRelationshipChanges) {
     const fact = `${relationship.status}\u0000${relationship.source_id}\u0000${relationship.target_id}\u0000${relationship.label}`
@@ -251,6 +288,12 @@ function ReviewChangeControls({
       </ul>
     </div>
   )
+}
+
+function reviewRelationshipVisible(change: ReviewMapRelationshipChange, side: 'with' | 'before', reviewDiagramID?: string) {
+  if (!reviewDiagramID) return side === 'with' || change.status === 'removed'
+  if (change.diagram_projections?.some((projection) => projection.side === side && projection.diagram_id === reviewDiagramID)) return true
+  return side === 'with' && change.status === 'removed' && change.diagram_projections?.some((projection) => projection.side === 'before' && projection.diagram_id === reviewDiagramID)
 }
 
 export function projectionElements(components: MapComponent[], options: ProjectionOptions = {}): ElementDefinition[] {

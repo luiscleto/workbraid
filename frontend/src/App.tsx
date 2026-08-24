@@ -834,6 +834,28 @@ export function App() {
       setReviewFocus(null)
       setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)
     }
+    const externalReferences = activeDiagram && activeDiagram.boundaries.length > 0 ? (
+      <nav className="diagram-boundary-dock" aria-label="Components that live elsewhere">
+        {activeDiagram.boundaries.map((boundary) => (
+          <section key={boundary.key}>
+            <button type="button" aria-label={[boundary.title, boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join(', ')} onClick={() => selectMapNode(boundary.key)}>
+              <span>{boundary.title}{boundary.context && <small> {boundary.context}</small>}</span>
+              <small>Lives in {boundary.home_diagram_title}</small>
+            </button>
+            <ul aria-label={`Relationships for ${[boundary.title, boundary.context].filter(Boolean).join(', ')}`}>
+              {activeDiagram.relationships.filter((relationship) => relationship.source_node_key === boundary.key || relationship.target_node_key === boundary.key).map((relationship) => (
+                <li key={relationship.key} tabIndex={0}>
+                  <span>{diagramNodeTitles.get(relationship.source_node_key)}</span>
+                  <strong>{relationship.label}</strong>
+                  <span aria-hidden="true">→</span>
+                  <span>{diagramNodeTitles.get(relationship.target_node_key)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </nav>
+    ) : undefined
     return (
       <main className="workspace-shell">
         <header className="application-frame">
@@ -950,29 +972,8 @@ export function App() {
                 selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
                 onSelectRelationship: selectRelationship,
               } : {})}
+              externalReferences={externalReferences}
             />
-            {activeDiagram && activeDiagram.boundaries.length > 0 && (
-              <nav className="diagram-boundary-dock" aria-label="Components that live elsewhere">
-                {activeDiagram.boundaries.map((boundary) => (
-                  <section key={boundary.key}>
-                    <button type="button" aria-label={[boundary.title, boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join(', ')} onClick={() => selectMapNode(boundary.key)}>
-                      <span>{boundary.title}{boundary.context && <small> {boundary.context}</small>}</span>
-                      <small>Lives in {boundary.home_diagram_title}</small>
-                    </button>
-                    <ul aria-label={`Relationships for ${[boundary.title, boundary.context].filter(Boolean).join(', ')}`}>
-                      {activeDiagram.relationships.filter((relationship) => relationship.source_node_key === boundary.key || relationship.target_node_key === boundary.key).map((relationship) => (
-                        <li key={relationship.key} tabIndex={0}>
-                          <span>{diagramNodeTitles.get(relationship.source_node_key)}</span>
-                          <strong>{relationship.label}</strong>
-                          <span aria-hidden="true">→</span>
-                          <span>{diagramNodeTitles.get(relationship.target_node_key)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </nav>
-            )}
           </section>
           <aside className="working-pane" aria-label="Architecture task">
             {review && result.changes ? (
@@ -985,7 +986,7 @@ export function App() {
                 selectedReviewComponent={selected}
                 reviewFocus={reviewFocus}
                 onReviewSide={switchReviewSide}
-                onBackToChanges={() => {
+                onContinueEditing={() => {
                   setReviewVisible(false)
                   setWorkspaceTask('changes')
                 }}
@@ -1291,7 +1292,7 @@ function ChangesTask({
   selectedReviewComponent,
   reviewFocus,
   onReviewSide,
-  onBackToChanges,
+  onContinueEditing,
   onReturnToReview,
   onClearReviewFocus,
   onFocusDiagram,
@@ -1311,7 +1312,7 @@ function ChangesTask({
   selectedReviewComponent?: AuthoringComponent
   reviewFocus?: ReviewFocus | null
   onReviewSide?: (side: ReviewSide) => void
-  onBackToChanges?: () => void
+  onContinueEditing?: () => void
   onReturnToReview?: () => void
   onClearReviewFocus?: () => void
   onFocusDiagram?: (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => void
@@ -1342,7 +1343,6 @@ function ChangesTask({
             <button type="button" aria-pressed={reviewSide === 'with'} onClick={() => onReviewSide('with')}>With changes</button>
             <button type="button" aria-pressed={reviewSide === 'before'} onClick={() => onReviewSide('before')}>Before changes</button>
           </div>
-          {onBackToChanges && <button className="text-action" type="button" onClick={onBackToChanges}>Back to changes</button>}
         </div>
         <p className="review-introduction">Inspect the visual change and complete exact diff before updating the architecture.</p>
         {(changes.review.comparison.diagrams?.length || changes.review.comparison.appearances?.length) ? (
@@ -1385,6 +1385,7 @@ function ChangesTask({
         </details>
         <div className="change-actions">
           <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>
+          {onContinueEditing && <button className="secondary-action" type="button" disabled={busy} onClick={onContinueEditing}>Continue editing</button>}
           {discardAction}
         </div>
         {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}

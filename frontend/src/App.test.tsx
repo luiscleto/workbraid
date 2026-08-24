@@ -282,6 +282,12 @@ describe('App', () => {
     expect(within(breadcrumbs).getByRole('button', { name: 'System' })).toBeInTheDocument()
     expect(within(breadcrumbs).getByText('Detail')).toHaveAttribute('aria-current', 'page')
     expect(screen.getByText('Worker documentation.')).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: 'Map information' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'External references' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Collapse' }))
+    expect(screen.queryByRole('navigation', { name: 'Components that live elsewhere' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand' }))
+    expect(screen.getByRole('navigation', { name: 'Components that live elsewhere' })).toBeInTheDocument()
 
     const elements = graphHarness.calls.at(-1)?.elements ?? []
     expect(elements).toEqual(expect.arrayContaining([
@@ -854,11 +860,23 @@ describe('App', () => {
     const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
 
-    const boundaryDock = screen.getByRole('navigation', { name: 'Components that live elsewhere' })
-    const visualChanges = screen.getByLabelText('Visual changes')
-    expect(boundaryDock).toHaveClass('diagram-boundary-dock')
-    expect(visualChanges).toHaveClass('map-review-controls')
-    expect(boundaryDock.closest('.architecture-workbench')).toHaveClass('reviewing')
+    const dockTabs = screen.getByRole('tablist', { name: 'Map information' })
+    const changesTab = within(dockTabs).getByRole('tab', { name: 'Changes' })
+    const externalTab = within(dockTabs).getByRole('tab', { name: 'External references' })
+    expect(changesTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Visual changes')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Components that live elsewhere' })).not.toBeInTheDocument()
+    await user.click(externalTab)
+    expect(externalTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByLabelText('Visual changes')).not.toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Components that live elsewhere' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Collapse' }))
+    expect(screen.queryByRole('navigation', { name: 'Components that live elsewhere' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand' }))
+    expect(screen.getByRole('navigation', { name: 'Components that live elsewhere' })).toBeInTheDocument()
+    await user.click(changesTab)
+    expect(screen.getByLabelText('Visual changes')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Components that live elsewhere' })).not.toBeInTheDocument()
 
     const addedEdge = (graphHarness.calls.at(-1)?.elements as Array<{ data: Record<string, unknown> }>).find((element) => element.data.id === `diagram:${detail}:gateway:0`)
     expect(addedEdge?.data).toMatchObject({
@@ -1126,13 +1144,19 @@ describe('App', () => {
     await submitPath('/tmp/example')
     const user = userEvent.setup()
     const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    expect(screen.queryByRole('tablist', { name: 'Map information' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Changes' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     const reviewDetails = screen.getByText('Review details').closest('details') as HTMLElement
     expect(within(reviewDetails).getByText(base)).toBeInTheDocument()
     expect(within(reviewDetails).getByText(candidate)).toBeInTheDocument()
     expect(within(reviewDetails).getByText('4')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Back to changes' }))
+    expect(screen.queryByRole('button', { name: 'Back to changes' })).not.toBeInTheDocument()
+    const reviewActions = screen.getByRole('button', { name: 'Update architecture' }).closest('.change-actions') as HTMLElement
+    expect(within(reviewActions).getByRole('button', { name: 'Continue editing' })).toHaveClass('secondary-action')
+    expect(within(reviewActions).getByRole('button', { name: 'Discard changes' })).toBeInTheDocument()
+    await user.click(within(reviewActions).getByRole('button', { name: 'Continue editing' }))
     const changesSection = await screen.findByRole('heading', { name: 'Changes in progress' }).then((heading) => heading.closest('section') as HTMLElement)
     expect(within(changesSection).getByRole('button', { name: 'Return to review' })).toBeInTheDocument()
     expect(within(changesSection).getAllByRole('button', { name: 'Edit' })).toHaveLength(2)
@@ -1149,7 +1173,7 @@ describe('App', () => {
     expect(within(returnedDetails).getByText('4')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    await user.click(screen.getByRole('button', { name: 'Back to changes' }))
+    await user.click(screen.getByRole('button', { name: 'Continue editing' }))
     const returnedChanges = screen.getByRole('heading', { name: 'Changes in progress' }).closest('section') as HTMLElement
     const workerRow = within(returnedChanges).getByText('Worker', { exact: true }).closest('li') as HTMLElement
     await user.click(within(workerRow).getByRole('button', { name: 'Edit' }))

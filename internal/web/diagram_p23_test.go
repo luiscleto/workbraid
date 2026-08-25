@@ -182,6 +182,103 @@ func hasDiagramAuthoringOption(options []diagramAuthoringOptionResponse, id stri
 	return false
 }
 
+func TestDiagramAuthoringOptionsUseFinalCollisionOnlyContext(t *testing.T) {
+	source := createSourceRepository(t)
+	dataDirectory := t.TempDir()
+	db := openWebDatabaseAt(t, filepath.Join(dataDirectory, "workbraid.db"))
+	state, handler := newHandler(db, testOrigin, t.TempDir(), dataDirectory)
+	initialized := decodeArchitectureResponse(t, postInitializeProject(t, handler, testOrigin, source))
+	storeID := associatedStoreID(t, db, filepath.Clean(source))
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	accepted := advanceAcceptedToP21V2(t, storePath, initialized.Revision, storeID, "System")
+	decodeArchitectureResponse(t, postOpenProject(t, handler, testOrigin, source))
+
+	decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/diagrams/title", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, DiagramID: p21DetailID, Title: "Shared internals",
+	}))
+	renamed := decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/diagrams/title", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, DiagramID: p21EmptyID, Title: "Shared internals",
+	}))
+	firstAccepted := diagramAuthoringOptionByID(t, renamed.Changes.DiagramOptions, p21DetailID)
+	secondAccepted := diagramAuthoringOptionByID(t, renamed.Changes.DiagramOptions, p21EmptyID)
+	if firstAccepted.Context != "Detail for Shared — gateway.md" || secondAccepted.Context != "Detail for Shared — records.md" {
+		t.Fatalf("pending title collision contexts = %+v, %+v", firstAccepted, secondAccepted)
+	}
+
+	unique := decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/diagrams/detail", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: p21WorkerID, Title: "Worker internals",
+	}))
+	uniqueDetail := unique.Changes.DetailDiagrams[len(unique.Changes.DetailDiagrams)-1]
+	if option := diagramAuthoringOptionByID(t, unique.Changes.DiagramOptions, uniqueDetail.ID); option.Context != "" {
+		t.Fatalf("unique pending detail has speculative context: %+v", option)
+	}
+
+	firstService := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, DiagramID: p21RootID,
+		Title: "Service", Description: "First service.\n",
+	}))
+	firstServiceID := onlyNewComponentID(t, firstService.Changes.Components, nil)
+	secondService := decodeArchitectureResponse(t, postComponentMutation(t, handler, testOrigin, "/api/architecture/components/add", componentMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, DiagramID: p21RootID,
+		Title: "Service", Description: "Second service.\n",
+	}))
+	secondServiceID := onlyNewComponentID(t, secondService.Changes.Components, map[string]bool{firstServiceID: true})
+
+	firstDetail := decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/diagrams/detail", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: firstServiceID, Title: "Service internals",
+	}))
+	firstServiceDetailID := firstDetail.Changes.DetailDiagrams[len(firstDetail.Changes.DetailDiagrams)-1].ID
+	secondDetail := decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/diagrams/detail", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: secondServiceID, Title: "Service internals",
+	}))
+	secondServiceDetailID := secondDetail.Changes.DetailDiagrams[len(secondDetail.Changes.DetailDiagrams)-1].ID
+
+	componentFilenames := make(map[string]string)
+	for _, change := range secondDetail.Changes.Components {
+		componentFilenames[change.ID] = filepath.Base(changePathByID(t, state, change.ID))
+	}
+	firstCandidate := diagramAuthoringOptionByID(t, secondDetail.Changes.DiagramOptions, firstServiceDetailID)
+	secondCandidate := diagramAuthoringOptionByID(t, secondDetail.Changes.DiagramOptions, secondServiceDetailID)
+	if firstCandidate.Context != "Detail for Service — "+componentFilenames[firstServiceID] || secondCandidate.Context != "Detail for Service — "+componentFilenames[secondServiceID] || firstCandidate.Context == secondCandidate.Context {
+		t.Fatalf("candidate detail collision contexts = %+v, %+v", firstCandidate, secondCandidate)
+	}
+}
+
+func diagramAuthoringOptionByID(t *testing.T, options []diagramAuthoringOptionResponse, id string) diagramAuthoringOptionResponse {
+	t.Helper()
+	for _, option := range options {
+		if option.ID == id {
+			return option
+		}
+	}
+	t.Fatalf("Diagram option %q missing from %+v", id, options)
+	return diagramAuthoringOptionResponse{}
+}
+
+func onlyNewComponentID(t *testing.T, changes []pendingComponentResponse, excluded map[string]bool) string {
+	t.Helper()
+	for _, change := range changes {
+		if change.New && !excluded[change.ID] {
+			return change.ID
+		}
+	}
+	t.Fatalf("new Component missing from %+v", changes)
+	return ""
+}
+
+func changePathByID(t *testing.T, handler *Handler, id string) string {
+	t.Helper()
+	handler.stateMutex.Lock()
+	defer handler.stateMutex.Unlock()
+	for _, change := range handler.pending.changes {
+		if change.ID == id {
+			return change.Path
+		}
+	}
+	t.Fatalf("pending Component %q missing", id)
+	return ""
+}
+
 func TestReviewClassifiesDetailLinkAsCompositionInsteadOfPlacement(t *testing.T) {
 	before := []diagramResponse{{
 		ID: "root", Filename: "root.yaml", Title: "System",

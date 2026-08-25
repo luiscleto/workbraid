@@ -304,6 +304,17 @@ type diagramAuthoringOptionResponse struct {
 	Context string `json:"context,omitempty"`
 }
 
+type diagramAuthoringOptionFact struct {
+	diagramAuthoringOptionResponse
+	anchorComponentID string
+	filename          string
+}
+
+type diagramAuthoringComponentFact struct {
+	title    string
+	filename string
+}
+
 type reviewResponse struct {
 	Diff          string                     `json:"diff"`
 	BaseRevision  string                     `json:"base_revision"`
@@ -388,29 +399,91 @@ func pendingDiagramAuthoringOptions(pending *pendingChangeSet) []diagramAuthorin
 	for _, change := range pending.diagramTitles {
 		titles[change.DiagramID] = change.Title
 	}
-	options := make([]diagramAuthoringOptionResponse, 0, len(projection.Diagrams)+len(pending.detailDiagrams))
+	facts := make([]diagramAuthoringOptionFact, 0, len(projection.Diagrams)+len(pending.detailDiagrams))
 	for _, diagram := range projection.Diagrams {
 		title := diagram.Title
 		if changed, exists := titles[diagram.ID]; exists {
 			title = changed
 		}
-		options = append(options, diagramAuthoringOptionResponse{ID: diagram.ID, Title: title, Context: diagram.Context})
+		facts = append(facts, diagramAuthoringOptionFact{
+			diagramAuthoringOptionResponse: diagramAuthoringOptionResponse{ID: diagram.ID, Title: title},
+			anchorComponentID:              diagram.ParentAnchorComponentID,
+			filename:                       filepath.Base(diagram.Filename),
+		})
 	}
-	componentTitles := make(map[string]string, len(projection.Components)+len(pending.changes))
+	components := make(map[string]diagramAuthoringComponentFact, len(projection.Components)+len(pending.changes))
 	for _, component := range projection.Components {
-		componentTitles[component.ID] = component.Title
+		components[component.ID] = diagramAuthoringComponentFact{title: component.Title, filename: filepath.Base(component.Filename)}
 	}
 	for _, change := range pending.changes {
-		componentTitles[change.ID] = change.Title
+		components[change.ID] = diagramAuthoringComponentFact{title: change.Title, filename: filepath.Base(change.Path)}
 	}
 	for _, diagram := range pending.detailDiagrams {
-		context := "New detail diagram"
-		if title := strings.TrimSpace(componentTitles[diagram.AnchorComponentID]); title != "" {
-			context = "Detail for " + title
+		facts = append(facts, diagramAuthoringOptionFact{
+			diagramAuthoringOptionResponse: diagramAuthoringOptionResponse{ID: diagram.ID, Title: diagram.Title},
+			anchorComponentID:              diagram.AnchorComponentID,
+			filename:                       filepath.Base(diagram.Path),
+		})
+	}
+
+	titleCounts := make(map[string]int, len(facts))
+	for _, fact := range facts {
+		titleCounts[fact.Title]++
+	}
+	for index := range facts {
+		if titleCounts[facts[index].Title] < 2 {
+			continue
 		}
-		options = append(options, diagramAuthoringOptionResponse{ID: diagram.ID, Title: diagram.Title, Context: context})
+		if facts[index].anchorComponentID == "" {
+			facts[index].Context = "Main diagram"
+			continue
+		}
+		anchorTitle := strings.TrimSpace(components[facts[index].anchorComponentID].title)
+		if anchorTitle == "" {
+			facts[index].Context = "Detail diagram"
+		} else {
+			facts[index].Context = "Detail for " + anchorTitle
+		}
+	}
+	disambiguateDiagramOptionFacts(facts, components)
+
+	options := make([]diagramAuthoringOptionResponse, len(facts))
+	for index, fact := range facts {
+		options[index] = fact.diagramAuthoringOptionResponse
 	}
 	return options
+}
+
+func disambiguateDiagramOptionFacts(facts []diagramAuthoringOptionFact, components map[string]diagramAuthoringComponentFact) {
+	appendToCollidingContexts(facts, func(fact diagramAuthoringOptionFact) string {
+		return components[fact.anchorComponentID].filename
+	})
+	appendToCollidingContexts(facts, func(fact diagramAuthoringOptionFact) string {
+		return fact.filename
+	})
+	appendToCollidingContexts(facts, func(fact diagramAuthoringOptionFact) string {
+		if len(fact.ID) <= 8 {
+			return fact.ID
+		}
+		return fact.ID[:8]
+	})
+}
+
+func appendToCollidingContexts(facts []diagramAuthoringOptionFact, suffix func(diagramAuthoringOptionFact) string) {
+	counts := make(map[string]int, len(facts))
+	for _, fact := range facts {
+		if fact.Context != "" {
+			counts[fact.Title+"\x00"+fact.Context]++
+		}
+	}
+	for index := range facts {
+		if facts[index].Context == "" || counts[facts[index].Title+"\x00"+facts[index].Context] < 2 {
+			continue
+		}
+		if value := strings.TrimSpace(suffix(facts[index])); value != "" {
+			facts[index].Context += " — " + value
+		}
+	}
 }
 
 func relationshipTargets(accepted []architecture.AuthoringComponent, changes []architecture.ComponentChange) []relationshipTargetResponse {

@@ -467,8 +467,8 @@ describe('App', () => {
     const invalidDestination = '44444444-4444-4444-8444-444444444444'
     const siblingDestination = '55555555-5555-4555-8555-555555555555'
     const diagramOptions = accepted.diagrams.map((diagram) => ({ id: diagram.id, title: diagram.title, context: diagram.context })).concat([
-      { id: invalidDestination, title: 'Worker internals', context: 'Detail for Worker' },
-      { id: siblingDestination, title: 'Sidecar internals', context: 'Detail for Sidecar' },
+      { id: invalidDestination, title: 'Worker internals', context: 'Detail for Worker — worker.md' },
+      { id: siblingDestination, title: 'Worker internals', context: 'Detail for Worker — sidecar.md' },
     ])
     const invalid = acceptedV2({
       changes: {
@@ -491,7 +491,7 @@ describe('App', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Move this component somewhere outside its own detail diagrams.')
     await user.click(screen.getByRole('button', { name: 'Fix component location' }))
     const destination = screen.getByRole('combobox', { name: 'Diagram' })
-    expect(within(destination).getByRole('option', { name: 'Sidecar internals — Detail for Sidecar' })).toBeInTheDocument()
+    expect(within(destination).getByRole('option', { name: 'Worker internals — Detail for Worker — sidecar.md' })).toBeInTheDocument()
     await user.selectOptions(destination, siblingDestination)
     await user.click(screen.getByRole('button', { name: 'Keep change' }))
 

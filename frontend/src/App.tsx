@@ -272,6 +272,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       component_id: boundary.component_id,
       title: boundary.title,
       node_kind: 'boundary',
+      boundary_home_title: boundary.home_diagram_title,
       relationships: [],
     })
   }
@@ -1051,12 +1052,16 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
-                {selectedAppearance?.detail_diagram_id && (
-                  <button className="inline-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
-                    Open {selectedAppearance.detail_diagram_title}
-                  </button>
+                {(result.format_version !== 1 && authoringAvailable || selectedAppearance?.detail_diagram_id) && (
+                  <div className="component-documentation-actions">
+                    {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                    {selectedAppearance?.detail_diagram_id && (
+                      <button className="secondary-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
+                        Open {selectedAppearance.detail_diagram_title}
+                      </button>
+                    )}
+                  </div>
                 )}
-                {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
                 {result.format_version === 1 && authoringAvailable && !result.changes && <div className="legacy-diagram-setup"><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>}
               </article>
             ) : activeDiagram ? (

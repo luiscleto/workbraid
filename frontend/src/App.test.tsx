@@ -281,7 +281,17 @@ describe('App', () => {
       expect.objectContaining({ data: expect.objectContaining({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', displayLabel: 'Worker', nodeKind: 'reference' }) }),
     ]))
 
+    const documentationActions = screen.getByRole('button', { name: 'Edit component' }).closest('.component-documentation-actions') as HTMLElement
+    const actionButtons = within(documentationActions).getAllByRole('button')
+    expect(actionButtons.map((button) => button.textContent)).toEqual(['Edit component', 'Open Detail'])
+    expect(actionButtons[0]).toHaveClass('inline-action')
+    expect(actionButtons[1]).toHaveClass('secondary-action', 'detail-link')
+
     const user = userEvent.setup()
+    await user.click(within(navigator).getByRole('button', { name: 'Worker, Included here · Lives in Detail' }))
+    expect(screen.queryByRole('button', { name: 'Open Detail' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit component' })).toBeInTheDocument()
+    await user.click(within(navigator).getByRole('button', { name: 'Shared, gateway.md' }))
     await user.click(screen.getByRole('button', { name: 'Open Detail' }))
     expect(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md' })).toHaveAttribute('aria-current', 'page')
     const breadcrumbs = screen.getByRole('navigation', { name: 'Diagram breadcrumbs' })
@@ -297,13 +307,16 @@ describe('App', () => {
 
     const elements = graphHarness.calls.at(-1)?.elements ?? []
     expect(elements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared', nodeKind: 'boundary' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared\nLives in System', nodeKind: 'boundary' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', target: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', label: 'writes' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', target: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', label: 'feeds' }) }),
     ]))
     for (const note of screen.getAllByText('Lives in System')) expect(note).toHaveClass('home-location-note')
     expect(elements.filter((element) => (element as { data?: { id?: string } }).data?.id === 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc')).toHaveLength(1)
     expect(elements.filter((element) => (element as { data?: { label?: string } }).data?.label === 'writes')).toHaveLength(2)
+    expect(graphHarness.calls.at(-1)?.style?.find((rule) => rule.selector === 'node[nodeKind = "boundary"]')?.style).toMatchObject({
+      shape: 'diamond', color: '#5e584b', 'font-size': 10,
+    })
 
     act(() => graphHarness.nodeSelect?.({ target: { id: () => 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc' } }))
     expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')

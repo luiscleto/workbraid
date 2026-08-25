@@ -13,6 +13,7 @@ export type MapComponent = {
   title: string
   filename?: string
   node_kind?: 'home' | 'reference' | 'boundary'
+  boundary_home_title?: string
   relationships: MapRelationship[]
 }
 
@@ -313,7 +314,9 @@ export function projectionElements(components: MapComponent[], options: Projecti
       data: {
         id: component.id,
         label: component.title,
-        displayLabel: component.title,
+        displayLabel: component.node_kind === 'boundary' && component.boundary_home_title
+          ? `${component.title}\nLives in ${component.boundary_home_title}`
+          : component.title,
         nodeKind: component.node_kind ?? '',
         reviewStatus: status,
       },
@@ -451,7 +454,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "added"]', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 3, shape: 'hexagon' } },
   { selector: 'node[reviewStatus = "content_changed"]', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 3, 'border-style': 'dashed' } },
   { selector: 'node[nodeKind = "reference"]', style: { 'border-style': 'dashed', 'background-color': '#eee3c8' } },
-  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', color: '#5e584b', width: 104, height: 62 } },
+  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', color: '#5e584b', 'font-size': 10, 'text-max-width': '94px', width: 104, height: 62 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
   { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },

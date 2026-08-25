@@ -1239,9 +1239,18 @@ dd {
   text-transform: uppercase;
 }
 
+.component-documentation-actions {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.component-documentation-actions button,
 .detail-link {
   align-self: flex-start;
-  margin-top: 20px;
+  margin-top: 0;
 }
 
 .pane-heading {

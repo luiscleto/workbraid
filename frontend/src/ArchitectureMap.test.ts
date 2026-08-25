@@ -88,21 +88,21 @@ it('maps v2 relationship deltas to exact selected-Diagram internal and boundary 
   ]
   const candidateDetail = projectionElements([
     { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'boundary:gateway', label: 'reports', projection_key: 'diagram:detail:worker:1' }] },
-    { id: 'boundary:gateway', component_id: 'gateway', title: 'Gateway', node_kind: 'boundary', relationships: [] },
+    { id: 'boundary:gateway', component_id: 'gateway', title: 'Gateway', node_kind: 'boundary', boundary_home_title: 'System', relationships: [] },
   ], { reviewSide: 'with', reviewDiagramID: detail, reviewRelationships: changes })
   const addedBoundary = candidateDetail.find((element) => element.data.id === 'diagram:detail:worker:1')
   expect(addedBoundary?.data).toMatchObject({ reviewStatus: 'added', source: 'worker', target: 'boundary:gateway', source_id: 'worker', target_id: 'gateway', source_title: 'Worker', target_title: 'Gateway' })
-  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data.displayLabel).toBe('Gateway')
+  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data.displayLabel).toBe('Gateway\nLives in System')
   expect(candidateDetail.filter((element) => 'source' in element.data)).toHaveLength(1)
   expect(candidateDetail.find((element) => element.data.id === 'worker')?.data.reviewStatus).toBe('unchanged')
 
   const baseDetail = projectionElements([
     { id: 'worker', component_id: 'worker', title: 'Worker', node_kind: 'reference', relationships: [{ target_id: 'boundary:records', label: 'writes', projection_key: 'diagram:detail:worker:1' }] },
-    { id: 'boundary:records', component_id: 'records', title: 'Records', node_kind: 'boundary', relationships: [] },
+    { id: 'boundary:records', component_id: 'records', title: 'Records', node_kind: 'boundary', boundary_home_title: 'Data', relationships: [] },
   ], { reviewSide: 'before', reviewDiagramID: detail, reviewRelationships: changes })
   expect(baseDetail.find((element) => element.data.id === 'diagram:detail:worker:1')?.data).toMatchObject({ reviewStatus: 'removed', source: 'worker', target: 'boundary:records', source_id: 'worker', target_id: 'records' })
   expect(baseDetail.find((element) => element.data.id === 'worker')?.data).toMatchObject({ displayLabel: 'Worker', nodeKind: 'reference' })
-  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data).toMatchObject({ displayLabel: 'Records', nodeKind: 'boundary' })
+  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data).toMatchObject({ displayLabel: 'Records\nLives in Data', nodeKind: 'boundary' })
 
   const candidateRoot = projectionElements([
     { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'gateway', label: 'reports', projection_key: 'diagram:root:worker:1' }] },

@@ -98,7 +98,7 @@ For the selected Diagram:
 - the index lists its canonical home and reference Component appearances using titles as the primary label;
 - the map shows those appearances, ordinary Relationships whose endpoints both appear, and derived boundary references for Relationships crossing the Diagram boundary;
 - selecting a Component from the tree/index/map opens the same canonical documentation in the contextual pane;
-- activating a home Component's detail affordance drills into its child Diagram;
+- activating a home Component's detail affordance drills into its child Diagram; this navigation action is visually distinct from Component editing and appears below the edit action in the contextual pane;
 - back/breadcrumb navigation returns to the parent with the anchor Component identifiable;
 - activating a boundary reference opens the external Component in its home Diagram.
 
@@ -109,7 +109,7 @@ Normal product language distinguishes the two forms without requiring domain jar
 - a canonical reference appearance is **Included here · Lives in _home Diagram_**;
 - a derived boundary reference says the related Component **Lives in** its home Diagram.
 
-The map canvas keeps the Component title as its only node text. Reference and home-location wording appears only as visually subordinate, small, italic, muted context in the index or contextual dock.
+The map canvas keeps the Component title primary. Canonical reference nodes add no secondary canvas wording; derived boundary nodes add a subdued **Lives in _home Diagram_** subtitle so their external location remains understandable. Reference and home-location wording in the index or contextual dock is visually subordinate, small, italic, and muted.
 
 IDs, Diagram filenames, YAML roles, and hierarchy keys remain out of normal navigation chrome. Duplicate Diagram or Component titles receive only the minimum ancestor, anchor, filename, or shortened-ID context required to distinguish them.
 

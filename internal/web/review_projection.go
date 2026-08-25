@@ -279,7 +279,11 @@ func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewD
 		for _, appearance := range current.Appearances {
 			key := appearance.ComponentID + "\x00" + appearance.Role + "\x00" + appearance.DetailDiagramID
 			if _, unchanged := beforeAppearances[key]; !unchanged {
-				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "added", Path: "diagrams/" + current.Filename})
+				status := "added"
+				if appearanceIdentityExists(base.Appearances, appearance) {
+					status = "detail_changed"
+				}
+				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: status, Path: "diagrams/" + current.Filename})
 			}
 		}
 	}
@@ -289,11 +293,23 @@ func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewD
 		for _, appearance := range current.Appearances {
 			key := appearance.ComponentID + "\x00" + appearance.Role + "\x00" + appearance.DetailDiagramID
 			if _, unchanged := withAppearances[key]; !unchanged {
+				if appearanceIdentityExists(candidate.Appearances, appearance) {
+					continue
+				}
 				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "removed", Path: "diagrams/" + current.Filename})
 			}
 		}
 	}
 	return diagrams, appearances
+}
+
+func appearanceIdentityExists(values []diagramAppearanceResponse, target diagramAppearanceResponse) bool {
+	for _, appearance := range values {
+		if appearance.ComponentID == target.ComponentID && appearance.Role == target.Role {
+			return true
+		}
+	}
+	return false
 }
 
 func appearanceSet(values []diagramAppearanceResponse) map[string]struct{} {

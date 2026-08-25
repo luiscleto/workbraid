@@ -611,6 +611,80 @@ func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *test
 	}
 }
 
+func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	storeID := uuid.NewString()
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := manager.NewComponentChange(base, nil, "Anchor", "Anchor body\n")
+	worker := manager.NewComponentChange(base, []ComponentChange{anchor}, "Worker", "Worker body\n")
+	first := base.NewDetailDiagramChange(nil, "System A", anchor.ID)
+	composition := rootHomes(base, anchor, worker)
+	composition.DetailDiagrams = []DetailDiagramChange{first}
+	composition.HomeMoves = []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: first.ID}}
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{anchor, worker}, composition)
+	if err != nil {
+		t.Fatalf("construct first detail: %v", err)
+	}
+	firstSnapshot := candidate.Snapshot()
+	anchorBlob := gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "rev-parse", candidate.Tree()+":"+anchor.Path)
+
+	second := firstSnapshot.NewDetailDiagramChange(nil, "Worker internals", worker.ID)
+	secondComposition := CandidateComposition{DetailDiagrams: []DetailDiagramChange{second}}
+	nested, err := manager.ConstructCandidate(context.Background(), firstSnapshot, nil, secondComposition)
+	if err != nil {
+		t.Fatalf("construct nested detail: %v", err)
+	}
+	if before, after := gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", candidate.Tree(), "diagrams/root.yaml"), gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", nested.Tree(), "diagrams/root.yaml"); before != after {
+		t.Fatalf("untouched root Diagram entry changed\nbefore: %s\nafter: %s", before, after)
+	}
+	rootID := nested.Snapshot().RootDiagramID()
+	if _, err := manager.ConstructCandidate(context.Background(), nested.Snapshot(), nil, CandidateComposition{HomeMoves: []ComponentHomeMove{
+		{ComponentID: anchor.ID, DiagramID: second.ID},
+		{ComponentID: worker.ID, DiagramID: rootID},
+	}}); err != nil {
+		t.Fatalf("complete valid reparenting was rejected because of move order: %v", err)
+	}
+	movedComposition := CandidateComposition{
+		DetailDiagrams: []DetailDiagramChange{second},
+		HomeMoves:      []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: rootID}},
+	}
+	moved, err := manager.ConstructCandidate(context.Background(), firstSnapshot, nil, movedComposition)
+	if err != nil {
+		var diagramErr *DiagramValidationError
+		errors.As(err, &diagramErr)
+		t.Fatalf("move anchored home: %v (diagram=%q component=%q field=%q)", err, diagramErr.DiagramID, diagramErr.ComponentID, diagramErr.Field)
+	}
+	_, detailID, ok := moved.Snapshot().ComponentHome(worker.ID)
+	if !ok || detailID != second.ID {
+		t.Fatalf("moved home detail = %q, ok=%v", detailID, ok)
+	}
+	if got := gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "rev-parse", moved.Tree()+":"+anchor.Path); got != anchorBlob {
+		t.Fatalf("composition rewrote unchanged Component blob: %s != %s", got, anchorBlob)
+	}
+	if before, after := gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", nested.Tree(), second.Path), gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", moved.Tree(), second.Path); before != after {
+		t.Fatalf("reparenting rewrote child Diagram entry\nbefore: %s\nafter: %s", before, after)
+	}
+	cycleComposition := CandidateComposition{
+		DetailDiagrams: []DetailDiagramChange{second},
+		HomeMoves:      []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: second.ID}},
+	}
+	if _, err := manager.ConstructCandidate(context.Background(), firstSnapshot, nil, cycleComposition); !errors.Is(err, ErrDiagramCycle) {
+		t.Fatalf("descendant move error = %v", err)
+	}
+}
+
+func mustStorePath(t *testing.T, manager *Manager, storeID string) string {
+	t.Helper()
+	path, err := manager.StorePath(storeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()

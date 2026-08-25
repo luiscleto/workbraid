@@ -372,6 +372,9 @@ type ComponentChange struct {
 type CandidateComposition struct {
 	DiagramSetup      *DiagramSetupChange
 	NewComponentHomes []NewComponentHome
+	DetailDiagrams    []DetailDiagramChange
+	DiagramTitles     []DiagramTitleChange
+	HomeMoves         []ComponentHomeMove
 }
 
 // DiagramSetupChange is the one deliberate v1-to-v2 setup fact. Its identity
@@ -388,6 +391,44 @@ type NewComponentHome struct {
 	DiagramID   string
 }
 
+// DetailDiagramChange is one pending detail Diagram creation. Identity and
+// path are generated once by the backend; hierarchy remains owned by the
+// anchoring home appearance.
+type DetailDiagramChange struct {
+	ID                string `json:"id"`
+	Path              string `json:"path"`
+	Title             string `json:"title"`
+	AnchorComponentID string `json:"anchor_component_id"`
+}
+
+// DiagramTitleChange changes only the authored title of an existing Diagram.
+type DiagramTitleChange struct {
+	DiagramID string `json:"diagram_id"`
+	Title     string `json:"title"`
+}
+
+// ComponentHomeMove is one explicit Diagram-composition destination.
+type ComponentHomeMove struct {
+	ComponentID string `json:"component_id"`
+	DiagramID   string `json:"diagram_id"`
+}
+
+type DiagramValidationError struct {
+	DiagramID   string
+	ComponentID string
+	Field       string
+	Err         error
+}
+
+func (err *DiagramValidationError) Error() string { return err.Err.Error() }
+func (err *DiagramValidationError) Unwrap() error { return err.Err }
+
+var (
+	ErrDiagramTitleRequired = fmt.Errorf("%w: Diagram title is required", ErrInvalid)
+	ErrDiagramHomeInvalid   = fmt.Errorf("%w: Component home is invalid", ErrInvalid)
+	ErrDiagramCycle         = fmt.Errorf("%w: Diagram move creates a hierarchy cycle", ErrInvalid)
+)
+
 func (snapshot Snapshot) NewDiagramSetupChange() DiagramSetupChange {
 	return DiagramSetupChange{RootDiagramID: uuid.NewString()}
 }
@@ -403,6 +444,66 @@ func (snapshot Snapshot) HasDiagram(id string) bool {
 		}
 	}
 	return false
+}
+
+func (snapshot Snapshot) HasComponent(id string) bool {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return false
+	}
+	for _, current := range snapshot.components {
+		if current.id == parsed {
+			return true
+		}
+	}
+	return false
+}
+
+func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
+	parsed, err := uuid.Parse(componentID)
+	if err != nil || snapshot.formatVersion != 2 {
+		return "", "", false
+	}
+	for _, current := range snapshot.diagrams {
+		for _, appearance := range current.appearances {
+			if appearance.component == parsed && appearance.role == "home" {
+				detail := ""
+				if appearance.hasDetailLink {
+					detail = appearance.detailDiagram.String()
+				}
+				return current.id.String(), detail, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func (snapshot Snapshot) NewDetailDiagramChange(existing []DetailDiagramChange, title, anchorComponentID string) DetailDiagramChange {
+	id := uuid.NewString()
+	used := make(map[string]struct{}, len(snapshot.diagrams)+len(existing))
+	for _, current := range snapshot.diagrams {
+		used[current.path] = struct{}{}
+	}
+	for _, current := range existing {
+		used[current.Path] = struct{}{}
+	}
+	base := diagramFilenameSlug(title)
+	path := "diagrams/" + base + ".yaml"
+	for suffix := 2; ; suffix++ {
+		if _, exists := used[path]; !exists {
+			break
+		}
+		path = fmt.Sprintf("diagrams/%s-%d.yaml", base, suffix)
+	}
+	return DetailDiagramChange{ID: id, Path: path, Title: title, AnchorComponentID: anchorComponentID}
+}
+
+func diagramFilenameSlug(title string) string {
+	value := componentFilenameSlug(title)
+	if value == "component" {
+		return "detail-diagram"
+	}
+	return value
 }
 
 // Candidate is a completely constructed and validated non-canonical tree.
@@ -1088,7 +1189,46 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 	}
 
 	if base.formatVersion == 2 {
-		changedDiagrams := make(map[uuid.UUID]diagram)
+		diagrams := make(map[uuid.UUID]diagram, len(base.diagrams)+len(composition.DetailDiagrams))
+		changedDiagrams := make(map[uuid.UUID]struct{})
+		for _, current := range base.diagrams {
+			current.appearances = append([]diagramAppearance(nil), current.appearances...)
+			diagrams[current.id] = current
+		}
+		for _, addition := range composition.DetailDiagrams {
+			id, parseErr := uuid.Parse(addition.ID)
+			_, anchorErr := uuid.Parse(addition.AnchorComponentID)
+			if parseErr != nil || anchorErr != nil || !validNewDiagramPath(addition.Path) {
+				return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "title", Err: ErrDiagramHomeInvalid}
+			}
+			if strings.TrimSpace(addition.Title) == "" {
+				return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "title", Err: ErrDiagramTitleRequired}
+			}
+			if _, exists := diagrams[id]; exists {
+				return Candidate{}, fmt.Errorf("%w: detail Diagram identity already exists", ErrInvalid)
+			}
+			if _, exists := byPath[addition.Path]; exists {
+				return Candidate{}, fmt.Errorf("%w: detail Diagram path already exists", ErrInvalid)
+			}
+			diagrams[id] = diagram{id: id, path: addition.Path, title: addition.Title, mode: "100644"}
+			changedDiagrams[id] = struct{}{}
+		}
+		for _, titleChange := range composition.DiagramTitles {
+			id, parseErr := uuid.Parse(titleChange.DiagramID)
+			if parseErr != nil {
+				return Candidate{}, &DiagramValidationError{DiagramID: titleChange.DiagramID, Field: "title", Err: ErrDiagramHomeInvalid}
+			}
+			if strings.TrimSpace(titleChange.Title) == "" {
+				return Candidate{}, &DiagramValidationError{DiagramID: titleChange.DiagramID, Field: "title", Err: ErrDiagramTitleRequired}
+			}
+			current, exists := diagrams[id]
+			if !exists {
+				return Candidate{}, &DiagramValidationError{DiagramID: titleChange.DiagramID, Field: "title", Err: ErrDiagramHomeInvalid}
+			}
+			current.title = titleChange.Title
+			diagrams[id] = current
+			changedDiagrams[id] = struct{}{}
+		}
 		seenHomes := make(map[string]struct{}, len(composition.NewComponentHomes))
 		for _, home := range composition.NewComponentHomes {
 			if _, duplicate := seenHomes[home.ComponentID]; duplicate {
@@ -1110,16 +1250,7 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 			if !changeFound {
 				return Candidate{}, fmt.Errorf("%w: home does not belong to a new Component", ErrInvalid)
 			}
-			current, exists := changedDiagrams[diagramID]
-			if !exists {
-				for _, candidate := range base.diagrams {
-					if candidate.id == diagramID {
-						current = candidate
-						exists = true
-						break
-					}
-				}
-			}
+			current, exists := diagrams[diagramID]
 			if !exists {
 				return Candidate{}, fmt.Errorf("%w: home Diagram does not exist", ErrInvalid)
 			}
@@ -1129,7 +1260,8 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 				}
 			}
 			current.appearances = append(current.appearances, diagramAppearance{component: componentID, role: "home"})
-			changedDiagrams[diagramID] = current
+			diagrams[diagramID] = current
+			changedDiagrams[diagramID] = struct{}{}
 		}
 		for _, change := range changes {
 			if !change.New {
@@ -1139,10 +1271,108 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 				return Candidate{}, fmt.Errorf("%w: new Component is missing its home Diagram", ErrInvalid)
 			}
 		}
-		for _, current := range changedDiagrams {
+		for _, addition := range composition.DetailDiagrams {
+			detailID := uuid.MustParse(addition.ID)
+			anchorID := uuid.MustParse(addition.AnchorComponentID)
+			found := false
+			for diagramID, current := range diagrams {
+				for index := range current.appearances {
+					appearance := &current.appearances[index]
+					if appearance.component != anchorID || appearance.role != "home" {
+						continue
+					}
+					if appearance.hasDetailLink {
+						return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "detail", Err: ErrDiagramHomeInvalid}
+					}
+					appearance.detailDiagram, appearance.hasDetailLink = detailID, true
+					diagrams[diagramID] = current
+					changedDiagrams[diagramID] = struct{}{}
+					found = true
+					break
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "detail", Err: ErrDiagramHomeInvalid}
+			}
+		}
+		for _, move := range composition.HomeMoves {
+			componentID, componentErr := uuid.Parse(move.ComponentID)
+			destinationID, diagramErr := uuid.Parse(move.DiagramID)
+			if componentErr != nil || diagramErr != nil {
+				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
+			}
+			destination, destinationExists := diagrams[destinationID]
+			if !destinationExists {
+				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
+			}
+			var sourceID uuid.UUID
+			var home diagramAppearance
+			found := false
+			for id, current := range diagrams {
+				for _, appearance := range current.appearances {
+					if appearance.component == componentID && appearance.role == "home" {
+						sourceID, home, found = id, appearance, true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
+			}
+			if sourceID == destinationID {
+				continue
+			}
+			source := diagrams[sourceID]
+			filtered := source.appearances[:0:0]
+			for _, appearance := range source.appearances {
+				if appearance.component != componentID || appearance.role != "home" {
+					filtered = append(filtered, appearance)
+				}
+			}
+			source.appearances = filtered
+			diagrams[sourceID] = source
+			changedDiagrams[sourceID] = struct{}{}
+
+			converted := false
+			for index := range destination.appearances {
+				if destination.appearances[index].component == componentID {
+					if destination.appearances[index].role != "reference" || destination.appearances[index].hasDetailLink {
+						return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
+					}
+					destination.appearances[index] = home
+					converted = true
+					break
+				}
+			}
+			if !converted {
+				destination.appearances = append(destination.appearances, home)
+			}
+			diagrams[destinationID] = destination
+			changedDiagrams[destinationID] = struct{}{}
+		}
+		for _, move := range composition.HomeMoves {
+			componentID, componentErr := uuid.Parse(move.ComponentID)
+			destinationID, diagramErr := uuid.Parse(move.DiagramID)
+			if componentErr != nil || diagramErr != nil {
+				continue
+			}
+			for _, appearance := range diagrams[destinationID].appearances {
+				if appearance.component == componentID && appearance.role == "home" && appearance.hasDetailLink && diagramDescendsFrom(destinationID, appearance.detailDiagram, diagrams) {
+					return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramCycle}
+				}
+			}
+		}
+		for id := range changedDiagrams {
+			current := diagrams[id]
 			contents, err := marshalDiagram(current)
 			if err != nil {
-				return Candidate{}, fmt.Errorf("serialize Component home: %w", err)
+				return Candidate{}, fmt.Errorf("serialize Diagram composition: %w", err)
 			}
 			blob, err := manager.git.writeBlob(ctx, storePath, contents)
 			if err != nil {
@@ -1206,6 +1436,37 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		return Candidate{}, err
 	}
 	return Candidate{tree: tree, snapshot: snapshot}, nil
+}
+
+func validNewDiagramPath(path string) bool {
+	return strings.HasPrefix(path, "diagrams/") && strings.HasSuffix(path, ".yaml") &&
+		path != "diagrams/.yaml" && !strings.Contains(strings.TrimPrefix(path, "diagrams/"), "/")
+}
+
+func diagramDescendsFrom(candidate, ancestor uuid.UUID, diagrams map[uuid.UUID]diagram) bool {
+	if candidate == ancestor {
+		return true
+	}
+	seen := map[uuid.UUID]struct{}{ancestor: {}}
+	queue := []uuid.UUID{ancestor}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, appearance := range diagrams[current].appearances {
+			if !appearance.hasDetailLink {
+				continue
+			}
+			if appearance.detailDiagram == candidate {
+				return true
+			}
+			if _, exists := seen[appearance.detailDiagram]; exists {
+				continue
+			}
+			seen[appearance.detailDiagram] = struct{}{}
+			queue = append(queue, appearance.detailDiagram)
+		}
+	}
+	return false
 }
 
 // AcceptedRevision observes only the authoritative accepted ref for the

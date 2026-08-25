@@ -65,6 +65,9 @@ type pendingChangeSet struct {
 	changes                        []architecture.ComponentChange
 	diagramSetup                   *architecture.DiagramSetupChange
 	newComponentHomes              []architecture.NewComponentHome
+	detailDiagrams                 []architecture.DetailDiagramChange
+	diagramTitles                  []architecture.DiagramTitleChange
+	homeMoves                      []architecture.ComponentHomeMove
 	candidate                      *architecture.Candidate
 	generation                     uint64
 	review                         *reviewBinding
@@ -73,6 +76,8 @@ type pendingChangeSet struct {
 	validationItem                 string
 	validationRelationshipPosition int
 	validationRelationshipField    string
+	validationDiagram              string
+	validationDiagramField         string
 	stale                          bool
 }
 
@@ -102,6 +107,9 @@ func newHandler(db *sql.DB, expectedOrigin, uiDirectory, dataDirectory string) (
 	mux.HandleFunc("POST /api/architecture/components/add", handler.addComponent)
 	mux.HandleFunc("POST /api/architecture/components/edit", handler.editComponent)
 	mux.HandleFunc("POST /api/architecture/diagrams/setup", handler.setupDiagrams)
+	mux.HandleFunc("POST /api/architecture/diagrams/detail", handler.createDetailDiagram)
+	mux.HandleFunc("POST /api/architecture/diagrams/title", handler.editDiagramTitle)
+	mux.HandleFunc("POST /api/architecture/components/move-home", handler.moveComponentHome)
 	mux.HandleFunc("POST /api/architecture/review", handler.reviewChanges)
 	mux.HandleFunc("POST /api/architecture/accept", handler.acceptChanges)
 	mux.HandleFunc("POST /api/architecture/discard", handler.discardChanges)
@@ -269,18 +277,24 @@ type relationshipTargetResponse struct {
 }
 
 type changesResponse struct {
-	Components                     []pendingComponentResponse   `json:"components"`
-	RelationshipTargets            []relationshipTargetResponse `json:"relationship_targets"`
-	Valid                          bool                         `json:"valid"`
-	ValidationCode                 string                       `json:"validation_code,omitempty"`
-	ValidationItem                 string                       `json:"validation_item,omitempty"`
-	ValidationRelationshipPosition int                          `json:"validation_relationship_position,omitempty"`
-	ValidationRelationshipField    string                       `json:"validation_relationship_field,omitempty"`
-	Review                         *reviewResponse              `json:"review,omitempty"`
-	ReviewBlocker                  string                       `json:"review_blocker,omitempty"`
-	Stale                          bool                         `json:"stale,omitempty"`
-	DiagramSetup                   bool                         `json:"diagram_setup,omitempty"`
-	LegacyReadOnly                 bool                         `json:"legacy_read_only,omitempty"`
+	Components                     []pendingComponentResponse         `json:"components"`
+	RelationshipTargets            []relationshipTargetResponse       `json:"relationship_targets"`
+	Valid                          bool                               `json:"valid"`
+	ValidationCode                 string                             `json:"validation_code,omitempty"`
+	ValidationItem                 string                             `json:"validation_item,omitempty"`
+	ValidationRelationshipPosition int                                `json:"validation_relationship_position,omitempty"`
+	ValidationRelationshipField    string                             `json:"validation_relationship_field,omitempty"`
+	ValidationDiagram              string                             `json:"validation_diagram,omitempty"`
+	ValidationDiagramField         string                             `json:"validation_diagram_field,omitempty"`
+	DetailDiagrams                 []architecture.DetailDiagramChange `json:"detail_diagrams,omitempty"`
+	DiagramTitles                  []architecture.DiagramTitleChange  `json:"diagram_titles,omitempty"`
+	HomeMoves                      []architecture.ComponentHomeMove   `json:"home_moves,omitempty"`
+	Candidate                      *snapshotProjectionResponse        `json:"candidate,omitempty"`
+	Review                         *reviewResponse                    `json:"review,omitempty"`
+	ReviewBlocker                  string                             `json:"review_blocker,omitempty"`
+	Stale                          bool                               `json:"stale,omitempty"`
+	DiagramSetup                   bool                               `json:"diagram_setup,omitempty"`
+	LegacyReadOnly                 bool                               `json:"legacy_read_only,omitempty"`
 }
 
 type reviewResponse struct {
@@ -334,10 +348,19 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 			ValidationItem:                 pending.validationItem,
 			ValidationRelationshipPosition: pending.validationRelationshipPosition,
 			ValidationRelationshipField:    pending.validationRelationshipField,
+			ValidationDiagram:              pending.validationDiagram,
+			ValidationDiagramField:         pending.validationDiagramField,
+			DetailDiagrams:                 pending.detailDiagrams,
+			DiagramTitles:                  pending.diagramTitles,
+			HomeMoves:                      pending.homeMoves,
 			ReviewBlocker:                  pending.reviewBlocker,
 			Stale:                          pending.stale,
 			DiagramSetup:                   pending.diagramSetup != nil,
 			LegacyReadOnly:                 legacyReadOnly,
+		}
+		if pending.candidate != nil {
+			candidateProjection := projectSnapshot(pending.candidate.Snapshot(), "")
+			result.Changes.Candidate = &candidateProjection
 		}
 		if !legacyReadOnly && !pending.stale && pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 			before, withChanges, comparison := captureReviewPresentation(pending.baseSnapshot, pending.review.candidate.Snapshot())
@@ -731,7 +754,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		if homeDiagramID == "" {
 			homeDiagramID = snapshot.RootDiagramID()
 		}
-		if !snapshot.HasDiagram(homeDiagramID) {
+		if !pendingHasDiagram(snapshot, h.pending, homeDiagramID) {
 			if len(h.pending.changes) == 0 {
 				h.pending = nil
 			}
@@ -784,28 +807,14 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 	h.pending.validationItem = ""
 	h.pending.validationRelationshipPosition = 0
 	h.pending.validationRelationshipField = ""
+	h.pending.validationDiagram = ""
+	h.pending.validationDiagramField = ""
 	if err != nil {
-		var componentError *architecture.ComponentValidationError
-		if errors.As(err, &componentError) {
-			h.pending.validationItem = componentError.ComponentID
-			h.pending.validationRelationshipPosition = componentError.RelationshipPosition
-			h.pending.validationRelationshipField = componentError.RelationshipField
-		} else {
+		h.recordCandidateValidation(h.pending, err)
+		if h.pending.validationItem == "" {
 			h.pending.validationItem = change.ID
 		}
-		switch {
-		case errors.Is(err, architecture.ErrTitleRequired):
-			h.pending.validationCode = "title_required"
-		case errors.Is(err, architecture.ErrTitleOneLine):
-			h.pending.validationCode = "title_one_line"
-		case errors.Is(err, architecture.ErrRelationshipLabelRequired):
-			h.pending.validationCode = "relationship_label_required"
-		case errors.Is(err, architecture.ErrRelationshipTargetRequired):
-			h.pending.validationCode = "relationship_target_required"
-		case errors.Is(err, architecture.ErrInvalid):
-			h.pending.validationCode = "change_invalid"
-		default:
-			h.pending.validationCode = "change_unavailable"
+		if h.pending.validationCode == "change_unavailable" {
 			writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
 			return
 		}
@@ -818,6 +827,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
 	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
 		DiagramSetup: pending.diagramSetup, NewComponentHomes: pending.newComponentHomes,
+		DetailDiagrams: pending.detailDiagrams, DiagramTitles: pending.diagramTitles, HomeMoves: pending.homeMoves,
 	})
 }
 
@@ -854,6 +864,223 @@ func (h *Handler) setupDiagrams(response http.ResponseWriter, request *http.Requ
 	}
 	h.pending.candidate = &candidate
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+type diagramMutationRequest struct {
+	SourceRoot       string `json:"source_root"`
+	ExpectedRevision string `json:"expected_revision"`
+	DiagramID        string `json:"diagram_id,omitempty"`
+	ComponentID      string `json:"component_id,omitempty"`
+	Title            string `json:"title,omitempty"`
+}
+
+func (h *Handler) decodeDiagramMutation(response http.ResponseWriter, request *http.Request) (diagramMutationRequest, bool) {
+	if request.Header.Get("Origin") != h.expectedOrigin {
+		writeJSON(response, http.StatusForbidden, errorResponse{Code: errorOriginMismatch})
+		return diagramMutationRequest{}, false
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBody)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var payload diagramMutationRequest
+	if err := decoder.Decode(&payload); err != nil || ensureJSONEnd(decoder) != nil {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorLookupFailed})
+		return diagramMutationRequest{}, false
+	}
+	return payload, true
+}
+
+func (h *Handler) writableV2PendingLocked(response http.ResponseWriter, payload diagramMutationRequest) (architecture.Snapshot, *pendingChangeSet, bool) {
+	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.SourceRoot != h.loadedProject.sourceRoot {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+		return architecture.Snapshot{}, nil, false
+	}
+	if h.loadedStale {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
+		return architecture.Snapshot{}, nil, false
+	}
+	snapshot := *h.loadedSnapshot
+	if payload.ExpectedRevision == "" || payload.ExpectedRevision != snapshot.Revision() {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return architecture.Snapshot{}, nil, false
+	}
+	if snapshot.FormatVersion() != 2 {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+		return architecture.Snapshot{}, nil, false
+	}
+	if h.pending != nil && (h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision()) {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return architecture.Snapshot{}, nil, false
+	}
+	if h.pending == nil {
+		h.pending = &pendingChangeSet{storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot}
+	}
+	return snapshot, h.pending, true
+}
+
+func pendingHasDiagram(snapshot architecture.Snapshot, pending *pendingChangeSet, id string) bool {
+	if snapshot.HasDiagram(id) {
+		return true
+	}
+	for _, addition := range pending.detailDiagrams {
+		if addition.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func pendingHasComponent(snapshot architecture.Snapshot, pending *pendingChangeSet, id string) bool {
+	if snapshot.HasComponent(id) {
+		return true
+	}
+	for _, change := range pending.changes {
+		if change.New && change.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) {
+	pending.generation++
+	pending.review = nil
+	pending.reviewBlocker = ""
+	pending.validationCode = ""
+	pending.validationItem = ""
+	pending.validationRelationshipPosition = 0
+	pending.validationRelationshipField = ""
+	pending.validationDiagram = ""
+	pending.validationDiagramField = ""
+	candidate, err := h.constructCandidate(ctx, snapshot, pending)
+	if err != nil {
+		h.recordCandidateValidation(pending, err)
+		return
+	}
+	pending.candidate = &candidate
+}
+
+func (h *Handler) createDetailDiagram(response http.ResponseWriter, request *http.Request) {
+	payload, ok := h.decodeDiagramMutation(response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	if !ok {
+		return
+	}
+	for _, addition := range pending.detailDiagrams {
+		if addition.AnchorComponentID == payload.ComponentID {
+			writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
+			return
+		}
+	}
+	current := snapshot
+	if pending.candidate != nil {
+		current = pending.candidate.Snapshot()
+	}
+	_, detailID, home := current.ComponentHome(payload.ComponentID)
+	if !home || detailID != "" {
+		if len(pending.changes) == 0 && len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 {
+			h.pending = nil
+		}
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
+		return
+	}
+	addition := snapshot.NewDetailDiagramChange(pending.detailDiagrams, payload.Title, payload.ComponentID)
+	pending.detailDiagrams = append(pending.detailDiagrams, addition)
+	h.rebuildPendingLocked(request.Context(), snapshot, pending)
+	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+func (h *Handler) editDiagramTitle(response http.ResponseWriter, request *http.Request) {
+	payload, ok := h.decodeDiagramMutation(response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	if !ok {
+		return
+	}
+	if !pendingHasDiagram(snapshot, pending, payload.DiagramID) {
+		if pendingChangeSetEmpty(pending) {
+			h.pending = nil
+		}
+		writeJSON(response, http.StatusNotFound, errorResponse{Code: errorChangeFailed})
+		return
+	}
+	for index := range pending.detailDiagrams {
+		if pending.detailDiagrams[index].ID == payload.DiagramID {
+			pending.detailDiagrams[index].Title = payload.Title
+			h.rebuildPendingLocked(request.Context(), snapshot, pending)
+			writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+			return
+		}
+	}
+	updated := false
+	for index := range pending.diagramTitles {
+		if pending.diagramTitles[index].DiagramID == payload.DiagramID {
+			pending.diagramTitles[index].Title = payload.Title
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		pending.diagramTitles = append(pending.diagramTitles, architecture.DiagramTitleChange{DiagramID: payload.DiagramID, Title: payload.Title})
+	}
+	h.rebuildPendingLocked(request.Context(), snapshot, pending)
+	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.Request) {
+	payload, ok := h.decodeDiagramMutation(response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	if !ok {
+		return
+	}
+	if !pendingHasComponent(snapshot, pending, payload.ComponentID) || !pendingHasDiagram(snapshot, pending, payload.DiagramID) {
+		if pendingChangeSetEmpty(pending) {
+			h.pending = nil
+		}
+		writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorChangeFailed})
+		return
+	}
+	remaining := pending.homeMoves[:0:0]
+	for _, move := range pending.homeMoves {
+		if move.ComponentID != payload.ComponentID {
+			remaining = append(remaining, move)
+		}
+	}
+	pending.homeMoves = remaining
+	withoutMove, err := h.constructCandidate(request.Context(), snapshot, pending)
+	currentHome := ""
+	if err == nil {
+		currentHome, _, _ = withoutMove.Snapshot().ComponentHome(payload.ComponentID)
+	}
+	if currentHome != payload.DiagramID {
+		pending.homeMoves = append(pending.homeMoves, architecture.ComponentHomeMove{ComponentID: payload.ComponentID, DiagramID: payload.DiagramID})
+	}
+	if pendingChangeSetEmpty(pending) {
+		h.pending = nil
+		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+		return
+	}
+	h.rebuildPendingLocked(request.Context(), snapshot, pending)
+	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+func pendingChangeSetEmpty(pending *pendingChangeSet) bool {
+	return len(pending.changes) == 0 && pending.diagramSetup == nil && len(pending.newComponentHomes) == 0 &&
+		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0
 }
 
 func authoringRelationships(values []relationshipResponse) []architecture.AuthoringRelationship {
@@ -929,6 +1156,8 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 	h.pending.validationItem = ""
 	h.pending.validationRelationshipPosition = 0
 	h.pending.validationRelationshipField = ""
+	h.pending.validationDiagram = ""
+	h.pending.validationDiagramField = ""
 	h.pending.review = &reviewBinding{
 		baseRevision: snapshot.Revision(), candidateTree: candidate.Tree(), generation: h.pending.generation,
 		diff: string(diff), candidate: candidate,
@@ -1090,11 +1319,19 @@ func (h *Handler) recordCandidateValidation(pending *pendingChangeSet, err error
 	pending.validationItem = ""
 	pending.validationRelationshipPosition = 0
 	pending.validationRelationshipField = ""
+	pending.validationDiagram = ""
+	pending.validationDiagramField = ""
 	var componentError *architecture.ComponentValidationError
 	if errors.As(err, &componentError) {
 		pending.validationItem = componentError.ComponentID
 		pending.validationRelationshipPosition = componentError.RelationshipPosition
 		pending.validationRelationshipField = componentError.RelationshipField
+	}
+	var diagramError *architecture.DiagramValidationError
+	if errors.As(err, &diagramError) {
+		pending.validationItem = diagramError.ComponentID
+		pending.validationDiagram = diagramError.DiagramID
+		pending.validationDiagramField = diagramError.Field
 	}
 	switch {
 	case errors.Is(err, architecture.ErrTitleRequired):
@@ -1105,6 +1342,12 @@ func (h *Handler) recordCandidateValidation(pending *pendingChangeSet, err error
 		pending.validationCode = "relationship_label_required"
 	case errors.Is(err, architecture.ErrRelationshipTargetRequired):
 		pending.validationCode = "relationship_target_required"
+	case errors.Is(err, architecture.ErrDiagramTitleRequired):
+		pending.validationCode = "diagram_title_required"
+	case errors.Is(err, architecture.ErrDiagramCycle):
+		pending.validationCode = "diagram_cycle"
+	case errors.Is(err, architecture.ErrDiagramHomeInvalid):
+		pending.validationCode = "diagram_home_invalid"
 	case !errors.Is(err, architecture.ErrInvalid):
 		pending.validationCode = "change_unavailable"
 	}

@@ -290,9 +290,9 @@ describe('App', () => {
 
     const documentationActions = screen.getByRole('button', { name: 'Edit component' }).closest('.component-documentation-actions') as HTMLElement
     const actionButtons = within(documentationActions).getAllByRole('button')
-    expect(actionButtons.map((button) => button.textContent)).toEqual(['Edit component', 'Open Detail'])
+    expect(actionButtons.map((button) => button.textContent)).toEqual(['Edit component', 'Change where it lives', 'Open Detail'])
     expect(actionButtons[0]).toHaveClass('inline-action')
-    expect(actionButtons[1]).toHaveClass('secondary-action', 'detail-link')
+    expect(actionButtons[2]).toHaveClass('secondary-action', 'detail-link')
 
     const user = userEvent.setup()
     await user.click(within(navigator).getByRole('button', { name: 'Worker, Included here · Lives in Detail' }))
@@ -341,6 +341,120 @@ describe('App', () => {
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
     expect(screen.getByText('This diagram has no components.')).toBeInTheDocument()
     expect(screen.queryByText('The architecture has no components yet.')).not.toBeInTheDocument()
+  })
+
+  it('keeps a candidate-only detail Diagram reachable through Changes in progress', async () => {
+    const accepted = acceptedV2()
+    const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const detail = '22222222-2222-4222-8222-222222222222'
+    const nested = '44444444-4444-4444-8444-444444444444'
+    const candidateDiagrams = accepted.diagrams.map((diagram) => diagram.id === detail
+      ? { ...diagram, appearances: diagram.appearances.map((appearance) => appearance.component_id === worker ? { ...appearance, detail_diagram_id: nested, detail_diagram_title: 'Worker internals' } : appearance) }
+      : diagram).concat([{ id: nested, title: 'Worker internals', depth: 2, context: 'Inside Worker', parent_diagram_id: detail, parent_anchor_component_id: worker, breadcrumbs: [], appearances: [], boundaries: [], relationships: [] }])
+    const kept = {
+      ...accepted,
+      changes: {
+        components: [], valid: true,
+        detail_diagrams: [{ id: nested, path: 'diagrams/worker-internals.yaml', title: 'Worker internals', anchor_component_id: worker }],
+        candidate: { revision: '3'.repeat(40), format_version: 2, component_count: accepted.component_count, component_titles: accepted.component_titles, components: accepted.components, root_diagram_id: accepted.root_diagram_id, diagrams: candidateDiagrams },
+      },
+    }
+    const fetchMock = mockResponses([accepted, kept])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
+    await user.click(screen.getByRole('button', { name: 'Worker' }))
+    await user.click(screen.getByRole('button', { name: 'Create detail diagram' }))
+    await user.type(screen.getByRole('textbox', { name: 'Diagram title' }), 'Worker internals')
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/detail')
+    expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Diagram changes in progress' })).getByText('Worker internals')).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).queryByRole('button', { name: /Worker internals/ })).not.toBeInTheDocument()
+  })
+
+  it('guards a dirty home destination and keeps the move through the Diagram endpoint', async () => {
+    const accepted = acceptedV2()
+    const gateway = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const empty = '33333333-3333-4333-8333-333333333333'
+    const kept = {
+      ...accepted,
+      changes: {
+        components: [], valid: true,
+        home_moves: [{ component_id: gateway, diagram_id: empty }],
+        candidate: accepted,
+      },
+    }
+    const fetchMock = mockResponses([accepted, kept])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Change where it lives' }))
+    await user.selectOptions(screen.getByLabelText('Diagram'), empty)
+    await user.click(screen.getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
+    expect(screen.getByRole('heading', { name: 'Leave without keeping?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByLabelText('Diagram')).toHaveValue(empty)
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/components/move-home')
+    expect(requestBody(fetchMock, 1)).toEqual({
+      source_root: '/tmp/example', expected_revision: '2'.repeat(40), component_id: gateway, diagram_id: empty,
+    })
+    expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+  })
+
+  it('keeps a structured Diagram title edit without exposing schema details', async () => {
+    const accepted = acceptedV2()
+    const root = '11111111-1111-4111-8111-111111111111'
+    const kept = {
+      ...accepted,
+      changes: {
+        components: [], valid: true,
+        diagram_titles: [{ diagram_id: root, title: 'Platform' }],
+        candidate: accepted,
+      },
+    }
+    const fetchMock = mockResponses([accepted, kept])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Edit diagram title' }))
+    await user.clear(screen.getByLabelText('Diagram title'))
+    await user.type(screen.getByLabelText('Diagram title'), 'Platform')
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/title')
+    expect(requestBody(fetchMock, 1)).toEqual({
+      source_root: '/tmp/example', expected_revision: '2'.repeat(40), diagram_id: root, title: 'Platform',
+    })
+    expect(screen.queryByText(/yaml|schema|uuid/i)).not.toBeInTheDocument()
+  })
+
+  it('localizes an invalid Diagram title and opens its exact correction control', async () => {
+    const accepted = acceptedV2()
+    const nested = '44444444-4444-4444-8444-444444444444'
+    const invalid = acceptedV2({
+      changes: {
+        components: [], valid: false, validation_code: 'diagram_title_required', review_blocker: 'diagram_title_required',
+        validation_diagram: nested, validation_diagram_field: 'title',
+        detail_diagrams: [{ id: nested, path: 'diagrams/detail-diagram.yaml', title: '   ', anchor_component_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }],
+      },
+    })
+    mockResponses([invalid])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Add a title to this diagram.')
+    expect(screen.getByText('Untitled diagram').closest('.pending-diagram-row')).toHaveClass('validation-owner')
+    await user.click(screen.getByRole('button', { name: 'Fix diagram title' }))
+    expect(screen.getByRole('heading', { name: 'Edit diagram title' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Diagram title')).toHaveFocus()
+    expect(screen.getByLabelText('Diagram title')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByText(/yaml|schema|uuid/i)).not.toBeInTheDocument()
   })
 
   it.each([

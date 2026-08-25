@@ -94,6 +94,12 @@ type ChangesInProgress = {
   stale?: boolean
   diagram_setup?: boolean
   legacy_read_only?: boolean
+  validation_diagram?: string
+  validation_diagram_field?: 'title' | 'home' | 'detail'
+  detail_diagrams?: { id: string; path: string; title: string; anchor_component_id: string }[]
+  diagram_titles?: { diagram_id: string; title: string }[]
+  home_moves?: { component_id: string; diagram_id: string }[]
+  candidate?: ReviewSnapshot
 }
 
 type RelationshipTarget = {
@@ -117,7 +123,7 @@ type ChangeReview = {
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
-    appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed'; path: string }[]
+    appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed' | 'detail_changed'; path: string }[]
   }
 }
 
@@ -154,10 +160,16 @@ type ComponentEditor = {
   readOnly?: boolean
 }
 
+type DiagramEditor =
+  | { kind: 'detail'; componentID: string; title: string; initialTitle: string; invalid?: boolean }
+  | { kind: 'title'; diagramID: string; title: string; initialTitle: string; invalid?: boolean }
+  | { kind: 'move'; componentID: string; diagramID: string; initialDiagramID: string; invalid?: boolean }
+
 type WorkspaceTask = 'documentation' | 'changes' | 'empty'
 
 type NavigationIntent =
   | { kind: 'component'; id: string }
+  | { kind: 'diagram'; id: string; focusComponentID?: string }
   | { kind: 'changes' }
   | { kind: 'add' }
   | { kind: 'open-another' }
@@ -304,6 +316,7 @@ export function App() {
   const [sourceRoot, setSourceRoot] = useState('')
   const [state, setState] = useState<ViewState>({ kind: 'idle' })
   const [editor, setEditor] = useState<ComponentEditor | null>(null)
+  const [diagramEditor, setDiagramEditor] = useState<DiagramEditor | null>(null)
   const [authoringError, setAuthoringError] = useState('')
   const [architectureNotice, setArchitectureNotice] = useState('')
   const [architectureBusy, setArchitectureBusy] = useState(false)
@@ -343,8 +356,11 @@ export function App() {
     editor.title !== editor.initialTitle || editor.description !== editor.initialDescription ||
     !sameRelationships(relationshipValues(editor.relationships), editor.initialRelationships)
   )
+  const diagramEditorDirty = diagramEditor !== null && (diagramEditor.kind === 'move'
+    ? diagramEditor.diagramID !== diagramEditor.initialDiagramID
+    : diagramEditor.title !== diagramEditor.initialTitle)
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty
 
   useEffect(() => {
     if (!currentReview) {
@@ -582,6 +598,35 @@ export function App() {
     }
   }
 
+  async function submitDiagramChange(event: FormEvent<HTMLFormElement>, result: ArchitectureResult) {
+    event.preventDefault()
+    if (!diagramEditor) return
+    const endpoint = diagramEditor.kind === 'detail'
+      ? '/api/architecture/diagrams/detail'
+      : diagramEditor.kind === 'title'
+        ? '/api/architecture/diagrams/title'
+        : '/api/architecture/components/move-home'
+    setAuthoringError('')
+    try {
+      const response = await postJSON(endpoint, {
+        source_root: result.source_root,
+        expected_revision: result.revision,
+        ...(diagramEditor.kind === 'detail' ? { component_id: diagramEditor.componentID, title: diagramEditor.title } : {}),
+        ...(diagramEditor.kind === 'title' ? { diagram_id: diagramEditor.diagramID, title: diagramEditor.title } : {}),
+        ...(diagramEditor.kind === 'move' ? { component_id: diagramEditor.componentID, diagram_id: diagramEditor.diagramID } : {}),
+      })
+      const payload = (await response.json()) as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload)) {
+        setAuthoringError("WorkBraid couldn't keep that diagram change. Check the selection and try again.")
+        return
+      }
+      setDiagramEditor(null)
+      enterWorkspace(payload, 'changes')
+    } catch {
+      setAuthoringError("WorkBraid couldn't keep that diagram change. Try again.")
+    }
+  }
+
   async function updateArchitecture(result: ArchitectureResult) {
     const review = result.changes?.review
     if (!review) return
@@ -613,7 +658,7 @@ export function App() {
   const busy = state.kind === 'looking' || state.kind === 'setting-up'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty) {
+    if (editorDirty || diagramEditorDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -623,11 +668,22 @@ export function App() {
   async function performNavigation(intent: NavigationIntent) {
     setNavigationIntent(null)
     setEditor(null)
+    setDiagramEditor(null)
     setAuthoringError('')
     setArchitectureNotice('')
     if (intent.kind === 'component') {
       setSelectedComponentID(intent.id)
       setWorkspaceTask('documentation')
+      return
+    }
+    if (intent.kind === 'diagram') {
+      const projection = state.kind === 'ready' ? state.value : undefined
+      const diagram = projection?.diagrams?.find((candidate) => candidate.id === intent.id)
+      setSelectedDiagramID(intent.id)
+      setSelectedComponentID(intent.focusComponentID && diagram?.appearances.some((appearance) => appearance.component_id === intent.focusComponentID)
+        ? intent.focusComponentID
+        : diagram?.appearances[0]?.component_id)
+      setWorkspaceTask(diagram?.appearances.length ? 'documentation' : 'empty')
       return
     }
     if (intent.kind === 'changes') {
@@ -733,13 +789,21 @@ export function App() {
     const review = reviewVisible ? currentReview : undefined
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
     const diagramProjection = activeProjection ?? result
-    const activeDiagram = diagramProjection.format_version === 2
-      ? diagramProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID) ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
-      : undefined
     const candidateOnlyDiagramBefore = Boolean(review && reviewSide === 'before' && selectedDiagramID &&
       review.with_changes.diagrams?.some((diagram) => diagram.id === selectedDiagramID) &&
       !review.before.diagrams?.some((diagram) => diagram.id === selectedDiagramID))
+    const candidateFallbackDiagramID = candidateOnlyDiagramBefore && review
+      ? [...(review.with_changes.diagrams?.find((diagram) => diagram.id === selectedDiagramID)?.breadcrumbs ?? [])]
+        .reverse()
+        .find((breadcrumb) => review.before.diagrams?.some((diagram) => diagram.id === breadcrumb.id))?.id
+      : undefined
+    const activeDiagram = diagramProjection.format_version === 2
+      ? diagramProjection.diagrams?.find((diagram) => diagram.id === (candidateFallbackDiagramID ?? selectedDiagramID))
+        ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
+      : undefined
     const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
+    const compositionProjection = result.changes?.candidate ?? result
+    const compositionDiagrams = compositionProjection.diagrams ?? result.diagrams ?? []
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.format_version === 2
       ? activeDiagramComponents ?? []
@@ -786,6 +850,10 @@ export function App() {
       })
     }
     const selectDiagram = (diagramID: string, focusComponentID?: string) => {
+      if (!review) {
+        requestNavigation({ kind: 'diagram', id: diagramID, focusComponentID })
+        return
+      }
       const diagram = diagramProjection.diagrams?.find((candidate) => candidate.id === diagramID)
       if (!diagram) return
       setReviewSelectionCleared(false)
@@ -1021,6 +1089,15 @@ export function App() {
                 onCancelDiscard={() => setDiscardConfirming(false)}
                 onDiscard={() => discardChanges(result)}
               />
+            ) : diagramEditor ? (
+              <DiagramEditorForm
+                editor={diagramEditor}
+                setEditor={setDiagramEditor}
+                diagrams={compositionDiagrams}
+                error={authoringError}
+                onCancel={() => setDiagramEditor(null)}
+                onSubmit={(event) => submitDiagramChange(event, result)}
+              />
             ) : editor ? (
               <ComponentEditorForm
                 editor={editor}
@@ -1042,6 +1119,9 @@ export function App() {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
                 })}
+                onCreateDetail={(componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' })}
+                onEditDiagramTitle={(diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid })}
+                onMoveHome={(componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid })}
                 onReview={() => reviewChanges(result)}
                 onUpdate={() => updateArchitecture(result)}
                 onBeginDiscard={() => setDiscardConfirming(true)}
@@ -1055,6 +1135,12 @@ export function App() {
                 {(result.format_version !== 1 && authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                    {result.format_version !== 1 && authoringAvailable && selectedAppearance?.role === 'home' && !selectedAppearance.detail_diagram_id && (
+                      <button className="secondary-action" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
+                    )}
+                    {result.format_version !== 1 && authoringAvailable && selectedAppearance && (
+                      <button className="secondary-action" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
+                    )}
                     {selectedAppearance?.detail_diagram_id && (
                       <button className="secondary-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
                         Open {selectedAppearance.detail_diagram_title}
@@ -1062,10 +1148,13 @@ export function App() {
                     )}
                   </div>
                 )}
+                {result.format_version !== 1 && authoringAvailable && activeDiagram && (
+                  <button className="text-action diagram-title-action" type="button" onClick={() => setDiagramEditor({ kind: 'title', diagramID: activeDiagram.id, title: activeDiagram.title, initialTitle: activeDiagram.title })}>Edit diagram title</button>
+                )}
                 {result.format_version === 1 && authoringAvailable && !result.changes && <div className="legacy-diagram-setup"><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>}
               </article>
             ) : activeDiagram ? (
-              <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p></div>
+              <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p>{authoringAvailable && <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'title', diagramID: activeDiagram.id, title: activeDiagram.title, initialTitle: activeDiagram.title })}>Edit diagram title</button>}</div>
             ) : result.format_version === 1 && authoringAvailable && !result.changes ? (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Set up diagrams</h2><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>
             ) : result.components?.length ? (
@@ -1084,7 +1173,7 @@ export function App() {
           <div className="navigation-guard" role="dialog" aria-modal="true" aria-labelledby="unsaved-heading">
             <div>
               <h2 id="unsaved-heading">Leave without keeping?</h2>
-              <p>Your latest component edits have not been kept.</p>
+              <p>Your latest edits have not been kept.</p>
               <div className="button-group">
                 <button className="secondary-action" type="button" onClick={() => setNavigationIntent(null)}>Keep editing</button>
                 <button className="destructive-action" type="button" onClick={() => performNavigation(navigationIntent)}>Leave without keeping</button>
@@ -1296,6 +1385,50 @@ function ComponentEditorForm({
   )
 }
 
+function DiagramEditorForm({
+  editor,
+  setEditor,
+  diagrams,
+  error,
+  onCancel,
+  onSubmit,
+}: {
+  editor: DiagramEditor
+  setEditor: (editor: DiagramEditor) => void
+  diagrams: DiagramProjection[]
+  error: string
+  onCancel: () => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+}) {
+  return (
+    <form className="component-editor diagram-editor" onSubmit={onSubmit}>
+      <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>{editor.kind === 'detail' ? 'Create detail diagram' : editor.kind === 'title' ? 'Edit diagram title' : 'Change where it lives'}</h2></div>
+      {editor.kind === 'move' ? (
+        <label>Diagram
+          <select autoFocus aria-invalid={editor.invalid || undefined} value={editor.diagramID} onChange={(event) => setEditor({ ...editor, diagramID: event.target.value })}>
+            <option value={editor.initialDiagramID}>Choose a diagram</option>
+            {diagrams.filter((diagram) => diagram.id !== editor.initialDiagramID).map((diagram) => <option key={diagram.id} value={diagram.id}>{diagram.title}{diagram.context ? ` — ${diagram.context}` : ''}</option>)}
+          </select>
+        </label>
+      ) : (
+        <label>Diagram title
+          <input
+            autoFocus
+            aria-invalid={editor.invalid || undefined}
+            value={editor.title}
+            onChange={(event) => setEditor({ ...editor, title: event.target.value })}
+          />
+        </label>
+      )}
+      {error && <p className="authoring-error" role="alert">{error}</p>}
+      <div className="button-group">
+        <button className="secondary-action" type="button" onClick={onCancel}>Cancel</button>
+        <button className="inline-action" type="submit" disabled={editor.kind === 'move' && editor.diagramID === editor.initialDiagramID}>Keep change</button>
+      </div>
+    </form>
+  )
+}
+
 function ChangesTask({
   result,
   busy,
@@ -1311,6 +1444,9 @@ function ChangesTask({
   onFocusDiagram,
   onEdit,
   onFixRelationship,
+  onCreateDetail,
+  onEditDiagramTitle,
+  onMoveHome,
   onReview,
   onUpdate,
   onBeginDiscard,
@@ -1331,6 +1467,9 @@ function ChangesTask({
   onFocusDiagram?: (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => void
   onEdit: (component: PendingComponent) => void
   onFixRelationship: (component: PendingComponent) => void
+  onCreateDetail?: (componentID: string) => void
+  onEditDiagramTitle?: (diagramID: string, title: string, invalid?: boolean) => void
+  onMoveHome?: (componentID: string, currentDiagramID: string, invalid?: boolean) => void
   onReview: () => void
   onUpdate: () => void
   onBeginDiscard: () => void
@@ -1368,7 +1507,8 @@ function ChangesTask({
                   ?? changes.review?.before.components.find((component) => component.id === appearance.component_id)
                 const diagram = changes.review?.with_changes.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                   ?? changes.review?.before.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
-                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed' })}><strong>{projection?.title ?? 'Component'}</strong> {appearance.status === 'added' ? 'placed in diagram' : 'removed from diagram'}</button></li>
+                const description = appearance.status === 'added' ? 'placed in diagram' : appearance.status === 'removed' ? 'removed from diagram' : 'linked to detail diagram'
+                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
               })}
             </ul>
           </section>
@@ -1422,6 +1562,41 @@ function ChangesTask({
           )
         })}
       </ul>
+      {changes.candidate?.diagrams?.length ? (
+        <section className="pending-diagram-composition" aria-label="Diagram changes in progress">
+          <h3>Diagram composition</h3>
+          {changes.candidate.diagrams.map((diagram) => (
+            <div className="pending-diagram-row" key={diagram.id}>
+              <div><strong>{diagram.title}</strong>{changes.detail_diagrams?.some((addition) => addition.id === diagram.id) && <small> New diagram</small>}</div>
+              {!readOnly && onEditDiagramTitle && <button className="text-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title)}>Edit title</button>}
+              <ul>
+                {diagram.appearances.filter((appearance) => appearance.role === 'home').map((appearance) => {
+                  const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
+                  return <li key={appearance.component_id}>
+                    <span>{component?.title ?? 'Component'}</span>
+                    {!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
+                    {!readOnly && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
+                  </li>
+                })}
+              </ul>
+            </div>
+          ))}
+        </section>
+      ) : null}
+      {!changes.candidate && (changes.detail_diagrams?.length || changes.diagram_titles?.length || changes.home_moves?.length) ? (
+        <section className="pending-diagram-composition" aria-label="Diagram changes needing attention">
+          <h3>Diagram composition</h3>
+          {[...(changes.detail_diagrams ?? []).map((diagram) => ({ id: diagram.id, title: diagram.title })), ...(changes.diagram_titles ?? []).map((diagram) => ({ id: diagram.diagram_id, title: diagram.title }))].map((diagram) => {
+            const ownsValidation = Boolean(changes.review_blocker && changes.validation_diagram === diagram.id)
+            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}><strong>{diagram.title.trim() || 'Untitled diagram'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onEditDiagramTitle && <button className="text-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}</div>
+          })}
+          {changes.home_moves?.map((move) => {
+            const component = changes.components.find((candidate) => candidate.id === move.component_id) ?? changes.candidate?.components.find((candidate) => candidate.id === move.component_id) ?? result.components?.find((candidate) => candidate.id === move.component_id)
+            const ownsValidation = Boolean(changes.review_blocker && changes.validation_item === move.component_id && changes.validation_diagram_field === 'home')
+            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={move.component_id}><strong>{component?.title ?? 'Component home'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(move.component_id, move.diagram_id, ownsValidation)}>{ownsValidation ? 'Fix location' : 'Change where it lives'}</button>}</div>
+          })}
+        </section>
+      ) : null}
       {changes.review_blocker && (
         <div className="review-error" role="alert">
           {relationshipIssueComponent ? (
@@ -1430,7 +1605,25 @@ function ChangesTask({
               <p>{readOnly ? messageForReadOnlyReviewBlocker(changes.review_blocker) : messageForReviewBlocker(changes.review_blocker)}</p>
               {!readOnly && <button className="inline-action fix-relationship" type="button" onClick={() => onFixRelationship(relationshipIssueComponent)}>Fix relationship</button>}
             </>
-          ) : <p>{messageForReviewBlocker(changes.review_blocker)}</p>}
+          ) : (
+            <>
+              <p>{messageForReviewBlocker(changes.review_blocker)}</p>
+              {!readOnly && changes.validation_diagram_field === 'title' && changes.validation_diagram && onEditDiagramTitle && (
+                <button className="inline-action" type="button" onClick={() => {
+                  const pendingDiagram = changes.detail_diagrams?.find((diagram) => diagram.id === changes.validation_diagram)
+                  const pendingTitle = changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)
+                  const candidateDiagram = changes.candidate?.diagrams?.find((diagram) => diagram.id === changes.validation_diagram)
+                  onEditDiagramTitle(changes.validation_diagram!, pendingDiagram?.title ?? pendingTitle?.title ?? candidateDiagram?.title ?? '', true)
+                }}>Fix diagram title</button>
+              )}
+              {!readOnly && changes.validation_diagram_field === 'home' && changes.validation_item && onMoveHome && (
+                <button className="inline-action" type="button" onClick={() => {
+                  const move = changes.home_moves?.find((candidate) => candidate.component_id === changes.validation_item)
+                  onMoveHome(changes.validation_item!, move?.diagram_id ?? '', true)
+                }}>Fix component location</button>
+              )}
+            </>
+          )}
         </div>
       )}
       {result.action_error && !changes.review_blocker && <p className="review-error" role="alert">{messageForArchitectureAction(result.action_error)}</p>}
@@ -1653,6 +1846,9 @@ function messageForReviewBlocker(code?: string) {
   if (code === 'title_one_line') return 'Use a one-line component title before updating architecture.'
   if (code === 'relationship_label_required') return 'Add a label to this relationship.'
   if (code === 'relationship_target_required') return 'Choose a component for this relationship.'
+  if (code === 'diagram_title_required') return 'Add a title to this diagram.'
+  if (code === 'diagram_cycle') return 'Move this component somewhere outside its own detail diagrams.'
+  if (code === 'diagram_home_invalid') return 'Choose a valid place for this component.'
   return 'Correct the component changes before updating architecture.'
 }
 

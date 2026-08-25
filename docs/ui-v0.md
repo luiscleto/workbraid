@@ -106,8 +106,10 @@ For each absent external Component, the active Diagram shows at most one derived
 
 Normal product language distinguishes the two forms without requiring domain jargon:
 
-- a canonical reference appearance is **Also shown here**;
+- a canonical reference appearance is **Included here · Lives in _home Diagram_**;
 - a derived boundary reference says the related Component **Lives in** its home Diagram.
+
+The map canvas keeps the Component title as its only node text. Reference and home-location wording appears only as visually subordinate, small, italic, muted context in the index or contextual dock.
 
 IDs, Diagram filenames, YAML roles, and hierarchy keys remain out of normal navigation chrome. Duplicate Diagram or Component titles receive only the minimum ancestor, anchor, filename, or shortened-ID context required to distinguish them.
 

@@ -175,6 +175,7 @@ type NavigationIntent =
   | { kind: 'diagram'; id: string; focusComponentID?: string }
   | { kind: 'changes' }
   | { kind: 'add' }
+  | { kind: 'edit-diagram-title'; id: string; title: string }
   | { kind: 'open-another' }
   | { kind: 'refresh' }
   | { kind: 'clear' }
@@ -708,6 +709,10 @@ export function App() {
       })
       return
     }
+    if (intent.kind === 'edit-diagram-title') {
+      setDiagramEditor({ kind: 'title', diagramID: intent.id, title: intent.title, initialTitle: intent.title })
+      return
+    }
     if (intent.kind === 'review-result') {
       setAcceptanceUnknown(false)
       enterWorkspace(intent.result, 'changes')
@@ -964,7 +969,12 @@ export function App() {
           <nav className="component-index" aria-label={diagramProjection.format_version === 2 ? 'Diagrams and components' : 'Components'}>
             {diagramProjection.format_version === 2 && (
               <div className="diagram-navigator">
-                <div className="index-heading"><h1>Diagrams</h1></div>
+                <div className="index-heading">
+                  <h1>Diagrams</h1>
+                  {!review && authoringAvailable && activeDiagram && (
+                    <button className="index-add diagram-title-edit" type="button" onClick={() => requestNavigation({ kind: 'edit-diagram-title', id: activeDiagram.id, title: activeDiagram.title })}>Edit title</button>
+                  )}
+                </div>
                 <ul className="diagram-tree">
                   {diagramProjection.diagrams?.map((diagram) => {
                     const reviewStatus = diagramReviewStatus.get(diagram.id)
@@ -1138,26 +1148,28 @@ export function App() {
                 {(result.format_version !== 1 && authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
-                    {result.format_version !== 1 && authoringAvailable && selectedAppearance?.role === 'home' && !selectedAppearance.detail_diagram_id && (
-                      <button className="secondary-action" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
-                    )}
-                    {result.format_version !== 1 && authoringAvailable && selectedAppearance && (
-                      <button className="secondary-action" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
-                    )}
                     {selectedAppearance?.detail_diagram_id && (
                       <button className="secondary-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
                         Open {selectedAppearance.detail_diagram_title}
                       </button>
                     )}
+                    {result.format_version !== 1 && authoringAvailable && selectedAppearance && (
+                      <div className="diagram-composition-actions" role="group" aria-label="Diagram composition">
+                        <span>Diagram</span>
+                        <div>
+                          {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
+                            <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
+                          )}
+                          <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-                {result.format_version !== 1 && authoringAvailable && activeDiagram && (
-                  <button className="text-action diagram-title-action" type="button" onClick={() => setDiagramEditor({ kind: 'title', diagramID: activeDiagram.id, title: activeDiagram.title, initialTitle: activeDiagram.title })}>Edit diagram title</button>
                 )}
                 {result.format_version === 1 && authoringAvailable && !result.changes && <div className="legacy-diagram-setup"><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>}
               </article>
             ) : activeDiagram ? (
-              <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p>{authoringAvailable && <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'title', diagramID: activeDiagram.id, title: activeDiagram.title, initialTitle: activeDiagram.title })}>Edit diagram title</button>}</div>
+              <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p></div>
             ) : result.format_version === 1 && authoringAvailable && !result.changes ? (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Set up diagrams</h2><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>
             ) : result.components?.length ? (

@@ -290,9 +290,13 @@ describe('App', () => {
 
     const documentationActions = screen.getByRole('button', { name: 'Edit component' }).closest('.component-documentation-actions') as HTMLElement
     const actionButtons = within(documentationActions).getAllByRole('button')
-    expect(actionButtons.map((button) => button.textContent)).toEqual(['Edit component', 'Change where it lives', 'Open Detail'])
+    expect(actionButtons.map((button) => button.textContent)).toEqual(['Edit component', 'Open Detail', 'Change where it lives'])
     expect(actionButtons[0]).toHaveClass('inline-action')
-    expect(actionButtons[2]).toHaveClass('secondary-action', 'detail-link')
+    expect(actionButtons[1]).toHaveClass('secondary-action', 'detail-link')
+    expect(actionButtons[2]).toHaveClass('text-action')
+    expect(within(documentationActions).getByRole('group', { name: 'Diagram composition' })).toHaveTextContent('Diagram')
+    expect(within(screen.getByRole('article')).queryByRole('button', { name: 'Edit title' })).not.toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Edit title' })).toHaveClass('index-add', 'diagram-title-edit')
 
     const user = userEvent.setup()
     await user.click(within(navigator).getByRole('button', { name: 'Worker, Included here · Lives in Detail' }))
@@ -341,6 +345,12 @@ describe('App', () => {
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
     expect(screen.getByText('This diagram has no components.')).toBeInTheDocument()
     expect(screen.queryByText('The architecture has no components yet.')).not.toBeInTheDocument()
+    const emptyDiagramTitleAction = within(navigator).getByRole('button', { name: 'Edit title' })
+    await user.click(emptyDiagramTitleAction)
+    expect(screen.getByRole('heading', { name: 'Edit diagram title' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Diagram title')).toHaveValue('Detail')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('This diagram has no components.')).toBeInTheDocument()
   })
 
   it('keeps a candidate-only detail Diagram reachable through Changes in progress', async () => {
@@ -365,7 +375,11 @@ describe('App', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Detail, Inside Shared — gateway.md' }))
     await user.click(screen.getByRole('button', { name: 'Worker' }))
-    await user.click(screen.getByRole('button', { name: 'Create detail diagram' }))
+    const compositionActions = screen.getByRole('group', { name: 'Diagram composition' })
+    const createDetail = within(compositionActions).getByRole('button', { name: 'Create detail diagram' })
+    expect(createDetail).toHaveClass('text-action')
+    expect(within(compositionActions).getByRole('button', { name: 'Change where it lives' })).toHaveClass('text-action')
+    await user.click(createDetail)
     await user.type(screen.getByRole('textbox', { name: 'Diagram title' }), 'Worker internals')
     await user.click(screen.getByRole('button', { name: 'Keep change' }))
 
@@ -398,7 +412,7 @@ describe('App', () => {
     expect(moveForm).not.toHaveClass('component-editor')
     expect(moveForm?.closest('.working-pane')).toBeInTheDocument()
     await user.selectOptions(destination, empty)
-    await user.click(screen.getByRole('button', { name: 'Detail, Inside Shared — records.md' }))
+    await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'Edit title' }))
     expect(screen.getByRole('heading', { name: 'Leave without keeping?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByLabelText('Diagram')).toHaveValue(empty)
@@ -427,7 +441,7 @@ describe('App', () => {
     render(<App />)
     await submitPath('/tmp/example')
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Edit diagram title' }))
+    await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'Edit title' }))
     const title = screen.getByLabelText('Diagram title')
     expect(title).toHaveValue('Platform\nOverview')
     expect(title.tagName).toBe('TEXTAREA')
@@ -525,7 +539,7 @@ describe('App', () => {
     }
 
     expect(await screen.findByText(message)).toBeInTheDocument()
-    const mutations = screen.queryAllByRole('button', { name: /add component|edit component|review changes|update architecture/i })
+    const mutations = screen.queryAllByRole('button', { name: /add component|edit component|edit title|create detail diagram|change where it lives|review changes|update architecture/i })
     expect(mutations.length === 0).toBe(readOnly)
   })
 

@@ -770,6 +770,11 @@ dd {
   font-size: 0.72rem;
 }
 
+.index-heading .index-add {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .component-index ul {
   margin: 0;
   padding: 0;
@@ -1279,6 +1284,34 @@ dd {
   margin-top: 0;
 }
 
+.diagram-composition-actions {
+  width: 100%;
+  margin-top: 2px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+}
+
+.diagram-composition-actions > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted-ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.64rem;
+  font-weight: 500;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.diagram-composition-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.diagram-composition-actions .text-action {
+  min-height: 0;
+}
+
 .pane-heading {
   padding-bottom: 18px;
   border-bottom: 1px solid var(--hairline);
@@ -1731,10 +1764,6 @@ dd {
 .diagram-editor textarea {
   min-height: 4.2rem;
   resize: vertical;
-}
-
-.diagram-title-action {
-  margin-top: 18px;
 }
 
 .pending-diagram-composition {

@@ -14,7 +14,7 @@ Historical original Phase 2 plan: `docs/plans/architecture-post-gate-phase-2.md`
 
 Exact planning prerequisite: `14bf828289557230b1287c9d7c7906156b30ffae`
 
-Worker base: to be recorded after this packet is approved and committed alone on top of the exact planning prerequisite
+Worker base: `fcee8420c268d450de7f77a32b4375eb784b80a1`
 
 Target: P2.2 — Writable v2 foundation and legacy Diagram setup
 
@@ -330,3 +330,37 @@ Do not introduce:
 - watcher, polling, automatic Refresh, retry loop, fallback, repair/reset, merge/rebase/reconciliation, history, revert, proposal, export, or sync;
 - URL restoration, syntax highlighting, rendered/semantic Markdown diff, themed-scrollbar work, or unrelated P2.1 polish;
 - UML/class semantics, additional Diagram kinds, isometric rendering, Planning, Agent Control, or another vertical.
+
+## Execution result
+
+Status: Complete — human checkpoint **PASS** on 2026-08-25
+
+- Alpha-stage Phase 2 baseline amendment: `456ec4a5655cd896a426b57e4bb1e643b6e52293`.
+- Approved superseding continuation plan: `14bf828289557230b1287c9d7c7906156b30ffae`.
+- Approved docs-inclusive worker base and P2.2 execution-packet commit: `fcee8420c268d450de7f77a32b4375eb784b80a1`.
+- Initial implementation: `1182b64f1f00783a65ace482e535970d1a7945fe`.
+- Final integrated implementation after independently reviewed correctness and human-checkpoint UX corrections: `5dd1f9a3e712dffc7e620c168a751ef227b3b681`.
+- Human-approved UI-baseline clarifications made during the checkpoint are `a0cd41ca79d1413e9e714f6767c652095975b570` and `eb57bbcf4c0089a8f8a7134cc037a453787b210e`. They clarify canonical-reference language, external-location subtitles, and the distinction between edit and detail-Diagram navigation without changing the Diagram domain or portable format.
+- Independent review: the initial complete implementation and every material correction returned through the same bounded worker and fresh independent rereview. Corrections covered synchronized writable-v2 transition boundaries, inert defensive legacy pending state, Diagram-scoped candidate review and relationship focus, accepted-map clear focus, retained Diagram review context, non-overlapping review docks, return from review to editing, stable changes-dock presence, canonical-reference language, distinct detail navigation, and presentation-only boundary captions. The final review of `cff9a105dd4a331641655ec53917a4326efd9de4..5dd1f9a3e712dffc7e620c168a751ef227b3b681` reported no findings and verified that captions remain snapshot-derived, non-interactive presentation rather than graph/domain state.
+- Automated validation: PASS for `git diff --check`, full uncached Go tests, full race-enabled Go tests, Go vet, module verification, 85 ordinary frontend tests, the production frontend build, and all three bounded P2.2 production-browser scenarios. Living Gate, Phase 1, and P2.1 executable evidence was updated only where the alpha-stage baseline superseded bootstrap or writable-format behavior. Frontend checkpoint corrections reran the ordinary frontend suite, production build, and all P2.2 browser scenarios after each final correction. No abnormal resource use or lingering WorkBraid, Playwright, Vitest, npm, Node, or Chromium process was observed. The existing production-chunk-size warning remains non-blocking.
+
+### Human checkpoint evidence
+
+- Runtime root: `/tmp/workbraid-p22-human.5z8D6I`; application-data directory: `/tmp/workbraid-p22-human.5z8D6I/app-data`. The built UI was served by the real loopback Go process using real Git, real bare Architecture stores, real filesystem repositories, and real SQLite.
+- Direct-v2 initialization: PASS. The primary source initialized to parentless accepted v2 bootstrap `910c744685c12798a4b7632f5222b7025c699af0`, with one generated root Diagram, an empty `100644` `diagrams/root.yaml`, no Components, and no intermediate v1 revision. The root workspace was immediately writable without **View only** or setup language.
+- Primary writable-v2 candidate: base `910c744685c12798a4b7632f5222b7025c699af0`, candidate tree `2b19b194dc0f49398c590e756a8d1566dd1ab416`, generation `8`, accepted revision `17fcaba353602cf6d69c1c000c525f66662911d1`. Structured authoring combined connected Components, a pending-new target, Description and Relationship work, root-home insertions, validation failure/correction, exact review, one deliberate CAS acceptance, and accepted map/index/documentation/Relationship advancement.
+- Existing nested-v2 preservation: PASS. A controlled accepted fixture at `3765243ddfe37e1026548fa5d39c6c954caf01d3` contained root/detail/empty Diagrams plus home/reference appearances and boundary Relationships. Creating Queue while System A was active produced candidate tree `a78f1d04d01c783901f56b0dde51cb682838fdad`, generation `2`, and accepted revision `91a6a37795749b168d4cb8bb7884af6c85a67e92`; Queue's home is System A and unrelated hierarchy/composition remained exact.
+- Candidate-aware review and workspace composition: PASS. Diagram selection remained stable when review opened; changed Diagrams were marked; Diagram/index/map/documentation/relationship context switched together; exact diff remained inspectable; **Continue editing** returned from a held review without rebuilding it; Changes and External references share one collapsible bottom dock; a zero-change Diagram truthfully keeps the Changes dock with no visual changes. Clear selection remains neutral rather than reopening an arbitrary Component.
+- Reference/boundary language and navigation: PASS. Canonical reference context reads **Included here · Lives in _home Diagram_** in subdued index text. Derived boundary nodes retain normal Component-title prominence plus a separate small muted **Lives in _home Diagram_** caption that follows the real node across Fit/pan/zoom/resize without becoming a graph node or intercepting clicks. **Edit component** remains primary; **Open _detail Diagram_** is a separately styled navigation action beneath it. The human accepted the final presentation; italic visibility remains a non-gating visual observation.
+- Legacy setup: a controlled non-empty v1 accepted revision `235afe72e55f0d1018b735657e764d49cc1603ff` remained readable but not ordinarily writable. Its `100755` Gateway blob `2ee498153c8fad65196a3c3db1b633bff9c2b665`, `100644` Worker blob `6e2cc4ae84e60fccf66840d3fa8942d8f720ea8c`, exact Unicode/whitespace Relationship label, paths, modes, IDs, and Markdown bytes were preserved.
+- The first setup review bound base `235afe72e55f0d1018b735657e764d49cc1603ff`, candidate tree `20a8538e196b4609f4e537755070ac1f242abb03`, generation `1`. Before changes was the real implicit v1 map; With changes added only generated root/home composition; no Component content or Relationship fact was falsely changed. Whole-set discard left accepted v1 exact.
+- A second setup accepted transition-only revision `76ecd510b194cf10c45cda41d43957acbd485e51`, with parent `235afe72e55f0d1018b735657e764d49cc1603ff`, candidate tree `b811dc9f1cfe89e844d84425c91ff67ac3bd4843`, and generation `1`. The resulting v2 workspace was normally writable.
+- Defensive legacy pending: PASS. A real v2 Description change was kept, external authority rewound to the valid v1 revision, and explicit Refresh preserved the old-base pending set as stale/read-only evidence. Edit/Fix/Review/Update and **Set up diagrams** were unavailable; whole-set Discard alone cleared it without altering Git or source state.
+- Final legacy setup bound base `235afe72e55f0d1018b735657e764d49cc1603ff`, candidate tree `23a53f9db05a42f5853dd3f4772a78ff03545357`, generation `1`, and accepted exact v2 revision `ab321f0273cc08bec678756ffc99a92d3a947511`.
+- Restart reconstruction: PASS. WorkBraid stopped completely and a genuinely new process using the same application-data directory reopened exact accepted revisions `17fcaba353602cf6d69c1c000c525f66662911d1`, `91a6a37795749b168d4cb8bb7884af6c85a67e92`, and `ab321f0273cc08bec678756ffc99a92d3a947511`. Roots, nested navigation, Components, homes, canonical references, boundary references, documentation, Relationships, and writable actions reconstructed from canonical Git.
+- Source isolation: PASS. The three source repositories retained exact recorded HEADs, tracked entries/modes, untracked files, and SHA-256 values. There were no tracked or staged changes. WorkBraid did not modify a source repository.
+- SQLite isolation: PASS. The only table is `source_architecture_associations`, with exactly the three expected source-root/store-ID rows and no Architecture, Component, Relationship, Diagram, pending, migration, review, navigation, graph, or layout projection.
+- Human checkpoint result: **PASS**.
+- Scope: no nested Diagram composition authoring, structured reusable-reference authoring, Diagram deletion, persisted pending state, canonical layout/routing/presentation, graphical editing, Diagram kinds, UML, isometric renderer, P2.3 behavior, another vertical, or generic migration/graph/workflow framework entered P2.2.
+
+P2.2 is complete. Stop here; P2.3 remains unstarted.

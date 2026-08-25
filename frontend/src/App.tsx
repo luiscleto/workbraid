@@ -1158,9 +1158,9 @@ export function App() {
                         <span>Diagram</span>
                         <div>
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
-                            <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
+                            <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
                           )}
-                          <button className="text-action" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
+                          <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
                         </div>
                       </div>
                     )}

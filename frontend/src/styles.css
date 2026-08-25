@@ -1308,8 +1308,21 @@ dd {
   gap: 4px 14px;
 }
 
-.diagram-composition-actions .text-action {
+.diagram-composition-actions .diagram-composition-link {
   min-height: 0;
+  border-bottom: 1px solid var(--accent);
+}
+
+.diagram-composition-actions .diagram-composition-link:hover:not(:disabled) {
+  border-bottom-color: #24482f;
+  color: #24482f;
+}
+
+.diagram-composition-actions .diagram-composition-link:focus {
+  border-bottom-color: #24482f;
+  color: #24482f;
+  outline: 3px solid rgb(49 91 61 / 25%);
+  outline-offset: 3px;
 }
 
 .pane-heading {

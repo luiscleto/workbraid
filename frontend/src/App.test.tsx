@@ -15,14 +15,21 @@ const graphHarness = vi.hoisted(() => ({
 }))
 
 vi.mock('cytoscape', () => ({
-  default: (options: { elements?: unknown[]; style?: Array<{ selector: string; style: Record<string, unknown> }> }) => {
+  default: (options: { elements?: Array<{ data?: Record<string, unknown>; position?: { x: number; y: number } }>; style?: Array<{ selector: string; style: Record<string, unknown> }> }) => {
     if (graphHarness.fail) throw new Error('canvas unavailable')
     graphHarness.calls.push(options)
     return {
-      on: (_event: string, selector: string, callback: unknown) => {
+      on: (_event: string, selector: string | (() => void), callback?: unknown) => {
         if (selector === 'node') graphHarness.nodeSelect = callback as typeof graphHarness.nodeSelect
         if (selector === 'edge') graphHarness.edgeSelect = callback as typeof graphHarness.edgeSelect
       },
+      off: () => undefined,
+      nodes: () => (options.elements ?? []).filter((element) => element.data?.nodeKind === 'boundary').map((element) => ({
+        id: () => element.data?.id as string,
+        renderedPosition: () => element.position ?? { x: 0, y: 0 },
+        renderedHeight: () => 62,
+      })),
+      resize: () => undefined,
       destroy: () => undefined,
       fit: () => undefined,
       $: () => ({ unselect: () => undefined }),
@@ -307,16 +314,21 @@ describe('App', () => {
 
     const elements = graphHarness.calls.at(-1)?.elements ?? []
     expect(elements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared\nLives in System', nodeKind: 'boundary' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared', boundaryHomeTitle: 'System', nodeKind: 'boundary' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', target: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', label: 'writes' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', target: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', label: 'feeds' }) }),
     ]))
-    for (const note of screen.getAllByText('Lives in System')) expect(note).toHaveClass('home-location-note')
+    for (const note of document.querySelectorAll('.home-location-note')) expect(note).toHaveTextContent('Lives in System')
+    const boundaryCaptions = [...document.querySelectorAll<HTMLElement>('.map-boundary-caption')]
+    expect(boundaryCaptions).toHaveLength(2)
+    expect(boundaryCaptions.every((caption) => caption.textContent === 'Lives in System' && caption.style.left && caption.style.top)).toBe(true)
+    expect(boundaryCaptions[0].parentElement).toHaveAttribute('aria-hidden', 'true')
     expect(elements.filter((element) => (element as { data?: { id?: string } }).data?.id === 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc')).toHaveLength(1)
     expect(elements.filter((element) => (element as { data?: { label?: string } }).data?.label === 'writes')).toHaveLength(2)
-    expect(graphHarness.calls.at(-1)?.style?.find((rule) => rule.selector === 'node[nodeKind = "boundary"]')?.style).toMatchObject({
-      shape: 'diamond', color: '#5e584b', 'font-size': 10,
-    })
+    const boundaryStyle = graphHarness.calls.at(-1)?.style?.find((rule) => rule.selector === 'node[nodeKind = "boundary"]')?.style
+    expect(boundaryStyle).toMatchObject({ shape: 'diamond', 'border-style': 'dotted' })
+    expect(boundaryStyle).not.toHaveProperty('color')
+    expect(boundaryStyle).not.toHaveProperty('font-size')
 
     act(() => graphHarness.nodeSelect?.({ target: { id: () => 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc' } }))
     expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')

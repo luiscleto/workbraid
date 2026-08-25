@@ -77,6 +77,21 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     await expect(breadcrumbs.getByText('Detail')).toHaveAttribute('aria-current', 'page')
     await expect(page.getByText('Worker documentation A.')).toBeVisible()
 
+    const boundaryCaptions = page.locator('.map-boundary-caption')
+    await expect(boundaryCaptions).toHaveCount(2)
+    const recordsCaption = boundaryCaptions.filter({ hasText: 'Lives in System A' }).first()
+    await expect(recordsCaption).toBeVisible()
+    const captionPresentation = await recordsCaption.evaluate((caption) => {
+      const style = getComputedStyle(caption)
+      return { color: style.color, fontSize: Number.parseFloat(style.fontSize), pointerEvents: style.pointerEvents, left: (caption as HTMLElement).style.left }
+    })
+    expect(captionPresentation.fontSize).toBeLessThan(13)
+    expect(captionPresentation.color).toBe('rgb(104, 103, 83)')
+    expect(captionPresentation.pointerEvents).toBe('none')
+    expect(captionPresentation.left).not.toBe('')
+    await page.getByRole('button', { name: 'Fit map' }).click()
+    await expect(recordsCaption).toBeVisible()
+
     const mapDock = page.locator('.map-bottom-dock')
     await expect(mapDock).toBeVisible()
     await expect(page.getByRole('tablist', { name: 'Map information' })).toHaveCount(0)
@@ -149,6 +164,7 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     await recordsBoundary.click()
     await expect(navigator.getByRole('button', { name: 'System A' })).toHaveAttribute('aria-current', 'page')
     await expect(page.getByText('Records documentation A.')).toBeVisible()
+    await expect(boundaryCaptions).toHaveCount(0)
 
     await navigator.getByRole('button', { name: 'Detail, Inside Shared — records.md' }).click()
     await expect(page.getByRole('heading', { name: 'No components here' })).toBeVisible()

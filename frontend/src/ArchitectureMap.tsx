@@ -85,7 +85,9 @@ export function ArchitectureMap({
   externalReferences,
 }: ArchitectureMapProps) {
   const container = useRef<HTMLDivElement>(null)
+  const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+  const syncBoundaryCaptions = useRef<() => void>(() => undefined)
   const selectHandler = useRef(onSelect)
   const relationshipHandler = useRef(onSelectRelationship)
   const [renderFailed, setRenderFailed] = useState(false)
@@ -138,12 +140,42 @@ export function ArchitectureMap({
           })
         }
       })
+      const updateBoundaryCaptions = () => {
+        const layer = boundaryCaptionLayer.current
+        if (!layer || !instance) return
+        const captions = new Map([...layer.querySelectorAll<HTMLElement>('[data-boundary-node-id]')].map((caption) => [caption.dataset.boundaryNodeId, caption]))
+        instance.nodes('[nodeKind = "boundary"]').forEach((node) => {
+          const caption = captions.get(node.id())
+          if (!caption) return
+          const position = node.renderedPosition()
+          caption.style.left = `${position.x}px`
+          caption.style.top = `${position.y + node.renderedHeight() / 2 + 5}px`
+        })
+      }
+      syncBoundaryCaptions.current = updateBoundaryCaptions
+      instance.on('pan zoom resize render', updateBoundaryCaptions)
+      updateBoundaryCaptions()
+      const animationFrame = requestAnimationFrame(updateBoundaryCaptions)
+      const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
+        instance?.resize()
+        updateBoundaryCaptions()
+      })
+      resizeObserver?.observe(container.current)
       graph.current = instance
+      return () => {
+        cancelAnimationFrame(animationFrame)
+        resizeObserver?.disconnect()
+        instance?.off('pan zoom resize render', updateBoundaryCaptions)
+        syncBoundaryCaptions.current = () => undefined
+        graph.current = null
+        instance?.destroy()
+      }
     } catch {
       graph.current = null
       setRenderFailed(true)
     }
     return () => {
+      syncBoundaryCaptions.current = () => undefined
       graph.current = null
       instance?.destroy()
     }
@@ -203,6 +235,7 @@ export function ArchitectureMap({
       )}
     </div>
   ) : null
+  const boundaryCaptions = components.filter((component) => component.node_kind === 'boundary' && component.boundary_home_title)
 
   if (components.length === 0) {
     return (
@@ -221,7 +254,15 @@ export function ArchitectureMap({
           <span>{reviewSide ? 'You can still inspect the complete change and update the architecture.' : 'Use the component list to keep working.'}</span>
         </div>
       ) : <div ref={container} className="map-canvas" data-testid="architecture-map" />}
-      {!renderFailed && <button className="map-fit" type="button" onClick={() => graph.current?.fit(undefined, 34)}>Fit map</button>}
+      {!renderFailed && boundaryCaptions.length > 0 && (
+        <div ref={boundaryCaptionLayer} className="map-boundary-captions" aria-hidden="true">
+          {boundaryCaptions.map((component) => <span className="map-boundary-caption" data-boundary-node-id={component.id} key={component.id}>Lives in {component.boundary_home_title}</span>)}
+        </div>
+      )}
+      {!renderFailed && <button className="map-fit" type="button" onClick={() => {
+        graph.current?.fit(undefined, 34)
+        syncBoundaryCaptions.current()
+      }}>Fit map</button>}
       {bottomDock}
     </section>
   )
@@ -314,10 +355,9 @@ export function projectionElements(components: MapComponent[], options: Projecti
       data: {
         id: component.id,
         label: component.title,
-        displayLabel: component.node_kind === 'boundary' && component.boundary_home_title
-          ? `${component.title}\nLives in ${component.boundary_home_title}`
-          : component.title,
+        displayLabel: component.title,
         nodeKind: component.node_kind ?? '',
+        boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
       },
       position: positions[component.id],
@@ -454,7 +494,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "added"]', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 3, shape: 'hexagon' } },
   { selector: 'node[reviewStatus = "content_changed"]', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 3, 'border-style': 'dashed' } },
   { selector: 'node[nodeKind = "reference"]', style: { 'border-style': 'dashed', 'background-color': '#eee3c8' } },
-  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', color: '#5e584b', 'font-size': 10, 'text-max-width': '94px', width: 104, height: 62 } },
+  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', width: 104, height: 62 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
   { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },

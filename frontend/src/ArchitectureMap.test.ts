@@ -92,7 +92,7 @@ it('maps v2 relationship deltas to exact selected-Diagram internal and boundary 
   ], { reviewSide: 'with', reviewDiagramID: detail, reviewRelationships: changes })
   const addedBoundary = candidateDetail.find((element) => element.data.id === 'diagram:detail:worker:1')
   expect(addedBoundary?.data).toMatchObject({ reviewStatus: 'added', source: 'worker', target: 'boundary:gateway', source_id: 'worker', target_id: 'gateway', source_title: 'Worker', target_title: 'Gateway' })
-  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data.displayLabel).toBe('Gateway\nLives in System')
+  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data).toMatchObject({ displayLabel: 'Gateway', boundaryHomeTitle: 'System' })
   expect(candidateDetail.filter((element) => 'source' in element.data)).toHaveLength(1)
   expect(candidateDetail.find((element) => element.data.id === 'worker')?.data.reviewStatus).toBe('unchanged')
 
@@ -102,7 +102,7 @@ it('maps v2 relationship deltas to exact selected-Diagram internal and boundary 
   ], { reviewSide: 'before', reviewDiagramID: detail, reviewRelationships: changes })
   expect(baseDetail.find((element) => element.data.id === 'diagram:detail:worker:1')?.data).toMatchObject({ reviewStatus: 'removed', source: 'worker', target: 'boundary:records', source_id: 'worker', target_id: 'records' })
   expect(baseDetail.find((element) => element.data.id === 'worker')?.data).toMatchObject({ displayLabel: 'Worker', nodeKind: 'reference' })
-  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data).toMatchObject({ displayLabel: 'Records\nLives in Data', nodeKind: 'boundary' })
+  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data).toMatchObject({ displayLabel: 'Records', boundaryHomeTitle: 'Data', nodeKind: 'boundary' })
 
   const candidateRoot = projectionElements([
     { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'gateway', label: 'reports', projection_key: 'diagram:root:worker:1' }] },

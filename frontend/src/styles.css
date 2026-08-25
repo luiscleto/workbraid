@@ -1033,6 +1033,32 @@ dd {
   min-height: 0;
 }
 
+.map-surface {
+  position: relative;
+}
+
+.map-boundary-captions {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.map-boundary-caption {
+  position: absolute;
+  max-width: 8rem;
+  color: var(--muted-ink);
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 0.62rem;
+  font-style: italic;
+  line-height: 1.15;
+  pointer-events: none;
+  text-align: center;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
 .map-fit {
   position: absolute;
   right: 14px;

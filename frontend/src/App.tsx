@@ -99,8 +99,11 @@ type ChangesInProgress = {
   detail_diagrams?: { id: string; path: string; title: string; anchor_component_id: string }[]
   diagram_titles?: { diagram_id: string; title: string }[]
   home_moves?: { component_id: string; diagram_id: string }[]
+  diagram_options?: DiagramAuthoringOption[]
   candidate?: ReviewSnapshot
 }
+
+type DiagramAuthoringOption = { id: string; title: string; context?: string }
 
 type RelationshipTarget = {
   id: string
@@ -803,7 +806,7 @@ export function App() {
       : undefined
     const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
-    const compositionDiagrams = compositionProjection.diagrams ?? result.diagrams ?? []
+    const compositionDiagrams = result.changes?.diagram_options ?? compositionProjection.diagrams ?? result.diagrams ?? []
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.format_version === 2
       ? activeDiagramComponents ?? []
@@ -1395,7 +1398,7 @@ function DiagramEditorForm({
 }: {
   editor: DiagramEditor
   setEditor: (editor: DiagramEditor) => void
-  diagrams: DiagramProjection[]
+  diagrams: DiagramAuthoringOption[]
   error: string
   onCancel: () => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
@@ -1412,9 +1415,10 @@ function DiagramEditorForm({
         </label>
       ) : (
         <label>Diagram title
-          <input
+          <textarea
             autoFocus
             aria-invalid={editor.invalid || undefined}
+            rows={2}
             value={editor.title}
             onChange={(event) => setEditor({ ...editor, title: event.target.value })}
           />

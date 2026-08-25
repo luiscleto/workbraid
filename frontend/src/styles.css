@@ -1716,7 +1716,8 @@ dd {
   line-height: 1.5;
 }
 
-.diagram-editor select {
+.diagram-editor select,
+.diagram-editor textarea {
   width: 100%;
   margin-top: 7px;
   border: 1px solid var(--hairline-strong);
@@ -1725,6 +1726,11 @@ dd {
   color: var(--ink);
   padding: 10px 12px;
   font: inherit;
+}
+
+.diagram-editor textarea {
+  min-height: 4.2rem;
+  resize: vertical;
 }
 
 .diagram-title-action {

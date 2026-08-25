@@ -289,12 +289,19 @@ type changesResponse struct {
 	DetailDiagrams                 []architecture.DetailDiagramChange `json:"detail_diagrams,omitempty"`
 	DiagramTitles                  []architecture.DiagramTitleChange  `json:"diagram_titles,omitempty"`
 	HomeMoves                      []architecture.ComponentHomeMove   `json:"home_moves,omitempty"`
+	DiagramOptions                 []diagramAuthoringOptionResponse   `json:"diagram_options,omitempty"`
 	Candidate                      *snapshotProjectionResponse        `json:"candidate,omitempty"`
 	Review                         *reviewResponse                    `json:"review,omitempty"`
 	ReviewBlocker                  string                             `json:"review_blocker,omitempty"`
 	Stale                          bool                               `json:"stale,omitempty"`
 	DiagramSetup                   bool                               `json:"diagram_setup,omitempty"`
 	LegacyReadOnly                 bool                               `json:"legacy_read_only,omitempty"`
+}
+
+type diagramAuthoringOptionResponse struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Context string `json:"context,omitempty"`
 }
 
 type reviewResponse struct {
@@ -350,9 +357,10 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 			ValidationRelationshipField:    pending.validationRelationshipField,
 			ValidationDiagram:              pending.validationDiagram,
 			ValidationDiagramField:         pending.validationDiagramField,
-			DetailDiagrams:                 pending.detailDiagrams,
-			DiagramTitles:                  pending.diagramTitles,
-			HomeMoves:                      pending.homeMoves,
+			DetailDiagrams:                 append([]architecture.DetailDiagramChange(nil), pending.detailDiagrams...),
+			DiagramTitles:                  append([]architecture.DiagramTitleChange(nil), pending.diagramTitles...),
+			HomeMoves:                      append([]architecture.ComponentHomeMove(nil), pending.homeMoves...),
+			DiagramOptions:                 pendingDiagramAuthoringOptions(pending),
 			ReviewBlocker:                  pending.reviewBlocker,
 			Stale:                          pending.stale,
 			DiagramSetup:                   pending.diagramSetup != nil,
@@ -372,6 +380,37 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		}
 	}
 	return result
+}
+
+func pendingDiagramAuthoringOptions(pending *pendingChangeSet) []diagramAuthoringOptionResponse {
+	projection := projectSnapshot(pending.baseSnapshot, "")
+	titles := make(map[string]string, len(pending.diagramTitles))
+	for _, change := range pending.diagramTitles {
+		titles[change.DiagramID] = change.Title
+	}
+	options := make([]diagramAuthoringOptionResponse, 0, len(projection.Diagrams)+len(pending.detailDiagrams))
+	for _, diagram := range projection.Diagrams {
+		title := diagram.Title
+		if changed, exists := titles[diagram.ID]; exists {
+			title = changed
+		}
+		options = append(options, diagramAuthoringOptionResponse{ID: diagram.ID, Title: title, Context: diagram.Context})
+	}
+	componentTitles := make(map[string]string, len(projection.Components)+len(pending.changes))
+	for _, component := range projection.Components {
+		componentTitles[component.ID] = component.Title
+	}
+	for _, change := range pending.changes {
+		componentTitles[change.ID] = change.Title
+	}
+	for _, diagram := range pending.detailDiagrams {
+		context := "New detail diagram"
+		if title := strings.TrimSpace(componentTitles[diagram.AnchorComponentID]); title != "" {
+			context = "Detail for " + title
+		}
+		options = append(options, diagramAuthoringOptionResponse{ID: diagram.ID, Title: diagram.Title, Context: context})
+	}
+	return options
 }
 
 func relationshipTargets(accepted []architecture.AuthoringComponent, changes []architecture.ComponentChange) []relationshipTargetResponse {

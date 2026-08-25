@@ -188,7 +188,7 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     await page.getByRole('button', { name: 'Keep change' }).click()
     await expect(pendingComposition).toContainText('Worker internals')
     await workerComposition.getByRole('button', { name: 'Change where it lives' }).click()
-    await page.getByRole('combobox', { name: 'Diagram' }).selectOption({ label: 'Worker internals' })
+    await page.getByRole('combobox', { name: 'Diagram' }).selectOption({ label: 'Worker internals — Detail for Worker' })
     await page.getByRole('button', { name: 'Keep change' }).click()
     await page.getByRole('button', { name: 'Review changes' }).click()
     await expect(page.getByRole('alert')).toContainText('Move this component somewhere outside its own detail diagrams.')

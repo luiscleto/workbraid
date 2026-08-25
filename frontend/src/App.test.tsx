@@ -407,13 +407,14 @@ describe('App', () => {
   })
 
   it('keeps a structured Diagram title edit without exposing schema details', async () => {
-    const accepted = acceptedV2()
     const root = '11111111-1111-4111-8111-111111111111'
+    const base = acceptedV2()
+    const accepted = { ...base, diagrams: base.diagrams.map((diagram) => diagram.id === root ? { ...diagram, title: 'Platform\nOverview' } : diagram) }
     const kept = {
       ...accepted,
       changes: {
         components: [], valid: true,
-        diagram_titles: [{ diagram_id: root, title: 'Platform' }],
+        diagram_titles: [{ diagram_id: root, title: 'Platform\nOperations' }],
         candidate: accepted,
       },
     }
@@ -422,13 +423,16 @@ describe('App', () => {
     await submitPath('/tmp/example')
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Edit diagram title' }))
-    await user.clear(screen.getByLabelText('Diagram title'))
-    await user.type(screen.getByLabelText('Diagram title'), 'Platform')
+    const title = screen.getByLabelText('Diagram title')
+    expect(title).toHaveValue('Platform\nOverview')
+    expect(title.tagName).toBe('TEXTAREA')
+    await user.clear(title)
+    await user.type(title, 'Platform{enter}Operations')
     await user.click(screen.getByRole('button', { name: 'Keep change' }))
 
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/title')
     expect(requestBody(fetchMock, 1)).toEqual({
-      source_root: '/tmp/example', expected_revision: '2'.repeat(40), diagram_id: root, title: 'Platform',
+      source_root: '/tmp/example', expected_revision: '2'.repeat(40), diagram_id: root, title: 'Platform\nOperations',
     })
     expect(screen.queryByText(/yaml|schema|uuid/i)).not.toBeInTheDocument()
   })
@@ -455,6 +459,47 @@ describe('App', () => {
     expect(screen.getByLabelText('Diagram title')).toHaveFocus()
     expect(screen.getByLabelText('Diagram title')).toHaveAttribute('aria-invalid', 'true')
     expect(screen.queryByText(/yaml|schema|uuid/i)).not.toBeInTheDocument()
+  })
+
+  it('retains backend-owned candidate-only destinations while correcting an invalid move', async () => {
+    const accepted = acceptedV2()
+    const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const invalidDestination = '44444444-4444-4444-8444-444444444444'
+    const siblingDestination = '55555555-5555-4555-8555-555555555555'
+    const diagramOptions = accepted.diagrams.map((diagram) => ({ id: diagram.id, title: diagram.title, context: diagram.context })).concat([
+      { id: invalidDestination, title: 'Worker internals', context: 'Detail for Worker' },
+      { id: siblingDestination, title: 'Sidecar internals', context: 'Detail for Sidecar' },
+    ])
+    const invalid = acceptedV2({
+      changes: {
+        components: [], valid: false, validation_code: 'diagram_cycle', review_blocker: 'diagram_cycle',
+        validation_item: worker, validation_diagram: invalidDestination, validation_diagram_field: 'home',
+        home_moves: [{ component_id: worker, diagram_id: invalidDestination }], diagram_options: diagramOptions,
+      },
+    })
+    const corrected = acceptedV2({
+      changes: {
+        components: [], valid: true, home_moves: [{ component_id: worker, diagram_id: siblingDestination }],
+        diagram_options: diagramOptions, candidate: accepted,
+      },
+    })
+    const fetchMock = mockResponses([invalid, corrected])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Move this component somewhere outside its own detail diagrams.')
+    await user.click(screen.getByRole('button', { name: 'Fix component location' }))
+    const destination = screen.getByRole('combobox', { name: 'Diagram' })
+    expect(within(destination).getByRole('option', { name: 'Sidecar internals — Detail for Sidecar' })).toBeInTheDocument()
+    await user.selectOptions(destination, siblingDestination)
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestPath(fetchMock, 1)).toBe('/api/architecture/components/move-home')
+    expect(requestBody(fetchMock, 1)).toEqual({
+      source_root: '/tmp/example', expected_revision: '2'.repeat(40), component_id: worker, diagram_id: siblingDestination,
+    })
+    expect(await screen.findByRole('region', { name: 'Diagram changes in progress' })).toBeInTheDocument()
   })
 
   it.each([

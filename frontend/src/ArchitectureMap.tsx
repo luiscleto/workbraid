@@ -13,7 +13,6 @@ export type MapComponent = {
   title: string
   filename?: string
   node_kind?: 'home' | 'reference' | 'boundary'
-  subtitle?: string
   relationships: MapRelationship[]
 }
 
@@ -314,7 +313,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
       data: {
         id: component.id,
         label: component.title,
-        displayLabel: status === 'added' ? `${component.title}\n＋ Added` : status === 'content_changed' ? `${component.title}\n△ Content changed` : [component.title, component.subtitle].filter(Boolean).join('\n'),
+        displayLabel: component.title,
         nodeKind: component.node_kind ?? '',
         reviewStatus: status,
       },

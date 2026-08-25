@@ -272,8 +272,14 @@ describe('App', () => {
     expect(within(navigator).getByRole('button', { name: 'System' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
     expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
-    expect(within(navigator).getByText('Also shown here')).toBeInTheDocument()
+    expect(within(navigator).getByText('Included here · Lives in Detail')).toHaveClass('appearance-note')
+    expect(within(navigator).getByRole('button', { name: 'Worker, Included here · Lives in Detail' })).toBeInTheDocument()
     expect(screen.getByText('Gateway documentation.')).toBeInTheDocument()
+
+    const rootElements = graphHarness.calls.at(-1)?.elements ?? []
+    expect(rootElements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ data: expect.objectContaining({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', displayLabel: 'Worker', nodeKind: 'reference' }) }),
+    ]))
 
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Open Detail' }))
@@ -291,10 +297,11 @@ describe('App', () => {
 
     const elements = graphHarness.calls.at(-1)?.elements ?? []
     expect(elements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared\nrecords.md\nLives in System' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ id: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', displayLabel: 'Shared', nodeKind: 'boundary' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', target: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', label: 'writes' }) }),
       expect.objectContaining({ data: expect.objectContaining({ source: 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc', target: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', label: 'feeds' }) }),
     ]))
+    for (const note of screen.getAllByText('Lives in System')) expect(note).toHaveClass('home-location-note')
     expect(elements.filter((element) => (element as { data?: { id?: string } }).data?.id === 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc')).toHaveLength(1)
     expect(elements.filter((element) => (element as { data?: { label?: string } }).data?.label === 'writes')).toHaveLength(2)
 
@@ -963,20 +970,20 @@ describe('App', () => {
     expect(within(navigator).getByRole('button', { name: 'Shared, records.md' })).toBeInTheDocument()
     await user.click(within(navigator).getByRole('button', { name: 'Detail, Inside Shared — gateway.md, Changed' }))
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
-    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, Included here · Lives in System' })).toBeInTheDocument()
 
-    await user.click(within(navigator).getByRole('button', { name: 'Shared' }))
+    await user.click(within(navigator).getByRole('button', { name: 'Shared, Included here · Lives in System' }))
     expect(screen.getByText('Records documentation.')).toBeInTheDocument()
     expect(screen.queryByText('Gateway documentation.')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
-    expect(within(navigator).queryByRole('button', { name: 'Shared' })).not.toBeInTheDocument()
+    expect(within(navigator).queryByRole('button', { name: /Shared, Included here/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Records documentation.')).not.toBeInTheDocument()
     expect(await screen.findByText('Worker documentation.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'With changes' }))
-    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, Included here · Lives in System' })).toBeInTheDocument()
     expect(screen.getByText('Worker documentation.')).toBeInTheDocument()
     await user.click(within(navigator).getByRole('button', { name: 'System' }))
     expect(within(navigator).getByRole('button', { name: 'Shared, gateway.md' })).toBeInTheDocument()
@@ -1081,14 +1088,14 @@ describe('App', () => {
     expect(titleChangedDiagram).toHaveClass('review-content-changed')
     expect(addedDiagram).toHaveClass('review-added')
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
-    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, Included here · Lives in System' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     expect(changedDetail).toHaveAttribute('aria-current', 'page')
     expect(within(navigator).getByRole('button', { name: 'Worker' })).toBeInTheDocument()
-    expect(within(navigator).queryByRole('button', { name: 'Shared' })).not.toBeInTheDocument()
+    expect(within(navigator).queryByRole('button', { name: /Shared, Included here/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'With changes' }))
-    expect(within(navigator).getByRole('button', { name: 'Shared' })).toBeInTheDocument()
+    expect(within(navigator).getByRole('button', { name: 'Shared, Included here · Lives in System' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Operations added' }))
     expect(within(navigator).getByRole('button', { name: 'Operations, Inside Worker, Added' })).toHaveAttribute('aria-current', 'page')
@@ -1196,7 +1203,7 @@ describe('App', () => {
 
   it.each([
     ['Gateway', 'Shared, gateway.md', 'Gateway documentation.'],
-    ['Worker', 'Worker', 'Worker documentation.'],
+    ['Worker', 'Worker, Included here · Lives in Detail', 'Worker documentation.'],
     ['Records', 'Shared, records.md', 'Records documentation.'],
   ])('keeps v2 review deliberately unselected after clearing %s focus', async (_component, buttonName, documentation) => {
     const base = 'a'.repeat(40)

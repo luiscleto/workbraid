@@ -62,7 +62,8 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     await expect(navigator.getByRole('button', { name: 'Detail, Inside Shared — records.md' })).toBeVisible()
     await expect(navigator.getByRole('button', { name: 'Shared, gateway.md' })).toBeVisible()
     await expect(navigator.getByRole('button', { name: 'Shared, records.md' })).toBeVisible()
-    await expect(navigator.getByText('Also shown here')).toBeVisible()
+    await expect(navigator.getByText('Included here · Lives in Detail')).toBeVisible()
+    await expect(navigator.getByRole('button', { name: 'Worker, Included here · Lives in Detail' })).toBeVisible()
     await expect(page.getByText('Gateway documentation A.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Fit map' })).toBeVisible()
 

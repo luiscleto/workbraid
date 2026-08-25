@@ -807,9 +807,11 @@ dd {
   padding-top: 0;
 }
 
-.appearance-note {
-  color: #6a5b31 !important;
+.appearance-note,
+.home-location-note {
+  color: var(--muted-ink) !important;
   font-family: "IBM Plex Sans", sans-serif !important;
+  font-style: italic;
   letter-spacing: 0.025em;
 }
 

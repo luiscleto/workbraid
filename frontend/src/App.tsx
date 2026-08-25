@@ -263,7 +263,6 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       title: component.title,
       filename: component.filename,
       node_kind: appearance.role,
-      ...(appearance.role === 'reference' ? { subtitle: 'Also shown here' } : {}),
       relationships: [],
     })
   }
@@ -273,7 +272,6 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       component_id: boundary.component_id,
       title: boundary.title,
       node_kind: 'boundary',
-      subtitle: [boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join('\n'),
       relationships: [],
     })
   }
@@ -754,6 +752,12 @@ export function App() {
     for (const boundary of activeDiagram?.boundaries ?? []) diagramNodeTitles.set(boundary.key, boundary.title)
     const titleCounts = new Map<string, number>()
     for (const component of activeComponents) titleCounts.set(component.title, (titleCounts.get(component.title) ?? 0) + 1)
+    const homeDiagramTitles = new Map<string, string>()
+    for (const diagram of diagramProjection.diagrams ?? []) {
+      for (const appearance of diagram.appearances) {
+        if (appearance.role === 'home') homeDiagramTitles.set(appearance.component_id, diagram.title)
+      }
+    }
     const componentReviewStatus = new Map(review?.comparison.components.map((change) => [change.component_id, change]))
     const diagramReviewStatus = new Map<string, 'Added' | 'Title changed' | 'Changed'>()
     for (const change of review?.comparison.diagrams ?? []) {
@@ -840,7 +844,7 @@ export function App() {
           <section key={boundary.key}>
             <button type="button" aria-label={[boundary.title, boundary.context, `Lives in ${boundary.home_diagram_title}`].filter(Boolean).join(', ')} onClick={() => selectMapNode(boundary.key)}>
               <span>{boundary.title}{boundary.context && <small> {boundary.context}</small>}</span>
-              <small>Lives in {boundary.home_diagram_title}</small>
+              <small className="home-location-note">Lives in {boundary.home_diagram_title}</small>
             </button>
             <ul aria-label={`Relationships for ${[boundary.title, boundary.context].filter(Boolean).join(', ')}`}>
               {activeDiagram.relationships.filter((relationship) => relationship.source_node_key === boundary.key || relationship.target_node_key === boundary.key).map((relationship) => (
@@ -919,18 +923,22 @@ export function App() {
                 {activeComponents.map((component) => {
                   const reviewStatus = componentReviewStatus.get(component.id)?.status ?? (review ? 'unchanged' : '')
                   const statusLabel = reviewStatus === 'added' ? 'Added' : reviewStatus === 'content_changed' ? 'Content changed' : ''
+                  const appearance = activeDiagram?.appearances.find((candidate) => candidate.component_id === component.id)
+                  const referenceHomeTitle = appearance?.role === 'reference' ? homeDiagramTitles.get(component.id) : undefined
+                  const referenceContext = referenceHomeTitle ? `Included here · Lives in ${referenceHomeTitle}` : ''
+                  const componentLabel = (titleCounts.get(component.title) ?? 0) > 1 ? `${component.title}, ${component.filename || component.id.slice(0, 8)}` : component.title
                   return (
                   <li key={component.id}>
                     <button
                       type="button"
                       className={`${component.id === selectedComponentID && !editor ? 'selected' : ''} ${review ? `review-${reviewStatus.replace('_', '-')}` : ''}`.trim()}
-                      aria-label={[(titleCounts.get(component.title) ?? 0) > 1 ? `${component.title}, ${component.filename || component.id.slice(0, 8)}` : component.title, statusLabel].filter(Boolean).join(', ')}
+                      aria-label={[componentLabel, referenceContext, statusLabel].filter(Boolean).join(', ')}
                       aria-current={component.id === selectedComponentID && !editor ? 'page' : undefined}
                       onClick={() => selectComponent(component.id)}
                     >
                       <span>{component.title}</span>
                       {(titleCounts.get(component.title) ?? 0) > 1 && <small>{' '}{component.filename || component.id.slice(0, 8)}</small>}
-                      {activeDiagram?.appearances.find((appearance) => appearance.component_id === component.id)?.role === 'reference' && <small className="appearance-note">Also shown here</small>}
+                      {referenceContext && <small className="appearance-note">{referenceContext}</small>}
                       {statusLabel && <small className="index-review-status">{statusLabel}</small>}
                     </button>
                   </li>

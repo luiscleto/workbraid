@@ -19,6 +19,30 @@ const recordsID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 type RunningWorkBraid = { child: ChildProcess; origin: string; logFD: number }
 type SourceEvidence = { head: string; status: string; index: string; files: string }
 
+async function expectContextualDiagramForm(page: Page) {
+  const form = page.locator('.working-pane form.diagram-editor')
+  await expect(form).toHaveClass(/component-form/)
+  const layout = await form.evaluate((element) => {
+    const formStyle = getComputedStyle(element)
+    const pane = element.parentElement!
+    const paneStyle = getComputedStyle(pane)
+    const paneContentWidth = pane.getBoundingClientRect().width
+      - Number.parseFloat(paneStyle.paddingLeft)
+      - Number.parseFloat(paneStyle.paddingRight)
+      - Number.parseFloat(paneStyle.borderLeftWidth)
+      - Number.parseFloat(paneStyle.borderRightWidth)
+    return {
+      padding: [formStyle.paddingTop, formStyle.paddingRight, formStyle.paddingBottom, formStyle.paddingLeft],
+      borderTopWidth: formStyle.borderTopWidth,
+      width: element.getBoundingClientRect().width,
+      paneContentWidth,
+    }
+  })
+  expect(layout.padding).toEqual(['0px', '0px', '0px', '0px'])
+  expect(layout.borderTopWidth).toBe('0px')
+  expect(Math.abs(layout.width - layout.paneContentWidth)).toBeLessThanOrEqual(1)
+}
+
 test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 product', async ({ page }) => {
   page.setDefaultTimeout(10_000)
   const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-p21-diagrams-'))
@@ -184,10 +208,12 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     const pendingComposition = page.getByRole('region', { name: 'Diagram changes in progress' })
     const workerComposition = pendingComposition.getByText('Worker', { exact: true }).locator('..')
     await workerComposition.getByRole('button', { name: 'Create detail diagram' }).click()
+    await expectContextualDiagramForm(page)
     await page.getByLabel('Diagram title').fill('Worker internals')
     await page.getByRole('button', { name: 'Keep change' }).click()
     await expect(pendingComposition).toContainText('Worker internals')
     await workerComposition.getByRole('button', { name: 'Change where it lives' }).click()
+    await expectContextualDiagramForm(page)
     await page.getByRole('combobox', { name: 'Diagram' }).selectOption({ label: 'Worker internals' })
     await page.getByRole('button', { name: 'Keep change' }).click()
     await page.getByRole('button', { name: 'Review changes' }).click()

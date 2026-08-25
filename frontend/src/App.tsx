@@ -1404,7 +1404,7 @@ function DiagramEditorForm({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }) {
   return (
-    <form className="component-editor diagram-editor" onSubmit={onSubmit}>
+    <form className="component-form diagram-editor" onSubmit={onSubmit}>
       <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>{editor.kind === 'detail' ? 'Create detail diagram' : editor.kind === 'title' ? 'Edit diagram title' : 'Change where it lives'}</h2></div>
       {editor.kind === 'move' ? (
         <label>Diagram

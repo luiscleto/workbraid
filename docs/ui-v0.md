@@ -7,21 +7,21 @@ This is not a component library or token system.
 
 The UI is for a person at a desk, not an API log. Headings are status. Body is one short sentence. Errors say what to do next.
 
-Write as if the reader is tired and non-technical. Prefer what a thing is. Mention what it is not only when a real confusion exists. Trim pasted paths.
+Write as if the reader is tired and non-technical. Prefer what a thing is. Mention what it is not only when a real confusion exists.
 
 Do not pipe backend sentinel strings into the page. Map each failure to one operator sentence that says what to do. Do not claim something is absent when you only failed to look it up.
 
 ## Terminology
 
-Say **folder**, **project**, **linked**, **architecture**.
+Say **project**, **architecture**, **Diagram**, and **Component**.
 
-Internal names stay off the screen. Do not show implementation words (source root, association, inspect, canonical, snapshot, payload, origin, and whatever the current internals are called).
+Internal names stay off the screen. Do not show implementation words (store UUID, canonical, snapshot, payload, origin, and whatever the current internals are called).
 
 ## What is on screen
 
 Show only actions and state that exist now. Do not add disabled future controls, placeholder panels, empty queues, or explanatory chrome for features that are not implemented.
 
-Progressively disclose machinery. Paths, IDs, Git revisions, and raw errors are first-class when the current task needs them. Otherwise they belong in details or inspection, not on every surface.
+Progressively disclose machinery. Canonical file paths, IDs, Git revisions, and raw errors are first-class when the current task needs them. Otherwise they belong in details or inspection, not on every surface.
 
 ## Visual direction
 
@@ -36,12 +36,22 @@ A **drafting table**: one surface, hairline structure, warm paper, almost no rad
 
 ## Architecture workspace
 
-Project opening and setup are entry states, not permanent workspace chrome. Once a project is open, the opening sheet is gone and WorkBraid shows a map-centered Architecture workbench.
+### Project catalog and routes
+
+The entry state is a WorkBraid project catalog, not a source-folder picker. It lists discoverable private Architecture projects by human-readable name and provides one deliberate **New project** action. Creating a project asks only for its name; WorkBraid generates its stable route slug and opens the native writable Architecture after successful initialization.
+
+Selecting an existing project opens it by catalog identity. `/projects/<slug>` restores that same project on reload and after a fresh process start. The slug may appear in the browser URL and bounded technical details, but the display name remains primary. Store UUIDs and private Git paths are not normal selection chrome.
+
+WorkBraid offers no slug-edit action. If explicit **Refresh** adopts an authoritative external accepted revision with another valid slug, replace the current browser route with `/projects/<new-slug>`. The old route then behaves like any other unknown slug unless another project currently owns it. Do not present this accepted-state observation as a rename or migration workflow.
+
+Project names need not be unique. When names collide, show the minimum slug context needed to distinguish them. An unknown route shows an ordinary not-found state with an action back to the project catalog and never creates a project. Duplicate discovered slugs show an explicit catalog conflict and never select a winner. A discovered malformed store appears as unavailable with bounded technical context where practical rather than silently disappearing; no repair or recovery workflow is implied.
+
+Project opening and creation are entry states, not permanent workspace chrome. Once a project is open, the catalog is gone and WorkBraid shows a map-centered Architecture workbench. The application frame keeps the current project visible and provides an unobtrusive way to open another project through the catalog. Existing dirty-editor and backend-held pending-change guards still apply before leaving.
 
 On a normal desktop viewport, the workbench has:
 
-- a compact project/Diagram navigator and Component index appropriate to the accepted format;
-- the accepted v1 implicit map or selected accepted v2 Diagram as the primary canvas;
+- a compact Diagram navigator and Component index;
+- the selected accepted Diagram as the primary canvas;
 - one contextual working pane for the current task: accepted component documentation or structured authoring.
 
 The Diagram tree, component index, map, and documentation are projections of the same exact accepted Architecture revision. Pending title, Diagram, membership, or hierarchy changes do not alter those normal surfaces before acceptance, and pending new Components or Diagrams do not appear in them. Pending work remains reachable through **Changes in progress**.
@@ -61,7 +71,7 @@ The candidate view is the primary review canvas. A compact toggle switches the e
 - **With changes** shows the exact immutable reviewed candidate;
 - **Before changes** shows that review's exact bound base, not newly observed accepted Architecture.
 
-The Diagram tree or v1 implicit-map context, selected Diagram, component index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology always switch together. Never show one snapshot's map beside another snapshot's tree, index, or documentation. If external authority moves after review, mark the review stale through the existing product language; do not relabel its bound base as current.
+The Diagram tree, selected Diagram, component index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology always switch together. Never show one snapshot's map beside another snapshot's tree, index, or documentation. If external authority moves after review, mark the review stale through the existing product language; do not relabel its bound base as current.
 
 In the candidate view:
 
@@ -71,11 +81,9 @@ In the candidate view:
 - removed relationship facts are visibly distinct, such as ghosted or dashed;
 - selecting a changed component or relationship focuses its review context and the relevant region of the exact unified diff.
 
-For v2 candidates, the same review task also distinguishes added Diagrams, Diagram title changes, home/reference appearance changes, home moves, and detail-link changes. A Component home move is shown as Diagram-composition removal/addition. If composition alone makes a real Relationship change between ordinary and boundary presentation, do not describe that as an Architecture Relationship addition or removal. Selecting a Diagram or membership change focuses its Diagram context and corresponding canonical Diagram-file diff.
+For Diagram candidates, the same review task also distinguishes added Diagrams, Diagram title changes, home/reference appearance changes, home moves, and detail-link changes. A Component home move is shown as Diagram-composition removal/addition. If composition alone makes a real Relationship change between ordinary and boundary presentation, do not describe that as an Architecture Relationship addition or removal. Selecting a Diagram or membership change focuses its Diagram context and corresponding canonical Diagram-file diff.
 
-During v1-to-v2 review, **Before changes** remains the real implicit v1 map and **With changes** shows the candidate Diagram tree. The UI does not fabricate a v1 Diagram identity.
-
-If the selected Diagram exists only in **With changes**, switching to **Before changes** selects the nearest ancestor which exists in the bound v2 base, or the bound base root when no ancestor survives. With a v1 base, it switches to the real implicit all-components map. Show a restrained note that the previously selected Diagram exists only with the changes. Never retain that candidate-only Diagram's composition, index, documentation context, boundary references, or topology on the base side. Restoring its exact focus when returning to **With changes** is optional UI behavior.
+If the selected Diagram exists only in **With changes**, switching to **Before changes** selects the nearest ancestor which exists in the bound base, or the bound base root when no ancestor survives. Show a restrained note that the previously selected Diagram exists only with the changes. Never retain that candidate-only Diagram's composition, index, documentation context, boundary references, or topology on the base side. Restoring its exact focus when returning to **With changes** is optional UI behavior.
 
 The raw unified diff remains directly inspectable in the same Review changes surface. Basic added/removed line coloring may improve readability, but it does not become a semantic or rendered-Markdown diff. If the visual map fails to render, say so clearly and retain the validated candidate and complete unified diff review path.
 
@@ -85,13 +93,13 @@ Validation-bearing rows in Changes in progress visibly indicate which component 
 
 Pending work whose accepted base is stale remains visible and read-only through **Changes in progress**. It cannot be reviewed or accepted. The human may discard that whole non-canonical change set so new work can begin from current accepted Architecture; discard is not partial editing, reconciliation, or undo.
 
-The application frame keeps the current project and Architecture context visible, with compact actions for explicit refresh and opening another project. Do not permanently display a positive current/accepted status merely because it exists. Make stale or non-current state conspicuous when relevant; otherwise let the workspace stay quiet.
+The application frame keeps the current project and Architecture context visible, with compact actions for explicit refresh and returning to the project catalog. Do not permanently display a positive current/accepted status merely because it exists. Make stale or non-current state conspicuous when relevant; otherwise let the workspace stay quiet.
 
 The same surfaces may collapse into one-at-a-time views on narrower layouts. Mobile-specific interaction remains deferred.
 
 ### Diagram navigation and composition
 
-Format v1 retains its existing implicit all-components map and does not pretend to have a canonical Diagram identity. Format v2 opens at its root Diagram and adds a compact project-style Diagram tree plus breadcrumbs. The tree is navigation, not a Diagram-management dashboard.
+Architecture opens at its root Diagram and provides a compact project-style Diagram tree plus breadcrumbs. The tree is navigation, not a Diagram-management dashboard.
 
 For the selected Diagram:
 
@@ -115,13 +123,7 @@ IDs, Diagram filenames, YAML roles, and hierarchy keys remain out of normal navi
 
 Diagram authoring reuses the contextual working pane. The first Diagram slice provides structured tasks to create and title a detail Diagram, move a Component's home, and also show or stop showing a Component by reference. Creating a Component inside an active Diagram places it there; root is the fallback only when no Diagram context exists. Diagram deletion and general hierarchy management are not shown.
 
-Newly initialized Architecture is already ready for Diagram and Component authoring and receives no setup or migration explanation.
-
-A valid accepted v1 Architecture remains readable and navigable through its implicit all-components map, but normal Add/Edit and relationship authoring are not shown. When no Changes in progress exist, it offers one concise **Set up diagrams** action with product language such as **Set up diagrams to start editing this architecture.** Do not mention format versions, migration, schemas, YAML, root identity, or upgrade steps.
-
-**Set up diagrams** creates one reviewable pending change containing only the Diagram setup. It does not also begin detail-Diagram or Component authoring. Because its complete candidate is the writable Architecture shape, the human reviews and deliberately updates Architecture through the normal Changes-in-progress and Review-changes workspace. Cancel or whole-set discard leaves the accepted Architecture untouched.
-
-If non-setup pending work somehow already exists for this readable older Architecture, keep it visibly read-only under **Changes in progress**. Show no Edit, Fix, Review changes, or Update architecture action for that work. Whole-set **Discard changes** remains available; **Set up diagrams** stays unavailable until discard clears it. Do not merge, reinterpret, accept, recover, or persist this defensive transitional state.
+Newly initialized Architecture is already ready for Diagram and Component authoring and receives no setup, migration, source-folder, or linking explanation.
 
 Automatic Diagram layout remains disposable presentation. No drag position, route, bend point, size, shape, or view state is implied or persisted.
 

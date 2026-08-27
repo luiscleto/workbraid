@@ -11,7 +11,7 @@ Architecture remains the only WorkBraid vertical in scope here. Agent Control is
 ## Product principles
 
 - Architecture Components and Relationships remain semantic Architecture facts with their existing identities and documentation.
-- A future first-class Diagram owns composition and presentation rather than replacing those facts with a generic node/edge domain.
+- A first-class Diagram owns composition and presentation rather than replacing those facts with a generic node/edge domain.
 - The normal Architecture workspace continues to project exact accepted state.
 - Candidate-only topology belongs in the deliberate Review changes task, derived from its exact immutable reviewed candidate.
 - Exact canonical diff review and accepted-ref authority remain intact as richer visual review and diagram presentation are added.
@@ -19,7 +19,7 @@ Architecture remains the only WorkBraid vertical in scope here. Agent Control is
 
 ## Phase 1 — Candidate-aware review workbench — complete
 
-Improve the existing format-v1 review workflow without evolving the portable store:
+Improve the then-existing Architecture review workflow without introducing Diagram presentation state:
 
 - one Review changes surface combining candidate-aware visual review and the complete exact unified diff;
 - an exact bound base/candidate toggle with snapshot-unified index, map, documentation, and relationships;
@@ -29,7 +29,7 @@ Improve the existing format-v1 review workflow without evolving the portable sto
 - deterministic non-canonical review layout;
 - review-specific validation, fix, clear/deselect, and basic diff-readability polish.
 
-The normal workspace map remains accepted-only. Persisted pending state, normal-map pending overlays, URL-backed restoration, semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
+The normal workspace map remains accepted-only. Persisted pending state, normal-map pending overlays, semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
 
 ## Phase 2 — First-class Architecture Diagrams and nested navigation
 
@@ -44,12 +44,12 @@ Approved domain direction:
 - only a parent Diagram's home appearance may own its one optional detail-Diagram link;
 - global Relationships crossing the active Diagram boundary use derived external references rather than copied facts or implicit membership;
 - automatic layout remains disposable and non-canonical;
-- new stores initialize directly as writable v2 with one empty manifest-identified root Diagram;
-- valid v1 remains readable without rewrite and has one deliberate reviewed **Set up diagrams** transition which creates only the v2 root and home appearances while preserving Component blobs, IDs, modes, paths, and Relationships exactly;
-- normal Architecture authoring is v2-only; the bounded v1 transition does not preserve ordinary v1 mutation or compose with arbitrary existing pending work;
+- new projects are created by name, receive a WorkBraid-non-editable stable human-facing slug plus immutable store UUID, and initialize directly as writable v2 with one empty manifest-identified root Diagram;
+- private accepted Git stores are the project catalog authority, `/projects/<slug>` restores a project, and no source-folder association or SQLite catalog is retained;
+- old alpha format-v1 stores and path-association databases are disposable and unsupported; there is no setup transition, migration, compatibility adapter, or v3;
 - candidate-aware Diagram review extends the existing exact base/candidate snapshots, unified diff, binding, confirmation, and accepted-ref CAS path.
 
-The smallest useful product slice includes direct-v2 initialization and normal v2 Component/Relationship authoring, the bounded v1 setup transition, root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
+The smallest useful product slice includes slug-native catalog/create/open/reload, direct-v2 initialization and normal Component/Relationship authoring, root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
 
 ## Phase 3 — Durable rich diagram editing
 

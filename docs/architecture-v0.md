@@ -23,19 +23,19 @@ Accepted Architecture is canonical Markdown plus minimal structural metadata sto
 
 The private repository:
 
-- is separate from the user's source repository;
 - lives under per-user WorkBraid application data initially;
+- is one discoverable WorkBraid project in that private store area;
 - must be self-describing;
 - must remain independently intelligible without the WorkBraid implementation.
 
-Opening a source repository does not modify it. Export or synchronization into the source repository is optional later functionality requiring explicit configuration.
+WorkBraid does not require or open an arbitrary source-project folder. Export or synchronization into another repository is optional later functionality requiring explicit configuration.
 
 ### Accepted revision
 
 `refs/heads/accepted` is the sole authoritative pointer to accepted Architecture.
 
 - A commit is canonical because `accepted` points to it, not because WorkBraid created it.
-- `HEAD`, checkout state, working trees, SQLite, and loaded snapshots have no authority over accepted state.
+- `HEAD`, checkout state, working trees, catalog enumeration, and loaded snapshots have no authority over accepted state.
 - An authoritative human may deliberately advance `accepted` using ordinary Git.
 - WorkBraid loads and structurally validates whatever `accepted` references.
 - Invalid or unsupported state at `accepted` produces a clear load failure.
@@ -45,24 +45,25 @@ The Git/Markdown contract is independent of Go, Git CLI usage, bare-repository l
 
 ## 3. Store contract
 
-Format v1 accepted tree layout:
+The closed format-v2 accepted tree layout is:
 
 ```text
 architecture.yaml
 components/
   <filename>.md
+diagrams/
+  <filename>.yaml
 ```
 
-The `components/` directory may be absent when there are zero components.
-
-Architecture format v1 discovers components non-recursively as `components/*.md`. A valid v1 accepted tree contains only:
+Format v2 discovers Components non-recursively as `components/*.md` and Diagrams non-recursively as `diagrams/*.yaml`. A valid accepted tree contains only:
 
 - `architecture.yaml`; and
-- zero or more component files directly under `components/` whose filenames end in `.md`.
+- zero or more Component files directly under `components/` whose filenames end in `.md`; and
+- one or more Diagram files directly under `diagrams/` whose filenames end in `.yaml`.
 
-Nested component directories and every other accepted-tree path are invalid in v1.
+The `components/` directory may be absent when there are zero Components. Nested directories and every other accepted-tree path are invalid.
 
-Each canonical manifest or component path must be an ordinary Git blob entry. A symlink, submodule/gitlink, or tree at one of those paths is invalid. WorkBraid-created canonical files use mode `100644`. Executable mode has no Architecture semantics; when editing an existing regular-file blob, WorkBraid does not gratuitously change its existing regular-file mode.
+Each canonical manifest, Component, or Diagram path must be an ordinary Git blob entry. A symlink, submodule/gitlink, or tree at one of those paths is invalid. WorkBraid-created canonical files use mode `100644`. Executable mode has no Architecture semantics; when editing an existing regular-file blob, WorkBraid does not gratuitously change its existing regular-file mode.
 
 ### Store manifest
 
@@ -72,39 +73,46 @@ Each canonical manifest or component path must be an ordinary Git blob entry. A 
 - a format version;
 - an immutable opaque WorkBraid store ID;
 - a human-readable project name;
-- a source-repository hint for recovery/reassociation.
+- a stable human-readable project slug; and
+- the stable identity of the root Diagram.
 
-The literal v1 manifest shape is:
+The literal v2 manifest shape is:
 
 ```yaml
 format: workbraid-architecture
-version: 1
+version: 2
 store_id: "6f2f9de7-22c2-4cd5-b7da-91f3454f09e4"
 project:
   name: "Example Project"
-  source_hint: "/home/alice/src/example-project"
+  slug: "example-project"
+root_diagram: "2a863995-88e8-40b5-af0f-34398474dc0a"
 ```
 
-Its exact v1 fields and types are:
+Its exact fields and types are:
 
 - `format`: required string with the literal value `workbraid-architecture`;
-- `version`: required integer with the literal value `1`;
+- `version`: required integer with the literal value `2`;
 - `store_id`: required string containing a valid UUID;
 - `project`: required mapping containing exactly:
   - `name`: required string, non-empty after trimming;
-  - `source_hint`: required string, non-empty after trimming.
+  - `slug`: required string matching `[a-z0-9]+(?:-[a-z0-9]+)*`;
+- `root_diagram`: required string containing the stable UUID of one discovered Diagram.
 
-The v1 manifest schema is closed. Unknown keys at the top level or inside `project` are invalid rather than ignored. Future semantic fields require format evolution.
+The v2 manifest schema is closed. Unknown keys at the top level or inside `project` are invalid rather than ignored. Future semantic fields require format evolution.
 
-Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. The one deliberate format-v1-to-v2 transition defined below is supported; no general migration or version-negotiation machinery is implied.
+Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. This alpha contract supports only the exact format v2 defined here. Old alpha stores are disposable; WorkBraid provides no format-v1 loader, setup action, migration, compatibility adapter, or downgrade.
 
-The WorkBraid store ID is the store's stable identity. Project name and source hint are recovery information only:
+The WorkBraid store ID is the store's immutable identity. Project name and slug are human-facing project information only:
 
-- they do not define store identity;
-- `source_hint` is not an authoritative repository locator;
-- observing the source repository at another path must not automatically change canonical history.
+- neither defines store identity;
+- project names need not be unique;
+- WorkBraid provides no slug-edit operation and every WorkBraid-authored candidate preserves the exact current slug, making it stable for the project's lifetime under normal WorkBraid use;
+- the slug is the current human-facing catalog and route locator, not store identity; and
+- slug uniqueness is a local catalog invariant rather than portable store identity.
 
-The store contains enough human-readable identity and association information for later manual recovery. Automatic repository fingerprinting or moved-repository discovery is not required.
+Project creation trims leading and trailing whitespace from the submitted name, rejects an empty result, and stores that result as `project.name`. It derives a human-readable slug from that stored name. The creation algorithm lowercases ASCII letters, replaces each maximal run outside `[a-z0-9]` with one hyphen, trims leading and trailing hyphens, and uses `project` if nothing remains. If that slug already exists, WorkBraid appends `-2`, then `-3`, and so on until it finds the first available slug. This deterministic suffix choice is creation behavior; the portable invariant is a valid slug.
+
+Because `refs/heads/accepted` remains sole authority and there is deliberately no second durable slug registry, an authoritative external accepted update may replace the manifest with another otherwise-valid slug. If WorkBraid loads or explicitly Refreshes to that revision, the new accepted slug becomes that store UUID's current canonical catalog and route locator. Catalog uniqueness and conflict handling apply normally. The old `/projects/<old-slug>` subsequently resolves as not found unless another valid store currently owns it. When explicit Refresh adopts a new slug for the open project, WorkBraid replaces the browser route with `/projects/<new-slug>` rather than knowingly retaining the stale locator. This is accepted-state observation, not slug editing, migration, history traversal, or another identity authority.
 
 ### Components
 
@@ -137,7 +145,7 @@ The canonical component H1 remains Markdown source. The structured component Tit
 
 WorkBraid normalizes a submitted structured Title by trimming leading and trailing whitespace. When serializing that Title into an H1, WorkBraid escapes or encodes the text as needed so parsing the resulting H1 yields the same normalized structured Title. This is a projection and serialization rule, not a separate title encoding or portable metadata field.
 
-The literal v1 component frontmatter shape is:
+The literal v2 Component-frontmatter shape is:
 
 ```yaml
 ---
@@ -149,7 +157,7 @@ relationships:
 # API
 ```
 
-Its exact v1 fields and types are:
+Its exact fields and types are:
 
 - `id`: required string containing a valid UUID;
 - `relationships`: optional sequence; omission means no outgoing relationships;
@@ -157,7 +165,7 @@ Its exact v1 fields and types are:
   - `target`: required string containing a valid component UUID;
   - `label`: required string, non-empty after trimming.
 
-The v1 component-frontmatter schema is closed. Unknown component or relationship-item keys are invalid rather than ignored. Future semantic fields require format evolution.
+The Component-frontmatter schema is closed. Unknown Component or Relationship-item keys are invalid rather than ignored. Future semantic fields require format evolution.
 
 ### Relationships
 
@@ -210,47 +218,7 @@ WorkBraid should avoid gratuitously rewriting unrelated Markdown or frontmatter 
 
 ### Format v2 Diagram contract
 
-Format v2 introduces first-class Architecture Diagrams without changing Component or Relationship identity or meaning. Components and Relationships remain Architecture semantic facts. A Diagram is canonical composition and presentation over those facts; it is not a generic node/edge replacement for them.
-
-The closed v2 accepted tree shape is:
-
-```text
-architecture.yaml
-components/
-  <filename>.md
-diagrams/
-  <filename>.yaml
-```
-
-Format v2 retains the complete v1 Component, Relationship, Markdown, path-entry, and regular-file-mode contract. It discovers Components non-recursively as `components/*.md` and Diagrams non-recursively as `diagrams/*.yaml`. A valid v2 tree contains only:
-
-- `architecture.yaml`;
-- zero or more Component files directly under `components/` whose filenames end in `.md`; and
-- one or more Diagram files directly under `diagrams/` whose filenames end in `.yaml`.
-
-Every manifest, Component, and Diagram path must be an ordinary Git blob entry. Nested directories and every other accepted-tree path are invalid. Diagram filenames carry no identity. WorkBraid-created Diagram files use mode `100644`; editing an existing regular-file Diagram blob does not gratuitously change its regular-file mode.
-
-The literal v2 manifest shape is:
-
-```yaml
-format: workbraid-architecture
-version: 2
-store_id: "6f2f9de7-22c2-4cd5-b7da-91f3454f09e4"
-project:
-  name: "Example Project"
-  source_hint: "/home/alice/src/example-project"
-root_diagram: "2a863995-88e8-40b5-af0f-34398474dc0a"
-```
-
-Its exact v2 fields and types are:
-
-- `format`: required string with the literal value `workbraid-architecture`;
-- `version`: required integer with the literal value `2`;
-- `store_id`: required string containing a valid UUID, retaining the store identity from v1;
-- `project`: required mapping with the exact v1 `name` and `source_hint` fields and types; and
-- `root_diagram`: required string containing the stable UUID of one discovered Diagram.
-
-The v2 manifest schema is closed. The v1 manifest remains closed with exactly its already-defined fields and does not accept `root_diagram`.
+Format v2 contains first-class Architecture Diagrams without changing Component or Relationship identity or meaning. Components and Relationships remain Architecture semantic facts. A Diagram is canonical composition and presentation over those facts; it is not a generic node/edge replacement for them. Diagram filenames carry no identity.
 
 The literal v2 Diagram-file shape is:
 
@@ -317,18 +285,6 @@ For one active Diagram:
 
 Within one active Diagram, WorkBraid derives at most one boundary/external reference for each absent external Component. Every crossing Relationship occurrence to or from that Component connects to that one derived reference while retaining its exact direction, label, and multiplicity. Derived boundary references have no canonical identity, membership, or separate Architecture meaning. Activating one navigates to the external Component's home Diagram. A canonical reference appearance is a real Diagram appearance and therefore uses an ordinary Component node and Relationship edge rather than a boundary reference.
 
-#### v1 compatibility and deliberate Diagram setup
-
-Valid format v1 remains fully loadable as its existing implicit all-components map. Opening v1 never creates a Diagram ID or rewrites canonical Git.
-
-Accepted v1 is readable and navigable but is not a normal writable Architecture format. Normal Component and Relationship authoring applies to accepted v2. Mutation eligibility is decided from the synchronized server-owned loaded project, snapshot format, and authority state; a request against current accepted v1 creates no pending work, regardless of browser assumptions.
-
-When no backend-held pending change set exists, valid accepted v1 offers one deliberate **Set up diagrams** action. It creates one ordinary pending candidate containing only the format transition: the manifest becomes the normative v2 manifest, one newly generated stable root Diagram is created with a title initially derived from the existing project name, and every accepted Component receives exactly one home appearance in that root. The root title is independently mutable after acceptance and does not track later project-name changes. The transition does not also perform a detail-Diagram or other authoring operation.
-
-The transition preserves every existing Component ID, path, blob, regular-file mode, Markdown byte, and Relationship exactly. It uses the normal complete-candidate construction, version-aware validation, exact unified diff, review binding, confirmation, stale protection, accepted-ref compare-and-swap, publication, and restart-reconstruction paths. Its complete candidate is format v2, so this setup pending set may be reviewed and deliberately accepted. A transition-only accepted revision is valid. Cancel or whole-set discard leaves v1 untouched. The review's v1 **Before changes** side is the real implicit v1 all-components map and does not receive a fabricated canonical Diagram identity. There is no v2-to-v1 downgrade.
-
-**Set up diagrams** is unavailable while any backend-held pending set exists. If a non-setup v1 pending set somehow already exists, WorkBraid retains it visibly as read-only evidence. It permits no further editing, Review changes, or acceptance into another v1 revision; it does not reinterpret or combine that work with setup. Whole-set Discard remains available and clears only that non-canonical pending set through the existing discard semantics. **Set up diagrams** becomes available only after the old pending set is discarded. This is defensive transitional handling only: it adds no persistence, recovery, migration state machine, migration table, conversion or reconciliation machinery, alternate candidate representation, or special acceptance authority.
-
 ## 4. Initialization and loading
 
 ### Bootstrap revision
@@ -350,13 +306,15 @@ The parentless bootstrap revision is valid format v2. It contains:
 
 Zero Components and zero Relationships are valid. `diagrams/root.yaml` is only WorkBraid's creation-time filename convention: it carries no identity and does not designate the root. Normal loading continues to accept any conforming non-recursive `diagrams/*.yaml` filename, and manifest `root_diagram` remains the sole root designation. After initialization, the root title is independently mutable and does not track later project-name changes.
 
+Initialization generates one store UUID and one unique slug from the submitted project name. It publishes the project into the catalog only through the valid accepted bootstrap. It does not accept or retain a source-project path.
+
 Opening distinguishes:
 
 - absent store;
 - incomplete or invalid store;
 - valid store.
 
-It never falls back to SQLite or another Git ref.
+It never falls back to catalog state or another Git ref.
 
 ### Loaded snapshot
 
@@ -364,8 +322,8 @@ WorkBraid loads one immutable in-memory Architecture snapshot corresponding to o
 
 The same snapshot supplies:
 
-- the accepted format version;
-- the v1 implicit map or v2 Diagram hierarchy and composition;
+- the accepted format version and project slug;
+- the Diagram hierarchy and composition;
 - the active Diagram's map topology and derived boundary references;
 - accepted component titles and documentation;
 - relationship resolution;
@@ -394,9 +352,9 @@ If `accepted` advances to invalid or unsupported state, WorkBraid may retain the
 
 The review contains one immutable snapshot reconstructed from the exact base commit and one immutable snapshot constructed from the validated candidate tree. Both use the existing version-aware Architecture parser and validation semantics. WorkBraid does not construct another candidate, graph, parser, or review authority for visual review.
 
-Within review, the selected base or candidate snapshot supplies the Diagram tree or v1 implicit-map context, selected Diagram, component index, map topology, selected documentation/detail, titles, boundary references, and relationship resolution together. A surface must never combine data from the two snapshots. The base side remains the review's exact bound base; it is not replaced by newly observed accepted Architecture. If external authority moves after review, the review becomes stale under the existing stale-base rules.
+Within review, the selected base or candidate snapshot supplies the Diagram tree, selected Diagram, component index, map topology, selected documentation/detail, titles, boundary references, and relationship resolution together. A surface must never combine data from the two snapshots. The base side remains the review's exact bound base; it is not replaced by newly observed accepted Architecture. If external authority moves after review, the review becomes stale under the existing stale-base rules.
 
-If the current review selection is a Diagram that exists only in **With changes**, switching to **Before changes** uses a base-owned fallback rather than leaking candidate state. For a v2 base, WorkBraid selects the nearest ancestor of that candidate Diagram which exists in the bound base snapshot; if no such ancestor survives, it selects the bound base root Diagram. For a v1 base during **Set up diagrams**, it selects the real v1 implicit all-components map because no canonical Diagram identity exists there. The review shows a restrained note that the previously selected Diagram exists only with the changes. Its candidate-only composition, index, documentation context, boundary references, and topology never appear on the base side. Restoring exact focus when returning to **With changes** is disposable UI behavior rather than an Architecture invariant.
+If the current review selection is a Diagram that exists only in **With changes**, switching to **Before changes** uses a base-owned fallback rather than leaking candidate state. WorkBraid selects the nearest ancestor of that candidate Diagram which exists in the bound base snapshot; if no such ancestor survives, it selects the bound base root Diagram. The review shows a restrained note that the previously selected Diagram exists only with the changes. Its candidate-only composition, index, documentation context, boundary references, and topology never appear on the base side. Restoring exact focus when returning to **With changes** is disposable UI behavior rather than an Architecture invariant.
 
 Invalid pending state does not produce reviewed snapshots. It remains non-canonical work under Changes in progress with actionable validation guidance.
 
@@ -406,18 +364,14 @@ Validation remains intentionally small.
 
 A valid accepted Architecture requires:
 
-- canonical manifest and component paths that are ordinary Git blob entries rather than symlinks, gitlinks, or trees;
-- a parseable manifest with supported format/version and required store identity information;
-- discovered component files with parseable YAML frontmatter;
-- valid and unique component IDs;
+- canonical manifest, Component, and Diagram paths that are ordinary Git blob entries rather than symlinks, gitlinks, or trees;
+- a parseable closed v2 manifest with required store identity, project name, valid slug, and root Diagram identity;
+- discovered Component files with parseable YAML frontmatter;
+- valid and unique Component IDs;
 - valid UTF-8 Markdown;
 - a required first-block H1 title whose text is non-empty after trimming;
 - parseable relationship declarations;
-- resolvable relationship target IDs.
-
-A valid format-v2 Architecture additionally requires:
-
-- a supported closed v2 manifest whose `root_diagram` resolves;
+- resolvable Relationship target IDs;
 - discovered Diagram files with the exact closed Diagram schema;
 - valid and unique Diagram IDs and non-empty Diagram titles;
 - appearances that resolve Component and optional detail-Diagram IDs;
@@ -442,7 +396,7 @@ Each pending change set:
 
 Transient unsent browser edits are allowed, but the browser does not own the authoritative pending change set. Persistence and recovery of pending change sets across backend restart are deferred.
 
-A human may explicitly discard the entire non-canonical pending change set. Discard removes only that pending state; it does not modify accepted Architecture, Git refs or objects, source-repository files, or persisted Architecture state. If a current accepted revision is successfully loaded, new pending work may then begin from it. Partial discard, merge, rebase, reconciliation, undo/redo, and a broader draft lifecycle remain deferred.
+A human may explicitly discard the entire non-canonical pending change set. Discard removes only that pending state; it does not modify accepted Architecture, Git refs or objects, arbitrary user files, or persisted Architecture state. If a current accepted revision is successfully loaded, new pending work may then begin from it. Partial discard, merge, rebase, reconciliation, undo/redo, and a broader draft lifecycle remain deferred.
 
 The canonical Git store remains unchanged until successful compare-and-swap advancement of `refs/heads/accepted`. Validation, commit creation, or ref-update failure before that boundary preserves:
 
@@ -486,7 +440,7 @@ Proposal approval is a separate future workflow.
 
 ## 7. First-slice authoring
 
-For accepted v2, the browser provides structured Architecture authoring rather than raw-frontmatter editing as the normal flow. Accepted v1 retains readable implicit-map navigation and the deliberate **Set up diagrams** transition defined above, but not ordinary Component or Relationship mutation.
+The browser provides structured format-v2 Architecture authoring rather than raw-frontmatter editing as the normal flow.
 
 Initial controls include:
 
@@ -507,7 +461,7 @@ Creating a component generates:
 
 In v2, creation also adds exactly one home appearance. The active Diagram is the home when creation occurs in a Diagram context; root is the fallback only when creation genuinely has no Diagram context.
 
-Filename generation is creation-time behavior only. Loading accepts any filename that matches the non-recursive v1 component discovery rule. Changing the title does not automatically rename the file.
+Filename generation is creation-time behavior only. Loading accepts any filename that matches the non-recursive Component discovery rule. Changing the title does not automatically rename the file.
 
 Initial UI does not require:
 
@@ -534,7 +488,7 @@ These operations update the one backend-owned pending Architecture change set. D
 
 ## 8. Accepted Diagram map and candidate review map
 
-The normal workspace map is an interactive projection of one exact accepted Architecture revision. For v1 it is the existing implicit all-components map. For v2 it is the selected accepted Diagram's exact composition plus derived cross-Diagram boundary references.
+The normal workspace map is an interactive projection of one exact accepted Architecture revision: the selected accepted Diagram's exact composition plus derived cross-Diagram boundary references.
 
 A v2 workspace begins at the root Diagram and provides the complete accepted Diagram tree. Selecting a Diagram switches its Component index, map, documentation context, ordinary Relationships, and derived boundary references together. Selecting a Component focuses its accepted documentation. Activating a home Component's detail link drills into its child Diagram; breadcrumbs and back navigation return to the parent and identify the anchor. Activating a derived boundary reference navigates to the external Component's home Diagram.
 
@@ -544,7 +498,7 @@ Multiple Relationships between the same Components remain representable and insp
 
 The map and Diagram tree rebuild only when accepted state advances successfully or an accepted revision is explicitly reloaded.
 
-`Review changes` may instead display the exact immutable reviewed candidate snapshot and allow a compact switch to the review's exact immutable base snapshot. The candidate map is the primary visual review canvas. Switching snapshots switches the Diagram tree or v1 implicit-map context, selected Diagram, index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology as one revision-pinned unit. The normal workspace map remains accepted-only.
+`Review changes` may instead display the exact immutable reviewed candidate snapshot and allow a compact switch to the review's exact immutable base snapshot. The candidate map is the primary visual review canvas. Switching snapshots switches the Diagram tree, selected Diagram, index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology as one revision-pinned unit. The normal workspace map remains accepted-only.
 
 Visual change matching follows these rules:
 
@@ -564,9 +518,7 @@ For v2 review:
 - an ordinary internal edge becoming a boundary edge, or the reverse, solely because composition changed is presentation change and is not reported as an Architecture Relationship addition or removal;
 - the exact canonical diff remains authoritative evidence for manifest and Diagram-file changes.
 
-A v1-to-v2 review uses the real implicit v1 map on **Before changes** and the exact candidate Diagram tree on **With changes**. It does not invent a stable Diagram identity for the v1 side.
-
-When a selected Diagram exists only in the candidate, **Before changes** follows the base-owned fallback defined for reviewed candidate snapshots: nearest surviving ancestor for a v2 base, otherwise its root; for a v1 base, the real implicit all-components map. Candidate-only Diagram state never leaks into the base projection.
+When a selected Diagram exists only in the candidate, **Before changes** follows the base-owned fallback defined for reviewed candidate snapshots: nearest surviving ancestor, otherwise the bound base root. Candidate-only Diagram state never leaks into the base projection.
 
 Selection, viewport, and automatic-layout details are UI state, not canonical Architecture. Pan, zoom, and fit are desirable initial UX rather than domain invariants.
 
@@ -585,23 +537,17 @@ Deferred map behavior includes:
 - runtime or Planning overlays;
 - source-code inference.
 
-## 9. Source-repository association
+## 9. Project catalog and locator
 
-WorkBraid keeps an operational per-user association from a local source-repository root to its private Architecture store ID.
+WorkBraid discovers projects directly from its private Architecture-store area. A WorkBraid-created repository lives operationally at `architecture/<store-uuid>.git` under application data. That directory naming is an implementation convention, not portable project identity or a human-facing locator.
 
-Initially:
+For each discovered store, the catalog resolves `refs/heads/accepted` and loads the exact accepted snapshot through the one Architecture loader. Valid accepted manifest state supplies the display name, current slug, and canonical store UUID. The catalog does not use another database, index, registry, fallback ref, working tree, or cached Architecture projection as authority.
 
-- SQLite is appropriate for this mapping;
-- private-store locations are deterministic from store UUID under WorkBraid application data;
-- only source-root -> store-ID is persisted;
-- the normalized source-root key is unique, so it maps to at most one store ID;
-- the source root is a local convenience key, not durable repository identity.
+Catalog slugs must be unique. If more than one valid discovered store has the same slug, WorkBraid reports an explicit catalog conflict and opens neither by that slug; filesystem enumeration order never selects a winner. A discovered UUID-named store whose accepted state is missing, malformed, or unsupported is surfaced as an unavailable store with bounded technical identity where practical rather than silently treated as a valid project or selected through partial parsing. This is visibility, not repair or recovery machinery.
 
-A missing association means only that WorkBraid does not currently know which store belongs to that source root. It is not evidence that no store exists.
+`/projects/<slug>` resolves the one valid catalog entry with that exact slug. An unknown slug produces a normal not-found state and never initializes, repairs, or selects a project implicitly. After resolution, the backend uses the manifest store UUID as canonical store identity; the route slug does not replace it.
 
-Creating a new store always requires explicit human initialization. Moving, cloning, or reopening a source repository at another path may require explicit reassociation later. Initial path normalization is lexical and does not resolve symlinks. No source-repository fingerprinting or repository-identity machinery is introduced.
-
-Loss of the association loses convenience, not canonical Architecture.
+Project creation accepts a human-readable name, generates a new store UUID and locally unique slug, creates the native-v2 bootstrap, and exposes the project in the catalog only as valid accepted state. Project names need not be unique. No source folder, source-root association, reassociation, arbitrary project filesystem root, or second catalog persistence exists.
 
 ## 10. Initial implementation profile
 
@@ -667,33 +613,32 @@ Bare layout is an implementation choice, not part of the portable store contract
 
 Bare repositories remain compatible with ordinary branches and linked worktrees. Future proposal branches may coexist with `accepted`, and agents may later receive linked worktrees. Exact proposal representation and acceptance semantics remain undecided.
 
-### SQLite
+### Persistence boundary
 
-SQLite is used only for demonstrated operational needs such as the source-root -> store-ID association and, later, recoverable draft persistence if chosen.
+The current Architecture product has no demonstrated SQLite need and does not initialize or depend on SQLite. Project discovery comes from private Git stores, and no Architecture, Diagram, catalog, pending, review, navigation, or layout projection is persisted outside them.
 
-No persisted Architecture or Diagram projection is required for the first Diagram slice. Any persisted derived state introduced later must identify its exact canonical revision and be rebuildable from Git.
+Future recoverable draft persistence or another demonstrated operational need requires a separate approved decision. Any persisted derived state introduced later must identify its exact canonical revision and be rebuildable from Git.
 
 ## 11. First real gate
 
 Using the real WorkBraid application through production code paths:
 
-1. Open a real throwaway source repository.
-2. Verify that WorkBraid does not modify its files, working tree, or Git history.
-3. Explicitly initialize its private Architecture store.
+1. Start with fresh WorkBraid application data and no projects.
+2. Create a project by human-readable name.
+3. Verify its generated valid unique slug, `/projects/<slug>` route, immutable store UUID, and catalog entry.
 4. Verify the parentless format-v2 bootstrap commit, its manifest-identified empty root Diagram, and the `accepted` ref.
-5. Verify that `architecture.yaml` contains stable store identity, human-readable association hints, and the root Diagram identity while `diagrams/root.yaml` carries no authority beyond its canonical contents.
+5. Verify that `architecture.yaml` contains stable store identity, project name, current slug, and root Diagram identity while `diagrams/root.yaml` carries no authority beyond its canonical contents.
 6. Create a tiny Architecture through WorkBraid.
 7. Review and deliberately commit its exact candidate diff.
-8. See the accepted map and navigate component documentation.
+8. See the accepted map and navigate Component documentation.
 9. Edit accepted Architecture through a pending change set, verify that validation, commit creation, or ref-update failure before successful compare-and-swap preserves it while the application remains running, and then commit a valid accepted revision.
 10. Verify the exact resulting commit identity and parent diff.
-11. Restart WorkBraid after the accepted commit.
-12. Reload the same accepted revision and reconstruct the same Architecture, documentation, relationships, and map. Recovery of an uncommitted pending change set across backend restart is not part of this gate.
-13. Verify again that the source repository remains untouched.
+11. Reload `/projects/<slug>` and verify it resolves the same store and revision.
+12. Restart WorkBraid after the accepted commit.
+13. Reopen the route and reconstruct the same Architecture, documentation, Relationships, Diagrams, and map solely from private Git. Recovery of an uncommitted pending change set across backend restart is not part of this gate.
+14. Verify that no source-root association, SQLite catalog, or other Architecture projection exists.
 
-Use real Git repositories, real filesystem state, and the real backend-to-Git path. Focused tests may support the gate, but fake Git APIs and large synchronization simulators do not satisfy it.
-
-If no persisted SQLite-derived Architecture projection is needed, do not add one for this gate.
+Use real private Git repositories, real filesystem state, and the real backend-to-Git path. Focused tests may support the gate, but fake Git APIs and large synchronization simulators do not satisfy it.
 
 ## 12. Deferred and open decisions
 
@@ -725,9 +670,9 @@ Deferred beyond the first slice:
 - arbitrary revision comparison;
 - revert UI;
 - semantic diffing;
-- manual store-reassociation UX;
-- source moves, clones, and custom private-store locations;
-- project-repository export/synchronization and external divergence handling;
+- project rename and slug-change lifecycle;
+- project deletion, import, unavailable-store recovery, and custom private-store locations;
+- repository export/synchronization and external divergence handling;
 - Jira, Linear, or other external surfaces;
 - remote/embedded Markdown resource behavior;
 - authentication, tailnet exposure, mobile UX, and multi-user behavior;

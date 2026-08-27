@@ -1966,6 +1966,7 @@ dd {
   display: grid;
   gap: 9px;
   margin: 24px 0 32px;
+  padding-inline: clamp(28px, 7vw, 72px);
 }
 
 .catalog-project {

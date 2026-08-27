@@ -61,12 +61,12 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 			state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 			base := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Capture"}))
 			pending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-				ProjectSlug: base.ProjectSlug, ExpectedRevision: base.Revision, DiagramID: base.RootDiagramID,
+				ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, ExpectedRevision: base.Revision, DiagramID: base.RootDiagramID,
 				Title: "Gateway", Description: "First generation.\n",
 			}))
 			componentID := pending.Changes.Components[0].ID
 
-			body, err := json.Marshal(map[string]string{"project_slug": base.ProjectSlug})
+			body, err := json.Marshal(architectureActionRequest{ProjectSlug: base.ProjectSlug, StoreID: base.StoreID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,14 +81,14 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 
 			if action == "mutation" {
 				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
-					ProjectSlug: base.ProjectSlug, ExpectedRevision: base.Revision, ComponentID: componentID,
+					ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, ExpectedRevision: base.Revision, ComponentID: componentID,
 					Description: "Second generation.\n", DescriptionChanged: true,
 				}))
 				if invalidated.Changes.Review != nil {
 					t.Fatalf("mutation exposed invalidated review: %+v", invalidated.Changes.Review)
 				}
 			} else {
-				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", map[string]any{"project_slug": base.ProjectSlug}))
+				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", architectureActionRequest{ProjectSlug: base.ProjectSlug, StoreID: base.StoreID}))
 				if invalidated.Changes != nil {
 					t.Fatalf("discard retained changes: %+v", invalidated.Changes)
 				}
@@ -115,7 +115,7 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 				t.Fatalf("%s retained the invalidated binding", action)
 			}
 			confirmation := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-				ProjectSlug: base.ProjectSlug, BaseRevision: review.BaseRevision,
+				ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, BaseRevision: review.BaseRevision,
 				CandidateTree: review.CandidateTree, Generation: review.Generation,
 			})
 			if confirmation.Code != http.StatusConflict {

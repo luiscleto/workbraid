@@ -53,9 +53,11 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     expect(firstAccepted).not.toBe(bootstrap)
 
     await acceptedIndex.getByText('Gateway', { exact: true }).click()
-    await page.getByRole('button', { name: 'Create detail diagram' }).click()
-    await page.getByLabel('Diagram title').fill('Gateway internals')
+    await page.getByRole('button', { name: 'Edit component' }).click()
+    await page.getByLabel('Description').fill('Routes requests and audits.\n')
+    await page.locator('.relationship-row').first().getByLabel('Label').fill('dispatches')
     await page.getByRole('button', { name: 'Keep change' }).click()
+    await createPendingDetail(page, 'Phase Two System', 'Gateway', 'Gateway internals')
 
     await movePendingHome(page, 'Phase Two System', 'Worker', 'Gateway internals')
     await createPendingDetail(page, 'Gateway internals', 'Worker', 'Worker internals')
@@ -75,6 +77,8 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     await page.getByRole('button', { name: 'Before changes' }).click()
     await expect(page.getByText('That diagram exists only with the changes.')).toBeVisible()
     await expect(review.getByTestId('raw-diff')).toContainText('role: reference')
+    await expect(review.getByTestId('raw-diff')).toContainText('Routes requests and audits.')
+    await expect(review.getByTestId('raw-diff')).toContainText('dispatches')
     await page.getByRole('button', { name: 'With changes' }).click()
     await page.getByRole('button', { name: 'Update architecture' }).click()
     const secondAccepted = await displayedRevision(page)
@@ -98,21 +102,31 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     await expect(page.getByRole('navigation', { name: 'Components that live elsewhere' }).getByRole('button', { name: /Gateway.*Lives in Platform/ })).toBeVisible()
     await expect(diagramIndex.getByText('Records', { exact: true })).toHaveCount(0)
 
+    const externallyRenamed = replaceAcceptedSlug(storePath, finalAccepted, 'phase-two-renamed')
+    expect(await displayedRevision(page)).toBe(finalAccepted)
+    await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(page).toHaveURL(`${application.origin}/projects/phase-two-renamed`)
+    expect(await displayedRevision(page)).toBe(externallyRenamed)
+    await page.goto(`${application.origin}/projects/phase-two-system`)
+    await expect(page.getByRole('heading', { name: 'Project not found' })).toBeVisible()
+    await page.goto(`${application.origin}/projects/phase-two-renamed`)
+    expect(await displayedRevision(page)).toBe(externallyRenamed)
+
     await stopWorkBraid(application)
     application = undefined
     application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'restart.log')
-    await page.goto(`${application.origin}/projects/phase-two-system`)
+    await page.goto(`${application.origin}/projects/phase-two-renamed`)
     await expect(page.locator('.workspace-context strong')).toHaveText('Phase Two System')
-    expect(await displayedRevision(page)).toBe(finalAccepted)
+    expect(await displayedRevision(page)).toBe(externallyRenamed)
     await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Gateway internals' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Worker internals' })).toBeVisible()
 
     await page.reload()
-    expect(await displayedRevision(page)).toBe(finalAccepted)
+    expect(await displayedRevision(page)).toBe(externallyRenamed)
     await page.getByRole('button', { name: 'Open another project' }).click()
     await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
     await page.getByRole('button', { name: 'Phase Two System' }).click()
-    expect(await displayedRevision(page)).toBe(finalAccepted)
+    expect(await displayedRevision(page)).toBe(externallyRenamed)
     expect(findDatabaseFiles(dataRoot)).toEqual([])
   } finally {
     if (application) await stopWorkBraid(application)
@@ -217,8 +231,29 @@ function gitBare(storePath: string, arguments_: string[]) {
   return run('git', ['--git-dir', storePath, ...arguments_], repositoryRoot)
 }
 
+function replaceAcceptedSlug(storePath: string, parent: string, slug: string) {
+  const manifest = gitBare(storePath, ['show', `${parent}:architecture.yaml`]).replace('slug: phase-two-system', `slug: ${slug}`) + '\n'
+  const manifestBlob = runInput('git', ['--git-dir', storePath, 'hash-object', '-w', '--stdin'], repositoryRoot, manifest)
+  const entries = gitBare(storePath, ['ls-tree', parent]).split('\n').map((entry) => entry.endsWith('\tarchitecture.yaml')
+    ? `100644 blob ${manifestBlob}\tarchitecture.yaml`
+    : entry)
+  const tree = runInput('git', ['--git-dir', storePath, 'mktree'], repositoryRoot, entries.join('\n') + '\n')
+  const commit = runInput('git', [
+    '-c', 'user.name=External Human', '-c', 'user.email=human@workbraid.invalid',
+    '--git-dir', storePath, 'commit-tree', tree, '-p', parent,
+  ], repositoryRoot, 'Change project address\n')
+  run('git', ['--git-dir', storePath, 'update-ref', 'refs/heads/accepted', commit, parent], repositoryRoot)
+  return commit
+}
+
 function run(command: string, arguments_: string[], cwd: string) {
   const result = spawnSync(command, arguments_, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' } })
+  if (result.status !== 0) throw new Error(`${command} ${arguments_.join(' ')} failed (${result.status}):\n${result.stdout}\n${result.stderr}`)
+  return result.stdout.trim()
+}
+
+function runInput(command: string, arguments_: string[], cwd: string, input: string) {
+  const result = spawnSync(command, arguments_, { cwd, input, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' } })
   if (result.status !== 0) throw new Error(`${command} ${arguments_.join(' ')} failed (${result.status}):\n${result.stdout}\n${result.stderr}`)
   return result.stdout.trim()
 }

@@ -176,6 +176,7 @@ type NavigationIntent =
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
   | { kind: 'open-another' }
+  | { kind: 'route'; slug?: string }
   | { kind: 'refresh' }
   | { kind: 'clear' }
   | { kind: 'review-result'; result: ArchitectureResult }
@@ -360,6 +361,8 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const editorDirtyRef = useRef(editorDirty)
   editorDirtyRef.current = editorDirty || diagramEditorDirty
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   useEffect(() => {
     if (!currentReview) {
@@ -434,6 +437,19 @@ export function App() {
     const slug = decodeProjectSlug(window.location.pathname)
     if (slug) void openProject(slug, true)
     else void loadCatalog()
+    const restoreHistoryRoute = () => {
+      const targetSlug = decodeProjectSlug(window.location.pathname)
+      const current = stateRef.current
+      if (current.kind === 'ready' && targetSlug === current.value.project_slug) return
+      if (editorDirtyRef.current && current.kind === 'ready') {
+        window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
+        setNavigationIntent({ kind: 'route', slug: targetSlug })
+        return
+      }
+      void restoreRoute(targetSlug)
+    }
+    window.addEventListener('popstate', restoreHistoryRoute)
+    return () => window.removeEventListener('popstate', restoreHistoryRoute)
   }, [])
 
   async function loadCatalog() {
@@ -457,6 +473,12 @@ export function App() {
     try {
       const response = await postJSON('/api/projects/open', { project_slug: slug })
       const result = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok && 'state' in result) {
+        window.history.replaceState({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
+        enterWorkspace({ ...result, action_error: undefined }, 'changes')
+        setArchitectureNotice('Keep working here or discard these changes before opening another project.')
+        return
+      }
       if (!response.ok || !('state' in result)) {
         if ('code' in result && result.code === 'project_not_found') setState({ kind: 'not-found', slug })
         else setState({ kind: 'catalog-error', message: messageForError('code' in result ? result.code : undefined) })
@@ -543,6 +565,7 @@ export function App() {
     try {
       const response = await postJSON(endpoint, {
         project_slug: result.project_slug,
+        store_id: result.store_id,
         expected_revision: result.revision,
         ...(editor.id ? { component_id: editor.id } : {}),
         ...(editor.kind === 'add' || editor.titleChanged ? { title: editor.title } : {}),
@@ -568,7 +591,7 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/review', { project_slug: result.project_slug })
+      const response = await postJSON('/api/architecture/review', { project_slug: result.project_slug, store_id: result.store_id })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if ('state' in payload) {
         setAcceptanceUnknown(false)
@@ -599,6 +622,7 @@ export function App() {
     try {
       const response = await postJSON(endpoint, {
         project_slug: result.project_slug,
+        store_id: result.store_id,
         expected_revision: result.revision,
         ...(diagramEditor.kind === 'detail' ? { component_id: diagramEditor.componentID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'title' ? { diagram_id: diagramEditor.diagramID, title: diagramEditor.title } : {}),
@@ -626,6 +650,7 @@ export function App() {
         ? '/api/architecture/diagrams/show-component'
         : '/api/architecture/diagrams/stop-showing-component', {
         project_slug: result.project_slug,
+        store_id: result.store_id,
         expected_revision: result.revision,
         diagram_id: diagramID,
         component_id: componentID,
@@ -653,6 +678,7 @@ export function App() {
     try {
       const response = await postJSON('/api/architecture/accept', {
         project_slug: result.project_slug,
+        store_id: result.store_id,
         base_revision: review.base_revision,
         candidate_tree: review.candidate_tree,
         generation: review.generation,
@@ -726,6 +752,10 @@ export function App() {
       enterWorkspace(intent.result, 'changes')
       return
     }
+    if (intent.kind === 'route') {
+      await restoreRoute(intent.slug)
+      return
+    }
     if (state.kind !== 'ready') return
     if (intent.kind === 'refresh') {
       await refreshArchitecture(state.value)
@@ -734,7 +764,7 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/projects/leave', { project_slug: state.value.project_slug })
+      const response = await postJSON('/api/projects/leave', { project_slug: state.value.project_slug, store_id: state.value.store_id })
       if (response.ok) {
         window.history.pushState({}, '', '/')
         setSelectedComponentID(undefined)
@@ -757,11 +787,51 @@ export function App() {
     }
   }
 
+  async function restoreRoute(slug?: string) {
+    const current = stateRef.current
+    if (slug) {
+      await openProject(slug, true)
+      return
+    }
+    if (current.kind !== 'ready') {
+      window.history.replaceState({}, '', '/')
+      await loadCatalog()
+      return
+    }
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/projects/leave', { project_slug: current.value.project_slug, store_id: current.value.store_id })
+      if (response.ok) {
+        window.history.replaceState({}, '', '/')
+        setSelectedComponentID(undefined)
+        setSelectedDiagramID(undefined)
+        setWorkspaceTask('empty')
+        await loadCatalog()
+        return
+      }
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if ('state' in payload) {
+        window.history.replaceState({}, '', `/projects/${encodeURIComponent(payload.project_slug)}`)
+        enterWorkspace({ ...payload, action_error: undefined }, 'changes')
+        setArchitectureNotice('Keep working here or discard these changes before leaving this project.')
+      } else {
+        window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
+        setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
+      }
+    } catch {
+      window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
+      setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
   async function discardChanges(result: ArchitectureResult) {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/discard', { project_slug: result.project_slug })
+      const response = await postJSON('/api/architecture/discard', { project_slug: result.project_slug, store_id: result.store_id })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
         setArchitectureNotice("WorkBraid couldn't discard these changes. Try again.")
@@ -780,7 +850,7 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/refresh', { project_slug: result.project_slug })
+      const response = await postJSON('/api/architecture/refresh', { project_slug: result.project_slug, store_id: result.store_id })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!('state' in payload)) {
         setArchitectureNotice(messageForArchitectureAction('code' in payload ? payload.code : undefined))
@@ -1161,7 +1231,7 @@ export function App() {
                 onAddComponent={result.format_version === 2 ? (diagramID) => addComponent(diagramID) : undefined}
                 onCreateDetail={result.format_version === 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
                 onEditDiagramTitle={result.format_version === 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
-                onMoveHome={result.format_version === 2 ? (componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid }) : undefined}
+                onMoveHome={result.format_version === 2 ? (componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: diagramID, invalid }) : undefined}
                 onShowComponent={(diagramID, componentID) => changeReference(result, diagramID, componentID, true)}
                 onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
@@ -1189,7 +1259,7 @@ export function App() {
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
                             <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
                           )}
-                          {selectedAppearance.role === 'home' && <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>}
+                          {selectedAppearance.role === 'home' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: activeDiagram.id })}>Change where it lives</button>}
                           {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => changeReference(result, activeDiagram.id, selected.id, false)}>Stop showing here</button>}
                         </div>
                       </div>
@@ -1847,6 +1917,7 @@ function messageForReadOnlyReviewBlocker(code?: string) {
 }
 
 function messageForArchitectureAction(code?: string) {
+  if (code === 'catalog_conflict') return 'Two projects now use the same address. Resolve the catalog conflict before refreshing this project.'
   if (code === 'architecture_stale') return 'These changes are out of date because the architecture changed.'
   if (code === 'review_changed') return 'The changes were edited after this review. Review them again before updating architecture.'
   if (code === 'updated_reload') return 'Architecture was updated, but this page could not refresh. Open the project again.'

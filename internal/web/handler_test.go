@@ -73,7 +73,7 @@ func TestCatalogCreationIsAtomicAndProjectSwitchGuardUsesStoreIdentity(t *testin
 	go func() {
 		defer wait.Done()
 		<-start
-		response := postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{ProjectSlug: first.ProjectSlug, ExpectedRevision: first.Revision, Title: "Worker", DiagramID: first.RootDiagramID})
+		response := postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{ProjectSlug: first.ProjectSlug, StoreID: first.StoreID, ExpectedRevision: first.Revision, Title: "Worker", DiagramID: first.RootDiagramID})
 		results <- response.Code
 	}()
 	go func() {
@@ -129,13 +129,13 @@ func TestReferenceMutationAndDiscardShareOneStateBoundary(t *testing.T) {
 		defer wait.Done()
 		<-start
 		results <- postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
-			ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: opened.RootDiagramID, ComponentID: target.ID,
+			ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision, DiagramID: opened.RootDiagramID, ComponentID: target.ID,
 		})
 	}()
 	go func() {
 		defer wait.Done()
 		<-start
-		results <- postJSONRequest(t, handler, "/api/architecture/discard", map[string]any{"project_slug": opened.ProjectSlug})
+		results <- postJSONRequest(t, handler, "/api/architecture/discard", architectureActionRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID})
 	}()
 	close(start)
 	wait.Wait()
@@ -186,39 +186,39 @@ func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testin
 	}
 	opened := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
 
-	moveB := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
-	moveC := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: c.ID, ComponentID: moving.ID}))
+	moveB := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	moveC := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision, DiagramID: c.ID, ComponentID: moving.ID}))
 	if moveB.Changes == nil || moveC.Changes == nil || moveC.Changes.Candidate == nil {
 		t.Fatalf("moves did not remain one candidate: B=%+v C=%+v", moveB.Changes, moveC.Changes)
 	}
 	if role(moveC.Changes.Candidate, b.ID, moving.ID) != "" || role(moveC.Changes.Candidate, c.ID, moving.ID) != "home" {
 		t.Fatalf("reference resurrected: B=%q C=%q", role(moveC.Changes.Candidate, b.ID, moving.ID), role(moveC.Changes.Candidate, c.ID, moving.ID))
 	}
-	shown := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	shown := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
 	if shown.Changes == nil || shown.Changes.Candidate == nil || role(shown.Changes.Candidate, b.ID, moving.ID) != "reference" || role(shown.Changes.Candidate, c.ID, moving.ID) != "home" {
 		t.Fatalf("show-back failed: %+v", shown.Changes)
 	}
-	firstReview := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": opened.ProjectSlug}))
+	firstReview := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID}))
 	if firstReview.Changes == nil || firstReview.Changes.Review == nil {
 		t.Fatalf("first review missing: %+v", firstReview.Changes)
 	}
-	stopped := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/stop-showing-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	stopped := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/stop-showing-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
 	if stopped.Changes == nil || stopped.Changes.Candidate == nil || stopped.Changes.Review != nil || role(stopped.Changes.Candidate, b.ID, moving.ID) != "" {
 		t.Fatalf("stop failed: %+v", stopped.Changes)
 	}
 	invalidated := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-		ProjectSlug: opened.ProjectSlug, BaseRevision: firstReview.Changes.Review.BaseRevision,
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, BaseRevision: firstReview.Changes.Review.BaseRevision,
 		CandidateTree: firstReview.Changes.Review.CandidateTree, Generation: firstReview.Changes.Review.Generation,
 	})
 	if invalidated.Code != http.StatusConflict || !strings.Contains(invalidated.Body.String(), errorReviewFailed) {
 		t.Fatalf("invalidated review status=%d body=%s", invalidated.Code, invalidated.Body.String())
 	}
 
-	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": opened.ProjectSlug}))
+	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID}))
 	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
 		t.Fatalf("review missing: %+v", reviewed.Changes)
 	}
-	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
+	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
 	if accepted.Revision == opened.Revision || roleSnapshot(accepted, c.ID, moving.ID) != "home" || roleSnapshot(accepted, b.ID, moving.ID) != "" {
 		t.Fatalf("accepted = %+v", accepted)
 	}
@@ -228,25 +228,25 @@ func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *t
 	state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Candidate references"}))
 	anchorResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Anchor",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Anchor",
 	}))
 	anchorID := anchorResult.Changes.Components[0].ID
 	newResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending target",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending target",
 	}))
 	newID := newResult.Changes.Components[1].ID
 	detailResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/detail", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "Candidate detail",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "Candidate detail",
 	}))
 	detailID := detailResult.Changes.DetailDiagrams[0].ID
 	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: newID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: newID,
 	}))
 	shownNew := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: newID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: newID,
 	}))
 	shownAnchor := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
 	}))
 	if shownAnchor.Changes == nil || shownAnchor.Changes.Candidate == nil ||
 		role(shownAnchor.Changes.Candidate, created.RootDiagramID, newID) != "reference" ||
@@ -258,13 +258,13 @@ func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *t
 	generation := state.pending.generation
 	state.stateMutex.Unlock()
 	duplicate := postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
 	})
 	if duplicate.Code != http.StatusConflict {
 		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
 	}
 	home := postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: anchorID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: anchorID,
 	})
 	if home.Code != http.StatusConflict {
 		t.Fatalf("home status=%d body=%s", home.Code, home.Body.String())
@@ -276,13 +276,13 @@ func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *t
 	state.stateMutex.Unlock()
 
 	invalid := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "   ", TitleChanged: true,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "   ", TitleChanged: true,
 	}))
 	if invalid.Changes == nil || invalid.Changes.Candidate != nil || len(invalid.ReferenceChoices) != 0 {
 		t.Fatalf("invalid candidate still offered reference authority: %+v", invalid)
 	}
 	blocked := postJSONRequest(t, handler, "/api/architecture/diagrams/stop-showing-component", diagramMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
 	})
 	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), errorChangesUnavailable) {
 		t.Fatalf("invalid-candidate mutation status=%d body=%s", blocked.Code, blocked.Body.String())
@@ -307,7 +307,7 @@ func TestExternalAcceptedSlugRefreshAdoptsLocator(t *testing.T) {
 	commit := gitInput(t, []byte("external slug\n"), "-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid", "--git-dir", storePath, "commit-tree", tree, "-p", created.Revision)
 	git(t, "--git-dir", storePath, "update-ref", "refs/heads/accepted", commit, created.Revision)
 
-	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", map[string]any{"project_slug": created.ProjectSlug}))
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 	if refreshed.ProjectSlug != "new-locator" || refreshed.StoreID != created.StoreID || refreshed.Revision != commit {
 		t.Fatalf("refresh = %+v", refreshed)
 	}
@@ -326,7 +326,7 @@ func TestRefreshPreservesOldBasePendingAsStaleUntilDiscard(t *testing.T) {
 	state, handler := newHandler(testOrigin, testUI(t), data)
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Refresh"}))
 	pending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending",
 	}))
 	if pending.Changes == nil || pending.Changes.Candidate == nil {
 		t.Fatalf("pending = %+v", pending.Changes)
@@ -347,22 +347,22 @@ func TestRefreshPreservesOldBasePendingAsStaleUntilDiscard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", map[string]any{"project_slug": created.ProjectSlug}))
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 	if refreshed.Revision != externalRevision || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale || refreshed.Changes.Review != nil {
 		t.Fatalf("refreshed = %+v changes=%+v", refreshed, refreshed.Changes)
 	}
 	blocked := postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Blocked",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Blocked",
 	})
 	if blocked.Code != http.StatusConflict {
 		t.Fatalf("stale pending mutation status=%d body=%s", blocked.Code, blocked.Body.String())
 	}
-	discarded := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", map[string]any{"project_slug": created.ProjectSlug}))
+	discarded := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 	if discarded.Changes != nil || discarded.Revision != externalRevision {
 		t.Fatalf("discarded = %+v", discarded)
 	}
 	newPending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Current",
+		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Current",
 	}))
 	if newPending.Changes == nil || newPending.Changes.Stale || newPending.Changes.Candidate == nil {
 		t.Fatalf("new pending = %+v", newPending.Changes)
@@ -374,12 +374,12 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "CAS"}))
 		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
 		}))
-		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 		state.acceptedUpdateReportFailure = func() error { return errors.New("response lost") }
 		accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		}))
 		if accepted.Revision == created.Revision || state.pending != nil {
@@ -391,12 +391,12 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Publication"}))
 		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
 		}))
-		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 		state.publicationFailure = func() error { return errors.New("publication lost") }
 		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		})
 		value := decodeArchitectureBody(t, response)
@@ -413,9 +413,9 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Race"}))
 		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
 		}))
-		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: created.ProjectSlug, StoreID: created.StoreID}))
 		base := *state.loadedSnapshot
 		externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
 			DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "External"}},
@@ -435,7 +435,7 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 			}
 		}
 		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		})
 		value := decodeArchitectureBody(t, response)

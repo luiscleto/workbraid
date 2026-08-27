@@ -1,7 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
+
+const graphHarness = vi.hoisted(() => ({
+  calls: [] as Array<{ elements?: Array<{ data: Record<string, unknown> }> }>,
+  nodeSelect: undefined as undefined | ((event: { target: { id: () => string } }) => void),
+  edgeSelect: undefined as undefined | ((event: { target: { data: () => unknown } }) => void),
+  fail: false,
+}))
+
+vi.mock('cytoscape', () => ({
+  default: (options: { elements?: Array<{ data: Record<string, unknown> }> }) => {
+    if (graphHarness.fail) throw new Error('canvas unavailable')
+    graphHarness.calls.push(options)
+    return {
+      on: (_event: string, selector: string | (() => void), callback?: unknown) => {
+        if (selector === 'node') graphHarness.nodeSelect = callback as typeof graphHarness.nodeSelect
+        if (selector === 'edge') graphHarness.edgeSelect = callback as typeof graphHarness.edgeSelect
+      },
+      off: () => undefined,
+      nodes: () => [],
+      resize: () => undefined,
+      destroy: () => undefined,
+      fit: () => undefined,
+      $: () => ({ unselect: () => undefined }),
+      getElementById: () => ({ select: () => undefined }),
+    }
+  },
+}))
 
 const root = '11111111-1111-4111-8111-111111111111'
 const worker = '22222222-2222-4222-8222-222222222222'
@@ -31,6 +58,7 @@ function architecture(overrides: Record<string, unknown> = {}) {
       breadcrumbs: [{ id: root, title: 'System' }, { id: detail, title: 'Detail' }],
       appearances: [{ component_id: external, role: 'home' }], boundaries: [], relationships: [],
     }],
+    home_move_destinations: [{ component_id: worker, diagram_ids: [] }, { component_id: external, diagram_ids: [root] }],
     reference_choices: [{ diagram_id: root, component_id: external, title: 'External', home_diagram: 'Detail' }],
     ...overrides,
   }
@@ -40,12 +68,62 @@ function requestBody(mock: ReturnType<typeof vi.fn>, index: number) {
   return JSON.parse(String(mock.mock.calls[index][1]?.body))
 }
 
+function reviewedArchitecture(overrides: Record<string, unknown> = {}) {
+  const accepted = architecture()
+  const beforeComponents = (accepted.components as Array<Record<string, unknown>>).map((component) => ({ ...component }))
+  const withComponents = beforeComponents.map((component) => component.id === worker
+    ? { ...component, title: 'Worker updated', description: 'Candidate documentation.\n', relationships: [{ target_id: external, label: 'invokes', projection_key: 'edge-with' }] }
+    : { ...component })
+  const beforeDiagrams = accepted.diagrams as Array<Record<string, unknown>>
+  const withDiagrams = beforeDiagrams.map((diagram) => diagram.id === root ? {
+    ...diagram,
+    appearances: [{ component_id: worker, role: 'home', detail_diagram_id: detail, detail_diagram_title: 'Detail' }, { component_id: external, role: 'reference' }],
+    boundaries: [],
+    relationships: [{ key: 'edge-with', source_node_key: worker, target_node_key: external, source_component_id: worker, target_component_id: external, label: 'invokes' }],
+  } : diagram)
+  const diff = [
+    'diff --git a/components/worker.md b/components/worker.md',
+    '--- a/components/worker.md',
+    '+++ b/components/worker.md',
+    '@@ -1 +1 @@',
+    '-Accepted documentation.',
+    '+Candidate documentation.',
+  ].join('\n') + '\n'
+  return architecture({
+    changes: {
+      components: [{ id: worker, title: 'Worker updated', description: 'Candidate documentation.\n', new: false, relationships: [{ target_id: external, label: 'invokes' }] }],
+      valid: true,
+      candidate: { revision: 'b'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker updated', 'External'], components: withComponents, root_diagram_id: root, diagrams: withDiagrams },
+      review: {
+        diff, base_revision: 'a'.repeat(40), candidate_tree: 'b'.repeat(40), generation: 4,
+        before: { revision: 'a'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker', 'External'], components: beforeComponents, root_diagram_id: root, diagrams: beforeDiagrams },
+        with_changes: { revision: 'b'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker updated', 'External'], components: withComponents, root_diagram_id: root, diagrams: withDiagrams },
+        comparison: {
+          components: [{ component_id: worker, status: 'content_changed', path: 'components/worker.md' }],
+          relationships: [
+            { key: 'removed-edge', before_key: 'edge', source_id: worker, target_id: external, label: 'calls', status: 'removed', path: 'components/worker.md', occurrence: 1, diagram_projections: [{ side: 'before', diagram_id: root, key: 'edge', source_node_key: worker, target_node_key: `boundary:${external}` }] },
+            { key: 'edge-with', source_id: worker, target_id: external, label: 'invokes', status: 'added', path: 'components/worker.md', occurrence: 1, diagram_projections: [{ side: 'with', diagram_id: root, key: 'edge-with', source_node_key: worker, target_node_key: external }] },
+          ],
+          diagrams: [], appearances: [{ diagram_id: root, component_id: external, role: 'reference', status: 'added', path: 'diagrams/root.yaml' }],
+        },
+      },
+    },
+    ...overrides,
+  })
+}
+
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   vi.restoreAllMocks()
 })
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  graphHarness.calls.length = 0
+  graphHarness.nodeSelect = undefined
+  graphHarness.edgeSelect = undefined
+  graphHarness.fail = false
+})
 
 describe('slug-native project entry', () => {
   it('lists private projects and creates a project by name', async () => {
@@ -112,7 +190,7 @@ describe('slug workspace and reusable references', () => {
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(window.location.pathname).toBe('/projects/new-locator'))
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project' })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
   })
 
   it('shows a candidate-relative component through structured controls', async () => {
@@ -129,7 +207,7 @@ describe('slug workspace and reusable references', () => {
     render(<App />)
     const picker = (await screen.findAllByLabelText('Show component here'))[0]
     await user.selectOptions(picker, external)
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
     expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
   })
 
@@ -155,7 +233,7 @@ describe('slug workspace and reusable references', () => {
     const index = await screen.findByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(index).getByRole('button', { name: /External, Included here/ }))
     await user.click(screen.getByRole('button', { name: 'Stop showing here' }))
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
   })
 
   it('keeps folder and setup language out of a writable workspace', async () => {
@@ -192,6 +270,112 @@ describe('slug workspace and reusable references', () => {
     await user.click(await screen.findByRole('button', { name: 'Open another project' }))
     expect(await screen.findByText('Keep working here or discard these changes before opening another project.')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project' })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+  })
+
+  it('restores Back and Forward routes through backend-owned project transitions', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => Promise.resolve(new Response(null, { status: 204 })))
+      .mockImplementationOnce(() => response({ projects: [{ name: 'Example Project', slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] }))
+      .mockImplementationOnce(() => response(architecture()))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await screen.findByText('Example Project', { selector: '.workspace-context strong' })
+
+    window.history.pushState({}, '', '/')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument()
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+
+    window.history.pushState({}, '', '/projects/example-project')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByText('Example Project', { selector: '.workspace-context strong' })).toBeInTheDocument()
+    expect(requestBody(fetchMock, 3)).toEqual({ project_slug: 'example-project' })
+  })
+
+  it('protects dirty browser values when Back would leave the project', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Edit component' }))
+    await user.type(screen.getByLabelText('Description'), ' unsent')
+    window.history.pushState({}, '', '/')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByRole('dialog', { name: 'Leave without keeping?' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+  })
+
+  it('does not offer the current home as a move destination', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    const navigation = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
+    await user.click(within(navigation).getByRole('button', { name: 'External' }))
+    await user.click(screen.getByRole('button', { name: 'Change where it lives' }))
+    const picker = screen.getByLabelText('Diagram')
+    expect(within(picker).queryByRole('option', { name: 'Detail' })).not.toBeInTheDocument()
+    expect(within(picker).getByRole('option', { name: 'System' })).toBeInTheDocument()
+  })
+})
+
+describe('candidate review regressions', () => {
+  it('keeps map, index, documentation, and topology on one selected snapshot and focuses the exact diff', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'With changes' })).toHaveAttribute('aria-pressed', 'true')
+    const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
+    expect(within(navigation).getByRole('button', { name: /Worker updated/ })).toBeInTheDocument()
+    expect(screen.getByText('Candidate documentation.')).toBeInTheDocument()
+    const withElements = graphHarness.calls.at(-1)?.elements ?? []
+    expect(withElements.find((element) => element.data.id === 'edge-with')?.data.reviewStatus).toBe('added')
+
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => worker } }))
+    await waitFor(() => expect(document.activeElement).toHaveAttribute('data-diff-path', 'components/worker.md'))
+    expect(screen.getAllByText('Content changed').length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(navigation).getByRole('button', { name: /^Worker/ })).toBeInTheDocument()
+    expect(screen.getByText('Does work.')).toBeInTheDocument()
+    const beforeElements = graphHarness.calls.at(-1)?.elements ?? []
+    expect(beforeElements.find((element) => element.data.id === 'edge')?.data.reviewStatus).toBe('removed')
+    expect(beforeElements.some((element) => element.data.id === 'edge-with')).toBe(false)
+  })
+
+  it('keeps the canonical diff and acceptance path usable when visual map rendering fails', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    graphHarness.fail = true
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    render(<App />)
+    expect(await screen.findByText('The architecture map could not be shown.')).toBeInTheDocument()
+    expect(screen.getByTestId('raw-diff')).toHaveTextContent('components/worker.md')
+    expect(screen.getByRole('button', { name: 'Update architecture' })).toBeEnabled()
+  })
+
+  it('removes stale review controls while preserving read-only changes', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const reviewed = reviewedArchitecture()
+    const reviewedChanges = (reviewed as unknown as { changes: Record<string, unknown> }).changes
+    const stale = architecture({
+      stale: true, action_error: 'refresh_invalid',
+      changes: { ...reviewedChanges, stale: true },
+    })
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(reviewed))
+      .mockImplementationOnce(() => response(stale, 409))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText('These changes started from an older architecture and are read-only.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
   })
 })

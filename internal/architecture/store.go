@@ -508,13 +508,13 @@ func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) 
 // is excluded because its parent-owned link travels with the home; deeper
 // descendants remain candidates for complete-candidate validation.
 func (snapshot Snapshot) ComponentHomeDestinationDiagramIDs(componentID string) []string {
-	_, detailID, ok := snapshot.ComponentHome(componentID)
+	homeID, detailID, ok := snapshot.ComponentHome(componentID)
 	if !ok {
 		return nil
 	}
 	destinations := make([]string, 0, len(snapshot.diagrams))
 	for _, current := range snapshot.diagrams {
-		if current.id.String() != detailID {
+		if current.id.String() != detailID && current.id.String() != homeID {
 			destinations = append(destinations, current.id.String())
 		}
 	}
@@ -609,6 +609,27 @@ func (manager *Manager) Catalog(ctx context.Context) ([]CatalogProject, error) {
 	manager.catalogMu.Lock()
 	defer manager.catalogMu.Unlock()
 	return manager.scanCatalog(ctx)
+}
+
+// CatalogSlugAvailable checks the canonical accepted catalog under the same
+// concrete catalog boundary used for create/open. The named store may retain
+// its locator; every other valid accepted store must use a different slug.
+func (manager *Manager) CatalogSlugAvailable(ctx context.Context, storeID, slug string) (bool, error) {
+	manager.catalogMu.Lock()
+	defer manager.catalogMu.Unlock()
+	projects, err := manager.scanCatalog(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, project := range projects {
+		if project.Unavailable || project.StoreID == storeID {
+			continue
+		}
+		if project.Slug == slug {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (manager *Manager) OpenProject(ctx context.Context, slug string) (Snapshot, error) {

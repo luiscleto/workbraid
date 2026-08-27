@@ -47,9 +47,10 @@ type Handler struct {
 }
 
 type loadedProject struct {
-	storeID     string
-	projectSlug string
-	projectName string
+	storeID          string
+	projectSlug      string
+	projectName      string
+	validatedCurrent *architecture.Snapshot
 }
 
 type pendingChangeSet struct {
@@ -119,8 +120,14 @@ type openProjectRequest struct {
 	ProjectSlug string `json:"project_slug"`
 }
 
+type architectureActionRequest struct {
+	ProjectSlug string `json:"project_slug"`
+	StoreID     string `json:"store_id"`
+}
+
 type acceptChangesRequest struct {
 	ProjectSlug   string `json:"project_slug"`
+	StoreID       string `json:"store_id"`
 	BaseRevision  string `json:"base_revision"`
 	CandidateTree string `json:"candidate_tree"`
 	Generation    uint64 `json:"generation"`
@@ -461,6 +468,17 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 	return result
 }
 
+// responseForLoadedProjectLocked keeps the route locator tied to the current
+// canonical accepted manifest even when a stale pending set requires the
+// projection itself to remain the exact older base snapshot.
+func (h *Handler) responseForLoadedProjectLocked(snapshot architecture.Snapshot, pending *pendingChangeSet, stale bool, parentDiff string) architectureResponse {
+	result := responseForSnapshot(snapshot, pending, stale, parentDiff)
+	if h.loadedProject != nil && h.loadedProject.storeID == snapshot.StoreID() {
+		result.ProjectSlug = h.loadedProject.projectSlug
+	}
+	return result
+}
+
 func referenceChoices(snapshot architecture.Snapshot) []referenceChoiceResponse {
 	components := snapshot.AuthoringComponents()
 	diagrams := snapshot.DiagramProjections()
@@ -656,7 +674,10 @@ func (h *Handler) publishSnapshotLocked(snapshot architecture.Snapshot) bool {
 		h.pending.review = nil
 		base := h.pending.baseSnapshot
 		h.loadedSnapshot = &base
-		h.loadedProject = &loadedProject{storeID: snapshot.StoreID(), projectName: snapshot.ProjectName(), projectSlug: snapshot.ProjectSlug()}
+		current := snapshot
+		h.loadedProject = &loadedProject{
+			storeID: snapshot.StoreID(), projectName: snapshot.ProjectName(), projectSlug: snapshot.ProjectSlug(), validatedCurrent: &current,
+		}
 		h.loadedStale = true
 		h.acceptedDiff = ""
 		return true
@@ -681,7 +702,7 @@ func (h *Handler) currentArchitectureResponseLocked() architectureResponse {
 	if h.loadedSnapshot == nil || h.loadedProject == nil {
 		return architectureResponse{}
 	}
-	return responseForSnapshot(*h.loadedSnapshot, h.pending, h.loadedStale, h.acceptedDiff)
+	return h.responseForLoadedProjectLocked(*h.loadedSnapshot, h.pending, h.loadedStale, h.acceptedDiff)
 }
 
 func (h *Handler) clearLoadedProjectLocked() {
@@ -691,6 +712,11 @@ func (h *Handler) clearLoadedProjectLocked() {
 	h.acceptedDiff = ""
 }
 
+func (h *Handler) matchesLoadedProjectLocked(projectSlug, storeID string) bool {
+	return h.loadedSnapshot != nil && h.loadedProject != nil && storeID != "" &&
+		storeID == h.loadedProject.storeID && projectSlug == h.loadedProject.projectSlug
+}
+
 func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *http.Request) {
 	payload, ok := h.decodeArchitectureAction(response, request)
 	if !ok {
@@ -698,7 +724,7 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
@@ -764,10 +790,21 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshChanged)
 		return
 	}
+	available, catalogErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
+	if catalogErr != nil {
+		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
+		return
+	}
+	if !available {
+		h.markKnownNonCurrentLocked()
+		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
+		return
+	}
 
 	h.loadedSnapshot = &replacement
 	h.loadedProject.projectName = replacement.ProjectName()
 	h.loadedProject.projectSlug = replacement.ProjectSlug()
+	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
 	h.acceptedDiff = ""
 	if h.pending != nil && (h.pending.storeID != replacement.StoreID() || h.pending.baseRevision != replacement.Revision()) {
@@ -802,11 +839,20 @@ func (h *Handler) discardChanges(response http.ResponseWriter, request *http.Req
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
 	h.pending = nil
+	if h.loadedStale && h.loadedProject.validatedCurrent != nil {
+		current := *h.loadedProject.validatedCurrent
+		h.loadedSnapshot = &current
+		h.loadedProject.projectName = current.ProjectName()
+		h.loadedProject.projectSlug = current.ProjectSlug()
+		h.loadedProject.validatedCurrent = nil
+		h.loadedStale = false
+		h.acceptedDiff = ""
+	}
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 }
 
@@ -817,7 +863,7 @@ func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Reque
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
@@ -833,6 +879,7 @@ func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Reque
 
 type componentMutationRequest struct {
 	ProjectSlug          string                 `json:"project_slug"`
+	StoreID              string                 `json:"store_id"`
 	ExpectedRevision     string                 `json:"expected_revision,omitempty"`
 	ComponentID          string                 `json:"component_id,omitempty"`
 	Title                string                 `json:"title,omitempty"`
@@ -891,7 +938,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
@@ -993,7 +1040,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 	} else {
 		h.pending.candidate = &candidate
 	}
-	writeJSON(response, http.StatusOK, responseForSnapshot(snapshot, h.pending, h.loadedStale, h.acceptedDiff))
+	writeJSON(response, http.StatusOK, h.responseForLoadedProjectLocked(snapshot, h.pending, h.loadedStale, h.acceptedDiff))
 }
 
 func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
@@ -1008,6 +1055,7 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 
 type diagramMutationRequest struct {
 	ProjectSlug      string `json:"project_slug"`
+	StoreID          string `json:"store_id"`
 	ExpectedRevision string `json:"expected_revision"`
 	DiagramID        string `json:"diagram_id,omitempty"`
 	ComponentID      string `json:"component_id,omitempty"`
@@ -1031,7 +1079,7 @@ func (h *Handler) decodeDiagramMutation(response http.ResponseWriter, request *h
 }
 
 func (h *Handler) writableV2PendingLocked(response http.ResponseWriter, payload diagramMutationRequest) (architecture.Snapshot, *pendingChangeSet, bool) {
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return architecture.Snapshot{}, nil, false
 	}
@@ -1229,6 +1277,13 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 		writeJSON(response, http.StatusConflict, errorResponse{Code: code})
 		return
 	}
+	if currentAuthorityHome == payload.DiagramID {
+		if !hadPending && pendingChangeSetEmpty(pending) {
+			h.pending = nil
+		}
+		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+		return
+	}
 	// A home consumes any reference intent at its destination. Leaving the
 	// current home records an explicit absence so a base reference that was
 	// temporarily converted to home cannot reappear during reconstruction.
@@ -1357,7 +1412,7 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	h.stateMutex.Lock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		h.stateMutex.Unlock()
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
@@ -1385,7 +1440,7 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		} else {
 			h.pending.reviewBlocker = h.pending.validationCode
 		}
-		result := responseForSnapshot(snapshot, h.pending, false, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewFailed
 		h.stateMutex.Unlock()
 		writeJSON(response, status, result)
@@ -1393,7 +1448,7 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 	}
 	diff, err := h.architecture.CandidateDiff(request.Context(), snapshot, candidate)
 	if err != nil {
-		result := responseForSnapshot(snapshot, h.pending, false, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewFailed
 		h.stateMutex.Unlock()
 		writeJSON(response, http.StatusInternalServerError, result)
@@ -1413,7 +1468,7 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 	// Build the complete immutable visual presentation while the binding and
 	// pending generation are protected by the same concrete state lock. JSON
 	// serialization can then proceed without blocking invalidating mutations.
-	result := responseForSnapshot(snapshot, h.pending, false, h.acceptedDiff)
+	result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
 	h.stateMutex.Unlock()
 	writeJSON(response, http.StatusOK, result)
 }
@@ -1425,7 +1480,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.ProjectSlug != h.loadedProject.projectSlug {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
@@ -1441,7 +1496,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	}
 	review := pending.review
 	if payload.BaseRevision != review.baseRevision || payload.CandidateTree != review.candidateTree || payload.Generation != review.generation {
-		result := responseForSnapshot(snapshot, pending, false, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewChanged
 		if result.Changes != nil {
 			// The backend may hold a newer review for another browser. Do not
@@ -1455,7 +1510,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 		review.baseRevision != pending.baseRevision || review.generation != pending.generation ||
 		pending.candidate == nil || review.candidateTree != pending.candidate.Tree() || review.candidateTree != review.candidate.Tree() {
 		pending.review = nil
-		result := responseForSnapshot(snapshot, pending, false, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewChanged
 		writeJSON(response, http.StatusConflict, result)
 		return
@@ -1469,14 +1524,14 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	if err != nil || !present {
 		h.loadedStale = true
 		pending.review = nil
-		result := responseForSnapshot(snapshot, pending, true, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 		result.ActionError = errorUpdateUncertain
 		writeJSON(response, http.StatusConflict, result)
 		return
 	}
 	if observed != review.baseRevision {
 		h.markStale(pending)
-		result := responseForSnapshot(snapshot, pending, true, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 		result.ActionError = errorArchitectureStale
 		writeJSON(response, http.StatusConflict, result)
 		return
@@ -1484,7 +1539,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 
 	successor, err := h.architecture.CreateSuccessor(transitionContext, snapshot, review.candidate)
 	if err != nil {
-		result := responseForSnapshot(snapshot, pending, false, h.acceptedDiff)
+		result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 		result.ActionError = errorUpdateFailed
 		writeJSON(response, http.StatusInternalServerError, result)
 		return
@@ -1503,20 +1558,20 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 		if observeErr != nil || !present {
 			h.loadedStale = true
 			pending.review = nil
-			result := responseForSnapshot(snapshot, pending, true, h.acceptedDiff)
+			result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 			result.ActionError = errorUpdateUncertain
 			writeJSON(response, http.StatusInternalServerError, result)
 			return
 		}
 		if observed != successor && observed != review.baseRevision {
 			h.markStale(pending)
-			result := responseForSnapshot(snapshot, pending, true, h.acceptedDiff)
+			result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 			result.ActionError = errorArchitectureStale
 			writeJSON(response, http.StatusConflict, result)
 			return
 		}
 		if observed == review.baseRevision {
-			result := responseForSnapshot(snapshot, pending, false, h.acceptedDiff)
+			result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 			result.ActionError = errorUpdateFailed
 			writeJSON(response, http.StatusInternalServerError, result)
 			return
@@ -1538,7 +1593,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 			} else {
 				h.loadedStale = true
 			}
-			result := responseForSnapshot(*h.loadedSnapshot, nil, h.loadedStale, h.acceptedDiff)
+			result := h.responseForLoadedProjectLocked(*h.loadedSnapshot, nil, h.loadedStale, h.acceptedDiff)
 			result.ActionError = errorUpdatedReload
 			writeJSON(response, http.StatusInternalServerError, result)
 			return
@@ -1547,6 +1602,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	h.loadedSnapshot = &acceptedSnapshot
 	h.loadedProject.projectName = acceptedSnapshot.ProjectName()
 	h.loadedProject.projectSlug = acceptedSnapshot.ProjectSlug()
+	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
 	writeJSON(response, http.StatusOK, responseForSnapshot(acceptedSnapshot, nil, false, h.acceptedDiff))
 }
@@ -1599,18 +1655,18 @@ func (h *Handler) recordCandidateValidation(pending *pendingChangeSet, err error
 	}
 }
 
-func (h *Handler) decodeArchitectureAction(response http.ResponseWriter, request *http.Request) (openProjectRequest, bool) {
+func (h *Handler) decodeArchitectureAction(response http.ResponseWriter, request *http.Request) (architectureActionRequest, bool) {
 	if request.Header.Get("Origin") != h.expectedOrigin {
 		writeJSON(response, http.StatusForbidden, errorResponse{Code: errorOriginMismatch})
-		return openProjectRequest{}, false
+		return architectureActionRequest{}, false
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBody)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	var payload openProjectRequest
+	var payload architectureActionRequest
 	if err := decoder.Decode(&payload); err != nil || ensureJSONEnd(decoder) != nil {
 		writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorLookupFailed})
-		return openProjectRequest{}, false
+		return architectureActionRequest{}, false
 	}
 	return payload, true
 }

@@ -35,6 +35,25 @@ it('uses one deterministic union-ID position basis across review sides', () => {
   expect(deterministicPositions(layoutIDs)).toEqual(deterministicPositions([...layoutIDs].reverse()))
 })
 
+it('gives derived boundaries distinct semantic slots that remain stable across review sides', () => {
+  const layoutIDs = ['gateway', 'records', 'worker']
+  const withChanges = projectionElements([
+    { id: 'gateway', component_id: 'gateway', title: 'Gateway', relationships: [] },
+    { id: 'boundary:worker', component_id: 'worker', title: 'Worker', node_kind: 'boundary', relationships: [] },
+    { id: 'boundary:records', component_id: 'records', title: 'Records', node_kind: 'boundary', relationships: [] },
+  ], { reviewSide: 'with', layoutComponentIDs: layoutIDs })
+  const before = projectionElements([
+    { id: 'gateway', component_id: 'gateway', title: 'Gateway', relationships: [] },
+    { id: 'worker', component_id: 'worker', title: 'Worker', node_kind: 'home', relationships: [] },
+    { id: 'boundary:records', component_id: 'records', title: 'Records', node_kind: 'boundary', relationships: [] },
+  ], { reviewSide: 'before', layoutComponentIDs: [...layoutIDs].reverse() })
+
+  const position = (elements: ReturnType<typeof projectionElements>, id: string) => elements.find((element) => element.data.id === id)?.position
+  expect(position(withChanges, 'boundary:worker')).not.toEqual(position(withChanges, 'boundary:records'))
+  expect(position(withChanges, 'boundary:worker')).toEqual(position(before, 'worker'))
+  expect(position(withChanges, 'boundary:records')).toEqual(position(before, 'boundary:records'))
+})
+
 it('keeps active topology separate from exact added and removed occurrence annotations', () => {
   const components = [
     {

@@ -331,6 +331,9 @@ describe('App', () => {
     const boundaryCaptions = [...document.querySelectorAll<HTMLElement>('.map-boundary-caption')]
     expect(boundaryCaptions).toHaveLength(2)
     expect(boundaryCaptions.every((caption) => caption.textContent === 'Lives in System' && caption.style.left && caption.style.top)).toBe(true)
+    const boundaryNodes = elements.filter((element) => (element as { data?: { nodeKind?: string } }).data?.nodeKind === 'boundary') as Array<{ position?: { x: number; y: number } }>
+    expect(boundaryNodes).toHaveLength(2)
+    expect(boundaryNodes[0].position).not.toEqual(boundaryNodes[1].position)
     expect(boundaryCaptions[0].parentElement).toHaveAttribute('aria-hidden', 'true')
     expect(elements.filter((element) => (element as { data?: { id?: string } }).data?.id === 'boundary:cccccccc-cccc-4ccc-8ccc-cccccccccccc')).toHaveLength(1)
     expect(elements.filter((element) => (element as { data?: { label?: string } }).data?.label === 'writes')).toHaveLength(2)

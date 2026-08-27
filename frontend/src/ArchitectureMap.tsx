@@ -91,7 +91,7 @@ export function ArchitectureMap({
   const selectHandler = useRef(onSelect)
   const relationshipHandler = useRef(onSelectRelationship)
   const [renderFailed, setRenderFailed] = useState(false)
-  const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.id))].sort().join('\u0000')
+  const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))].sort().join('\u0000')
   // A revision-pinned projection intentionally ignores response-object churn
   // caused by pending edits at the same accepted revision. A review revision is
   // the bound candidate tree or base commit and carries one stable layout basis.
@@ -336,7 +336,7 @@ function reviewRelationshipVisible(change: ReviewMapRelationshipChange, side: 'w
 }
 
 export function projectionElements(components: MapComponent[], options: ProjectionOptions = {}): ElementDefinition[] {
-  const positions = deterministicPositions(options.layoutComponentIDs ?? components.map((component) => component.id))
+  const positions = deterministicPositions(options.layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))
   const componentStatus = new Map(options.reviewComponents?.map((change) => [change.component_id, change.status]))
   const relationshipStatus = new Map<string, { change: ReviewMapRelationshipChange; projection?: ReviewDiagramRelationshipProjection }>()
   for (const change of options.reviewRelationships ?? []) {
@@ -360,7 +360,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
         boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
       },
-      position: positions[component.id],
+      position: positions[component.component_id ?? component.id],
     }
   })
   const grouped = new Map<string, number>()

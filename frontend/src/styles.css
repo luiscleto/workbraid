@@ -1880,6 +1880,22 @@ dd {
   background: rgb(123 61 45 / 8%);
 }
 
+.pending-diagram-attention {
+  border-left: 3px solid #7b3d2d;
+  padding: 10px 12px;
+  background: rgb(123 61 45 / 8%);
+}
+
+.pending-diagram-attention h3,
+.pending-diagram-attention p {
+  margin-top: 0;
+}
+
+.pending-diagram-attention .pending-preserved-note {
+  margin: 10px 0 0;
+  color: var(--muted-ink);
+}
+
 @media (max-width: 980px) {
   .architecture-workbench {
     grid-template-columns: 170px minmax(360px, 1.6fr) minmax(280px, 1fr);

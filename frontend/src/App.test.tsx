@@ -141,6 +141,11 @@ function acceptedV2(overrides: Record<string, unknown> = {}) {
         appearances: [], boundaries: [], relationships: [],
       },
     ],
+    home_move_destinations: [
+      { component_id: gateway, diagram_ids: [root, empty] },
+      { component_id: worker, diagram_ids: [root, detail, empty] },
+      { component_id: records, diagram_ids: [root, detail] },
+    ],
     ...overrides,
   }
 }
@@ -481,6 +486,7 @@ describe('App', () => {
     expect(moveForm).toHaveClass('component-form', 'diagram-editor')
     expect(moveForm).not.toHaveClass('component-editor')
     expect(moveForm?.closest('.working-pane')).toBeInTheDocument()
+    expect(within(destination).queryByRole('option', { name: 'Detail — Inside Shared — gateway.md' })).not.toBeInTheDocument()
     await user.selectOptions(destination, empty)
     await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'Edit title' }))
     expect(screen.getByRole('heading', { name: 'Leave without keeping?' })).toBeInTheDocument()
@@ -546,10 +552,12 @@ describe('App', () => {
     const user = userEvent.setup()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Add a title to this diagram.')
-    const invalidDiagram = screen.getByText('Untitled diagram').closest('.pending-diagram-row') as HTMLElement
-    expect(invalidDiagram).toHaveClass('validation-owner')
-    expect(within(invalidDiagram.querySelector('.pending-diagram-header') as HTMLElement).getByText('Needs attention')).toBeInTheDocument()
-    expect(invalidDiagram.querySelector('.pending-diagram-body')).toBeInTheDocument()
+    const attention = screen.getByRole('region', { name: 'Diagram composition needs attention' })
+    expect(attention).toHaveClass('validation-owner')
+    expect(within(attention).getByText('Untitled diagram')).toBeInTheDocument()
+    expect(within(attention).getByText('Needs attention')).toBeInTheDocument()
+    expect(document.querySelectorAll('.pending-diagram-row')).toHaveLength(0)
+    expect(screen.getByText('All other changes in progress are still kept.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Fix diagram title' }))
     expect(screen.getByRole('heading', { name: 'Edit diagram title' })).toBeInTheDocument()
     expect(screen.getByLabelText('Diagram title')).toHaveFocus()
@@ -557,20 +565,23 @@ describe('App', () => {
     expect(screen.queryByText(/yaml|schema|uuid/i)).not.toBeInTheDocument()
   })
 
-  it('retains backend-owned candidate-only destinations while correcting an invalid move', async () => {
+  it('shows an immediate coherent Diagram correction while retaining allowed candidate-only destinations', async () => {
     const accepted = acceptedV2()
     const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-    const invalidDestination = '44444444-4444-4444-8444-444444444444'
+    const ownedDetail = '44444444-4444-4444-8444-444444444444'
+    const deeperDestination = '66666666-6666-4666-8666-666666666666'
     const siblingDestination = '55555555-5555-4555-8555-555555555555'
     const diagramOptions = accepted.diagrams.map((diagram) => ({ id: diagram.id, title: diagram.title, context: diagram.context })).concat([
-      { id: invalidDestination, title: 'Worker internals', context: 'Detail for Worker — worker.md' },
+      { id: ownedDetail, title: 'Worker internals', context: 'Detail for Worker — worker.md' },
+      { id: deeperDestination, title: 'Nested internals', context: undefined },
       { id: siblingDestination, title: 'Worker internals', context: 'Detail for Worker — sidecar.md' },
     ])
     const invalid = acceptedV2({
+      home_move_destinations: [{ component_id: worker, diagram_ids: [accepted.root_diagram_id, deeperDestination, siblingDestination] }],
       changes: {
-        components: [], valid: false, validation_code: 'diagram_cycle', review_blocker: 'diagram_cycle',
-        validation_item: worker, validation_diagram: invalidDestination, validation_diagram_field: 'home',
-        home_moves: [{ component_id: worker, diagram_id: invalidDestination }], diagram_options: diagramOptions,
+        components: [], valid: false, validation_code: 'diagram_cycle',
+        validation_item: worker, validation_diagram: deeperDestination, validation_diagram_field: 'home',
+        home_moves: [{ component_id: worker, diagram_id: deeperDestination }], diagram_options: diagramOptions,
       },
     })
     const corrected = acceptedV2({
@@ -585,8 +596,13 @@ describe('App', () => {
     const user = userEvent.setup()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Move this component somewhere outside its own detail diagrams.')
+    expect(screen.getByRole('region', { name: 'Diagram composition needs attention' })).toHaveTextContent('Worker Needs attention')
+    expect(screen.getByText('All other changes in progress are still kept.')).toBeInTheDocument()
+    expect(document.querySelectorAll('.pending-diagram-row')).toHaveLength(0)
+    expect(document.querySelectorAll('.pending-home-move-row')).toHaveLength(0)
     await user.click(screen.getByRole('button', { name: 'Fix component location' }))
     const destination = screen.getByRole('combobox', { name: 'Diagram' })
+    expect(within(destination).queryByRole('option', { name: 'Worker internals — Detail for Worker — worker.md' })).not.toBeInTheDocument()
     expect(within(destination).getByRole('option', { name: 'Worker internals — Detail for Worker — sidecar.md' })).toBeInTheDocument()
     await user.selectOptions(destination, siblingDestination)
     await user.click(screen.getByRole('button', { name: 'Keep change' }))
@@ -596,6 +612,28 @@ describe('App', () => {
       source_root: '/tmp/example', expected_revision: '2'.repeat(40), component_id: worker, diagram_id: siblingDestination,
     })
     expect(await screen.findByRole('region', { name: 'Diagram changes in progress' })).toBeInTheDocument()
+  })
+
+  it('keeps a directly rejected owned-detail move in the editor with product guidance', async () => {
+    const accepted = acceptedV2({
+      home_move_destinations: [{
+        component_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        diagram_ids: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'],
+      }],
+    })
+    const fetchMock = mockResponses([accepted, { code: 'diagram_own_detail' }], [200, 409])
+    render(<App />)
+    await submitPath('/tmp/example')
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: 'Change where it lives' }))
+    const destination = screen.getByLabelText('Diagram')
+    await user.selectOptions(destination, '22222222-2222-4222-8222-222222222222')
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('alert')).toHaveTextContent("Choose a different diagram. A component can't live in its own detail diagram.")
+    expect(screen.getByRole('heading', { name: 'Change where it lives' })).toBeInTheDocument()
   })
 
   it.each([

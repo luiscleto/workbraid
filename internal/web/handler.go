@@ -68,6 +68,7 @@ type pendingChangeSet struct {
 	detailDiagrams                 []architecture.DetailDiagramChange
 	diagramTitles                  []architecture.DiagramTitleChange
 	homeMoves                      []architecture.ComponentHomeMove
+	homeMoveDestinations           []componentHomeDestinationsResponse
 	candidate                      *architecture.Candidate
 	generation                     uint64
 	review                         *reviewBinding
@@ -162,6 +163,7 @@ const (
 	errorRefreshInvalid          = "refresh_invalid"
 	errorRefreshUnsupported      = "refresh_unsupported"
 	errorChangesUnavailable      = "changes_unavailable"
+	errorDiagramOwnDetail        = "diagram_own_detail"
 )
 
 func (h *Handler) openProject(response http.ResponseWriter, request *http.Request) {
@@ -231,20 +233,21 @@ func (h *Handler) openProject(response http.ResponseWriter, request *http.Reques
 }
 
 type architectureResponse struct {
-	SourceRoot      string              `json:"source_root"`
-	ProjectName     string              `json:"project_name"`
-	State           string              `json:"state"`
-	Revision        string              `json:"revision"`
-	FormatVersion   int                 `json:"format_version"`
-	ComponentCount  int                 `json:"component_count"`
-	ComponentTitles []string            `json:"component_titles"`
-	Components      []componentResponse `json:"components"`
-	RootDiagramID   string              `json:"root_diagram_id,omitempty"`
-	Diagrams        []diagramResponse   `json:"diagrams,omitempty"`
-	Changes         *changesResponse    `json:"changes,omitempty"`
-	Stale           bool                `json:"stale,omitempty"`
-	ParentDiff      string              `json:"parent_diff,omitempty"`
-	ActionError     string              `json:"action_error,omitempty"`
+	SourceRoot           string                              `json:"source_root"`
+	ProjectName          string                              `json:"project_name"`
+	State                string                              `json:"state"`
+	Revision             string                              `json:"revision"`
+	FormatVersion        int                                 `json:"format_version"`
+	ComponentCount       int                                 `json:"component_count"`
+	ComponentTitles      []string                            `json:"component_titles"`
+	Components           []componentResponse                 `json:"components"`
+	RootDiagramID        string                              `json:"root_diagram_id,omitempty"`
+	Diagrams             []diagramResponse                   `json:"diagrams,omitempty"`
+	HomeMoveDestinations []componentHomeDestinationsResponse `json:"home_move_destinations,omitempty"`
+	Changes              *changesResponse                    `json:"changes,omitempty"`
+	Stale                bool                                `json:"stale,omitempty"`
+	ParentDiff           string                              `json:"parent_diff,omitempty"`
+	ActionError          string                              `json:"action_error,omitempty"`
 }
 
 type componentResponse struct {
@@ -304,6 +307,11 @@ type diagramAuthoringOptionResponse struct {
 	Context string `json:"context,omitempty"`
 }
 
+type componentHomeDestinationsResponse struct {
+	ComponentID string   `json:"component_id"`
+	DiagramIDs  []string `json:"diagram_ids"`
+}
+
 type diagramAuthoringOptionFact struct {
 	diagramAuthoringOptionResponse
 	anchorComponentID string
@@ -332,20 +340,22 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		state = "empty"
 	}
 	result := architectureResponse{
-		SourceRoot:      sourceRoot,
-		ProjectName:     projectName,
-		State:           state,
-		Revision:        projection.Revision,
-		FormatVersion:   projection.FormatVersion,
-		ComponentCount:  projection.ComponentCount,
-		ComponentTitles: projection.ComponentTitles,
-		Components:      projection.Components,
-		RootDiagramID:   projection.RootDiagramID,
-		Diagrams:        projection.Diagrams,
-		Stale:           stale,
-		ParentDiff:      parentDiff,
+		SourceRoot:           sourceRoot,
+		ProjectName:          projectName,
+		State:                state,
+		Revision:             projection.Revision,
+		FormatVersion:        projection.FormatVersion,
+		ComponentCount:       projection.ComponentCount,
+		ComponentTitles:      projection.ComponentTitles,
+		Components:           projection.Components,
+		RootDiagramID:        projection.RootDiagramID,
+		Diagrams:             projection.Diagrams,
+		HomeMoveDestinations: componentHomeDestinations(snapshot),
+		Stale:                stale,
+		ParentDiff:           parentDiff,
 	}
 	if pending != nil && pending.storeID == snapshot.StoreID() {
+		result.HomeMoveDestinations = nil
 		legacyReadOnly := snapshot.FormatVersion() == 1 && pending.diagramSetup == nil
 		pendingAccepted := pending.baseSnapshot.AuthoringComponents()
 		changes := make([]pendingComponentResponse, len(pending.changes))
@@ -380,6 +390,9 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		if pending.candidate != nil {
 			candidateProjection := projectSnapshot(pending.candidate.Snapshot(), "")
 			result.Changes.Candidate = &candidateProjection
+			result.HomeMoveDestinations = componentHomeDestinations(pending.candidate.Snapshot())
+		} else if len(pending.homeMoveDestinations) > 0 {
+			result.HomeMoveDestinations = cloneComponentHomeDestinations(pending.homeMoveDestinations)
 		}
 		if !legacyReadOnly && !pending.stale && pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 			before, withChanges, comparison := captureReviewPresentation(pending.baseSnapshot, pending.review.candidate.Snapshot())
@@ -391,6 +404,33 @@ func responseForSnapshot(sourceRoot, projectName string, snapshot architecture.S
 		}
 	}
 	return result
+}
+
+func componentHomeDestinations(snapshot architecture.Snapshot) []componentHomeDestinationsResponse {
+	if snapshot.FormatVersion() != 2 {
+		return nil
+	}
+	components := snapshot.AuthoringComponents()
+	values := make([]componentHomeDestinationsResponse, 0, len(components))
+	for _, component := range components {
+		diagramIDs := snapshot.ComponentHomeDestinationDiagramIDs(component.ID)
+		if diagramIDs == nil {
+			continue
+		}
+		values = append(values, componentHomeDestinationsResponse{ComponentID: component.ID, DiagramIDs: diagramIDs})
+	}
+	return values
+}
+
+func cloneComponentHomeDestinations(values []componentHomeDestinationsResponse) []componentHomeDestinationsResponse {
+	cloned := make([]componentHomeDestinationsResponse, len(values))
+	for index, value := range values {
+		cloned[index] = componentHomeDestinationsResponse{
+			ComponentID: value.ComponentID,
+			DiagramIDs:  append([]string(nil), value.DiagramIDs...),
+		}
+	}
+	return cloned
 }
 
 func pendingDiagramAuthoringOptions(pending *pendingChangeSet) []diagramAuthoringOptionResponse {
@@ -1057,6 +1097,8 @@ func pendingHasComponent(snapshot architecture.Snapshot, pending *pendingChangeS
 func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) {
 	pending.generation++
 	pending.review = nil
+	pending.candidate = nil
+	pending.homeMoveDestinations = nil
 	pending.reviewBlocker = ""
 	pending.validationCode = ""
 	pending.validationItem = ""
@@ -1155,6 +1197,7 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
+	hadPending := h.pending != nil
 	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
 	if !ok {
 		return
@@ -1166,12 +1209,39 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 		writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorChangeFailed})
 		return
 	}
-	remaining := pending.homeMoves[:0:0]
-	for _, move := range pending.homeMoves {
-		if move.ComponentID != payload.ComponentID {
-			remaining = append(remaining, move)
+	authority := snapshot
+	if pending.candidate != nil {
+		authority = pending.candidate.Snapshot()
+	} else if hadPending && !pendingChangeSetEmpty(pending) {
+		withoutCurrentMove := *pending
+		withoutCurrentMove.homeMoves = homeMovesWithoutComponent(pending.homeMoves, payload.ComponentID)
+		candidate, err := h.constructCandidate(request.Context(), snapshot, &withoutCurrentMove)
+		if err != nil {
+			writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
+			return
 		}
+		authority = candidate.Snapshot()
 	}
+	if !authority.HasComponent(payload.ComponentID) || !authority.HasDiagram(payload.DiagramID) {
+		if !hadPending && pendingChangeSetEmpty(pending) {
+			h.pending = nil
+		}
+		writeJSON(response, http.StatusBadRequest, errorResponse{Code: errorChangeFailed})
+		return
+	}
+	_, ownedDetailID, hasHome := authority.ComponentHome(payload.ComponentID)
+	if !hasHome || payload.DiagramID == ownedDetailID {
+		if !hadPending && pendingChangeSetEmpty(pending) {
+			h.pending = nil
+		}
+		code := errorChangeFailed
+		if payload.DiagramID == ownedDetailID && ownedDetailID != "" {
+			code = errorDiagramOwnDetail
+		}
+		writeJSON(response, http.StatusConflict, errorResponse{Code: code})
+		return
+	}
+	remaining := homeMovesWithoutComponent(pending.homeMoves, payload.ComponentID)
 	pending.homeMoves = remaining
 	withoutMove, err := h.constructCandidate(request.Context(), snapshot, pending)
 	currentHome := ""
@@ -1187,7 +1257,20 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 		return
 	}
 	h.rebuildPendingLocked(request.Context(), snapshot, pending)
+	if pending.candidate == nil && pending.validationDiagramField == "home" && pending.validationItem == payload.ComponentID && err == nil {
+		pending.homeMoveDestinations = componentHomeDestinations(withoutMove.Snapshot())
+	}
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+func homeMovesWithoutComponent(moves []architecture.ComponentHomeMove, componentID string) []architecture.ComponentHomeMove {
+	remaining := make([]architecture.ComponentHomeMove, 0, len(moves))
+	for _, move := range moves {
+		if move.ComponentID != componentID {
+			remaining = append(remaining, move)
+		}
+	}
+	return remaining
 }
 
 func pendingChangeSetEmpty(pending *pendingChangeSet) bool {

@@ -7,8 +7,12 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
+
+	"workbraid/internal/architecture"
 )
 
 func TestNestedDiagramCompositionUsesOnePendingCandidateAndRetainsInvalidMove(t *testing.T) {
@@ -137,6 +141,39 @@ func TestNestedDiagramCompositionUsesOnePendingCandidateAndRetainsInvalidMove(t 
 	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", afterMoveTree, sidecarDetailPath); got != sidecarDetailEntry {
 		t.Fatalf("moving anchored home rewrote sibling Diagram\nbefore: %s\nafter: %s", sidecarDetailEntry, got)
 	}
+	if hasHomeDestination(moved.HomeMoveDestinations, p21WorkerID, newDiagram.ID) {
+		t.Fatalf("Worker's directly owned detail remained a destination: %+v", moved.HomeMoveDestinations)
+	}
+	if !hasHomeDestination(moved.HomeMoveDestinations, p21WorkerID, queueDetailID) {
+		t.Fatalf("deeper candidate-only descendant was removed as a destination: %+v", moved.HomeMoveDestinations)
+	}
+
+	reviewedBeforeRejection := decodeArchitectureResponse(t, postArchitectureAction(t, handler, testOrigin, "/api/architecture/review", source))
+	if reviewedBeforeRejection.Changes == nil || reviewedBeforeRejection.Changes.Review == nil {
+		t.Fatalf("review before direct rejection = %+v", reviewedBeforeRejection.Changes)
+	}
+	beforeRejectedGeneration := state.pending.generation
+	beforeRejectedTree := state.pending.candidate.Tree()
+	beforeRejectedMoves := append([]architecture.ComponentHomeMove(nil), state.pending.homeMoves...)
+	beforeRejectedReview := *state.pending.review
+	directOwned := postDiagramMutation(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: p21WorkerID, DiagramID: newDiagram.ID,
+	})
+	if directOwned.Code != http.StatusConflict || !strings.Contains(directOwned.Body.String(), `"code":"diagram_own_detail"`) {
+		t.Fatalf("direct-owned move status/body = %d/%s", directOwned.Code, directOwned.Body.String())
+	}
+	if state.pending.generation != beforeRejectedGeneration || state.pending.candidate.Tree() != beforeRejectedTree || !reflect.DeepEqual(state.pending.homeMoves, beforeRejectedMoves) || !reflect.DeepEqual(*state.pending.review, beforeRejectedReview) {
+		t.Fatalf("direct-owned rejection mutated pending: generation=%d moves=%+v review=%+v", state.pending.generation, state.pending.homeMoves, state.pending.review)
+	}
+	staleDirect := postDiagramMutation(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		SourceRoot: filepath.Clean(source), ExpectedRevision: strings.Repeat("f", 40), ComponentID: p21WorkerID, DiagramID: newDiagram.ID,
+	})
+	if staleDirect.Code != http.StatusConflict || !strings.Contains(staleDirect.Body.String(), `"code":"changes_elsewhere"`) {
+		t.Fatalf("stale direct move status/body = %d/%s", staleDirect.Code, staleDirect.Body.String())
+	}
+	if state.pending.generation != beforeRejectedGeneration || state.pending.candidate.Tree() != beforeRejectedTree || !reflect.DeepEqual(state.pending.homeMoves, beforeRejectedMoves) || !reflect.DeepEqual(*state.pending.review, beforeRejectedReview) {
+		t.Fatal("stale direct rejection mutated pending or review binding")
+	}
 
 	invalid := decodeArchitectureResponse(t, postDiagramMutation(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
 		SourceRoot: filepath.Clean(source), ExpectedRevision: accepted, ComponentID: p21WorkerID, DiagramID: queueDetailID,
@@ -149,6 +186,12 @@ func TestNestedDiagramCompositionUsesOnePendingCandidateAndRetainsInvalidMove(t 
 	}
 	if state.pending == nil || state.pending.candidate != nil {
 		t.Fatalf("backend pending after invalid move = %+v", state.pending)
+	}
+	if invalid.Changes.ReviewBlocker != "" || invalid.Changes.ValidationItem != p21WorkerID || invalid.Changes.ValidationDiagramField != "home" {
+		t.Fatalf("invalid move was not immediately localized before review: %+v", invalid.Changes)
+	}
+	if hasHomeDestination(invalid.HomeMoveDestinations, p21WorkerID, newDiagram.ID) || !hasHomeDestination(invalid.HomeMoveDestinations, p21WorkerID, sidecarDetailID) {
+		t.Fatalf("invalid-move correction destinations = %+v", invalid.HomeMoveDestinations)
 	}
 	invalidGeneration := state.pending.generation
 	if got := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted"); got != accepted {
@@ -171,6 +214,15 @@ func TestNestedDiagramCompositionUsesOnePendingCandidateAndRetainsInvalidMove(t 
 	if len(reviewed.Changes.Review.Comparison.Components) != 3 || len(reviewed.Changes.Review.Comparison.Relationships) == 0 || len(reviewed.Changes.Review.Comparison.Diagrams) != 4 || len(reviewed.Changes.Review.Comparison.Appearances) == 0 {
 		t.Fatalf("composition review classification = %+v", reviewed.Changes.Review.Comparison)
 	}
+}
+
+func hasHomeDestination(values []componentHomeDestinationsResponse, componentID, diagramID string) bool {
+	for _, value := range values {
+		if value.ComponentID == componentID && slices.Contains(value.DiagramIDs, diagramID) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDiagramAuthoringOption(options []diagramAuthoringOptionResponse, id string) bool {

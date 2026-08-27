@@ -26,6 +26,7 @@ type ArchitectureResult = {
   components: AuthoringComponent[]
   root_diagram_id?: string
   diagrams?: DiagramProjection[]
+  home_move_destinations?: { component_id: string; diagram_ids: string[] }[]
   changes?: ChangesInProgress
   stale?: boolean
   parent_diff?: string
@@ -630,7 +631,9 @@ export function App() {
       })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
-        setAuthoringError("WorkBraid couldn't keep that diagram change. Check the selection and try again.")
+        setAuthoringError('code' in payload && payload.code === 'diagram_own_detail'
+          ? "Choose a different diagram. A component can't live in its own detail diagram."
+          : "WorkBraid couldn't keep that diagram change. Check the selection and try again.")
         return
       }
       setDiagramEditor(null)
@@ -817,6 +820,11 @@ export function App() {
     const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
     const compositionDiagrams = result.changes?.diagram_options ?? compositionProjection.diagrams ?? result.diagrams ?? []
+    const editorDiagrams = diagramEditor?.kind === 'move'
+      ? compositionDiagrams.filter((diagram) => result.home_move_destinations
+        ?.find((destinations) => destinations.component_id === diagramEditor.componentID)
+        ?.diagram_ids.includes(diagram.id))
+      : compositionDiagrams
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.format_version === 2
       ? activeDiagramComponents ?? []
@@ -1111,7 +1119,7 @@ export function App() {
               <DiagramEditorForm
                 editor={diagramEditor}
                 setEditor={setDiagramEditor}
-                diagrams={compositionDiagrams}
+                diagrams={editorDiagrams}
                 error={authoringError}
                 onCancel={() => setDiagramEditor(null)}
                 onSubmit={(event) => submitDiagramChange(event, result)}
@@ -1507,6 +1515,15 @@ function ChangesTask({
     ? changes.components.find((component) => component.id === changes.validation_item)
     : undefined
   const relationshipIssueName = relationshipIssueComponent ? relationshipIssueComponentName(changes, relationshipIssueComponent) : ''
+  const diagramCompositionNeedsAttention = Boolean(!changes.candidate && changes.validation_diagram_field && changes.validation_code)
+  const affectedHomeComponent = changes.validation_diagram_field === 'home'
+    ? changes.components.find((component) => component.id === changes.validation_item)
+      ?? result.components.find((component) => component.id === changes.validation_item)
+    : undefined
+  const affectedDiagramTitle = changes.validation_diagram_field === 'title'
+    ? changes.detail_diagrams?.find((diagram) => diagram.id === changes.validation_diagram)?.title
+      ?? changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)?.title
+    : undefined
   const discardAction = !acceptanceUnknown
     ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Discard changes</button>
     : null
@@ -1616,37 +1633,26 @@ function ChangesTask({
           </div>
         </section>
       ) : null}
-      {!changes.candidate && (changes.detail_diagrams?.length || changes.diagram_titles?.length || changes.home_moves?.length) ? (
-        <section className="pending-diagram-composition" aria-label="Diagram changes needing attention">
-          <h3>Diagram composition</h3>
-          <div className="pending-diagram-list">
-            {[...(changes.detail_diagrams ?? []).map((diagram) => ({ id: diagram.id, title: diagram.title })), ...(changes.diagram_titles ?? []).map((diagram) => ({ id: diagram.diagram_id, title: diagram.title }))].map((diagram) => {
-              const ownsValidation = Boolean(changes.review_blocker && changes.validation_diagram === diagram.id)
-              return (
-                <section className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}>
-                  <header className="pending-diagram-header">
-                    <div className="pending-diagram-title">
-                      <strong>{diagram.title.trim() || 'Untitled diagram'}</strong>
-                      {ownsValidation && <strong className="validation-marker">Needs attention</strong>}
-                    </div>
-                    <div className="pending-diagram-header-actions">
-                      {!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}
-                      {!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}
-                    </div>
-                  </header>
-                  <div className="pending-diagram-body" />
-                </section>
-              )
-            })}
+      {diagramCompositionNeedsAttention ? (
+        <section className="pending-diagram-attention validation-owner" aria-label="Diagram composition needs attention" aria-invalid="true">
+          <h3>Diagram composition needs attention</h3>
+          <div role="alert">
+            <p><strong>{changes.validation_diagram_field === 'home' ? affectedHomeComponent?.title ?? 'Component location' : affectedDiagramTitle?.trim() || 'Untitled diagram'}</strong> <span className="validation-marker">Needs attention</span></p>
+            <p>{messageForReviewBlocker(changes.validation_code)}</p>
+            {!readOnly && !acceptanceUnknown && changes.validation_diagram_field === 'title' && changes.validation_diagram && onEditDiagramTitle && (
+              <button className="inline-action" type="button" onClick={() => onEditDiagramTitle(changes.validation_diagram!, affectedDiagramTitle ?? '', true)}>Fix diagram title</button>
+            )}
+            {!readOnly && !acceptanceUnknown && changes.validation_diagram_field === 'home' && changes.validation_item && onMoveHome && (
+              <button className="inline-action" type="button" onClick={() => {
+                const move = changes.home_moves?.find((candidate) => candidate.component_id === changes.validation_item)
+                onMoveHome(changes.validation_item!, move?.diagram_id ?? '', true)
+              }}>Fix component location</button>
+            )}
           </div>
-          {changes.home_moves?.map((move) => {
-            const component = changes.components.find((candidate) => candidate.id === move.component_id) ?? changes.candidate?.components.find((candidate) => candidate.id === move.component_id) ?? result.components?.find((candidate) => candidate.id === move.component_id)
-            const ownsValidation = Boolean(changes.review_blocker && changes.validation_item === move.component_id && changes.validation_diagram_field === 'home')
-            return <div className={`pending-home-move-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={move.component_id}><strong>{component?.title ?? 'Component home'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(move.component_id, move.diagram_id, ownsValidation)}>{ownsValidation ? 'Fix location' : 'Change where it lives'}</button>}</div>
-          })}
+          <p className="pending-preserved-note">All other changes in progress are still kept.</p>
         </section>
       ) : null}
-      {changes.review_blocker && (
+      {changes.review_blocker && !diagramCompositionNeedsAttention && (
         <div className="review-error" role="alert">
           {relationshipIssueComponent ? (
             <>

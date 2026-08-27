@@ -478,6 +478,24 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 	return "", "", false
 }
 
+// ComponentHomeDestinationDiagramIDs returns the concrete Diagram destinations
+// available for moving one Component home. The Component's own detail Diagram
+// is excluded because its parent-owned link travels with the home; deeper
+// descendants remain candidates for complete-candidate validation.
+func (snapshot Snapshot) ComponentHomeDestinationDiagramIDs(componentID string) []string {
+	_, detailID, ok := snapshot.ComponentHome(componentID)
+	if !ok {
+		return nil
+	}
+	destinations := make([]string, 0, len(snapshot.diagrams))
+	for _, current := range snapshot.diagrams {
+		if current.id.String() != detailID {
+			destinations = append(destinations, current.id.String())
+		}
+	}
+	return destinations
+}
+
 func (snapshot Snapshot) NewDetailDiagramChange(existing []DetailDiagramChange, title, anchorComponentID string) DetailDiagramChange {
 	id := uuid.NewString()
 	used := make(map[string]struct{}, len(snapshot.diagrams)+len(existing))

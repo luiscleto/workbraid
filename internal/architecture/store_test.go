@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -639,6 +640,13 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 	}
 	if before, after := gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", candidate.Tree(), "diagrams/root.yaml"), gitText(t, "--git-dir", mustStorePath(t, manager, storeID), "ls-tree", nested.Tree(), "diagrams/root.yaml"); before != after {
 		t.Fatalf("untouched root Diagram entry changed\nbefore: %s\nafter: %s", before, after)
+	}
+	destinations := nested.Snapshot().ComponentHomeDestinationDiagramIDs(anchor.ID)
+	if slices.Contains(destinations, first.ID) {
+		t.Fatalf("anchor's directly owned detail remained a move destination: %v", destinations)
+	}
+	if !slices.Contains(destinations, second.ID) {
+		t.Fatalf("deeper descendant was removed from move destinations: %v", destinations)
 	}
 	rootID := nested.Snapshot().RootDiagramID()
 	if _, err := manager.ConstructCandidate(context.Background(), nested.Snapshot(), nil, CandidateComposition{HomeMoves: []ComponentHomeMove{

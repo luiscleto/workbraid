@@ -1,6 +1,6 @@
 # Post-Gate Architecture Phase 2.3 execution packet
 
-Status: Approved
+Status: Complete
 
 Architecture baseline: `docs/architecture-v0.md`
 
@@ -18,7 +18,7 @@ Completed P2.2 record: `docs/plans/architecture-post-gate-phase-2.2-execution.md
 
 Exact completed-P2.2 prerequisite: `dd75ceb8db15f1dafef33513d632b25315114c6b`
 
-Worker base: to be recorded after this packet is approved and committed alone on the exact prerequisite
+Worker base: `02aa3615871a03587eea84f25a9056f3d478d8f4`
 
 Target: P2.3 — Nested Diagram composition
 
@@ -341,3 +341,36 @@ P2.3 does not introduce:
 - a second parser, candidate builder, review object, acceptance path, browser-owned Architecture interpretation, SQLite Architecture projection, or source-repository write.
 
 P2.3 stops after independent review, integration, ordinary checks, restart-backed real human checkpoint, completion record, and explicit human approval. P2.4 remains unstarted.
+
+## Execution result
+
+Status: Complete — human checkpoint **PASS** on 2026-08-27
+
+- Exact completed-P2.2 prerequisite: `dd75ceb8db15f1dafef33513d632b25315114c6b`.
+- Approved docs-inclusive worker base and P2.3 execution-packet commit: `02aa3615871a03587eea84f25a9056f3d478d8f4`.
+- Initial cohesive implementation: `a0635f8529d3ef55bd2c9e4e6fe64a06c39a765f`.
+- Final integrated implementation after independently reviewed correctness, human-checkpoint UX, review-layout, and living-scenario corrections: `61dceb9e97d752285bfb67a22b96a8a85775d54b`.
+- The implementation stayed on one pending Architecture base/generation, one complete-candidate constructor and version-aware validator, one immutable review binding, and the existing confirmation/stale/CAS/publication path. Detail creation, Diagram-title edits, and home moves use concrete Diagram-composition state; no Diagram draft, second candidate/review authority, child parent field, recursive subtree rewrite, or generic hierarchy/operation framework was introduced.
+- Independent review: the initial implementation and every material correction returned to the same bounded worker and received fresh independent rereview. The complete implementation through `89ae04343583d4f27eafe487196d6c7f491d3b63` passed with no findings. The subsequent review-layout delta through `f0bcef68184f9a2b3a84ea766f17245c76a0f3ae` and living-scenario delta through `61dceb9e97d752285bfb67a22b96a8a85775d54b` each passed separate fresh rereview with no findings.
+- Reviewer scrutiny confirmed candidate-relative nested composition, stable creation identity, exact reuse of untouched Component/Diagram blobs and modes, semantic/source-order fidelity for rewritten Diagrams without lossless-YAML machinery, source-home removal, destination reference-to-home conversion, parent-owned detail-link movement, exact subtree identity preservation, complete hierarchy validation, localized retained invalid work, Diagram-aware snapshot-unified review, synchronized mutation eligibility, and the absence of P2.4 behavior.
+- Automated validation: **PASS** for `git diff --check`, `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`, `go mod verify`, 94 ordinary frontend tests, the production frontend build, and both bounded P2.3 production-browser scenarios. Because Diagram-scoped Component creation made the old global **Add component** selector ambiguous, the living Phase 1 and Gate scenarios were proportionately scoped to the accessible **Diagrams and components** navigator; Phase 1 passed and the complete four-scenario Gate run passed at the final SHA. The production behavior and invariant assertions were unchanged. The existing production-chunk-size warning remains non-blocking.
+- Resource safety: checks ran sequentially with one browser worker. No abnormal memory growth or swap use occurred. All WorkBraid, npm, Node, Vitest, Playwright, and Chromium checkpoint/test processes were stopped at completion.
+
+### Human checkpoint evidence
+
+- Runtime root: `/tmp/workbraid-p23-human.wr1MI2`; application-data directory: `/tmp/workbraid-p23-human.wr1MI2/app-data`; source project: `/tmp/workbraid-p23-human.wr1MI2/source-project`; private Architecture store: `/tmp/workbraid-p23-human.wr1MI2/app-data/architecture/7afc8c07-4461-4b73-9063-f342ef2a54e6.git`.
+- The real built browser UI, loopback Go process, Git executable, filesystem, and SQLite were used. The normally writable parentless v2 bootstrap was `febd53d4c964da5c743519b2299a0e7117df4bbe`; the connected accepted starting Architecture before P2.3 composition was `f8557b0a854406acd5bfa82eb44c0019e8153f07`.
+- Structured authoring created and titled nested detail Diagrams, moved Component homes, moved an anchoring home with its existing child subtree, retained exact Component identities/documentation/Relationships, combined Component and real Relationship edits, and kept the normal accepted workspace unchanged before review. Candidate-relative Diagram creation and Component creation in an active pending Diagram remained in the same backend-held pending set.
+- A deliberately invalid descendant move was retained and blocked Review with localized Diagram-composition guidance. The direct self-detail destination is now omitted and independently rejected under synchronized backend authority; deeper descendants remain selectable because other pending moves can make them valid. An invalid deeper move immediately presents one coherent attention state rather than a hollow or flattened candidate projection. Correction retained the rest of the pending work.
+- Human-reviewed binding: base `f8557b0a854406acd5bfa82eb44c0019e8153f07`, candidate tree `d944cd822e40ccc5f349a66b04b39554dbc4c2a6`, generation `11`. **Before changes** / **With changes**, candidate-only fallback, Diagram tree and composition markers, exact diff focus, real Relationship delta, internal/boundary presentation, and accepted-only normal workspace all passed.
+- One deliberate acceptance produced exact revision `24512a013bad4a371f1c205ef7db9dac3a1718f3`, parent `f8557b0a854406acd5bfa82eb44c0019e8153f07`, and tree `d944cd822e40ccc5f349a66b04b39554dbc4c2a6`. The accepted tree contains the expected root, Runtime detail, Gateway Internals detail, five Components, exact Relationships, and only `100644` canonical files. Untouched Component blobs and modes were reused exactly.
+- Accepted navigation through root, first-level, and second-level detail Diagrams passed. Breadcrumbs, Diagram tree, **Edit component**, **Open _diagram_**, home context, canonical-reference context, external **Lives in** captions, retained review context, Changes/external-reference dock behavior, and neutral clear selection remained coherent. Human-requested contextual form alignment, action hierarchy, underlined actions, grouped pending Diagram presentation, and immediate invalid-composition attention were corrected and rereviewed without expanding the Diagram domain.
+- After a genuine process stop and rebuild from final implementation `61dceb9e97d752285bfb67a22b96a8a85775d54b`, reopening the same application-data directory reconstructed exact accepted revision `24512a013bad4a371f1c205ef7db9dac3a1718f3` and its hierarchy, identities, homes, documentation, Relationships, boundaries, and navigation solely from canonical Git.
+- A final review-only regression check on the rebuilt process bound base `24512a013bad4a371f1c205ef7db9dac3a1718f3`, candidate tree `4e48170c19ac8ac2870397c7f4eb1327ae2e32cc`, generation `1`. Multiple derived boundary nodes received distinct stable automatic positions and no longer overlapped. The temporary title candidate was then whole-set discarded; accepted revision `24512a013bad4a371f1c205ef7db9dac3a1718f3` remained exact with no pending changes.
+- Explicit external Refresh was not replayed manually because P2.3 did not change Refresh semantics and the final correction was review-presentation-only. The required real-Git handler/browser evidence for valid external advancement, synchronized stale pending behavior, and atomic snapshot replacement passed in automated validation.
+- Source isolation: **PASS**. Source HEAD remained `74b20a88be61c983a5cf8092f88c92cf83aad974`; status remained exactly `?? local-notes.txt`; tracked modes/blobs remained `100644 ff1e184894e55a516886a274e1e7778ed519cb7f README.md` and `100644 5b6ef892cebb4fe8427a246f6af265a04a82423b src/main.go`. SHA-256 values remained `eb0832cf3bea68738e71fd4bdecc5040b55d6a0bcc412b835526917bc7bb4845` for `README.md`, `b16292eca78e7c1f040ff51bd3966bbb3b350a15b4a7474b8e6d73922005c591` for `src/main.go`, and `20d7989a8b60e781c23f1f778f52d33657fdf87a397abc5d50516885e44a22e2` for `local-notes.txt`.
+- SQLite isolation: **PASS**. The only table remained `source_architecture_associations`, containing exactly the source-root/store-ID association above and no Architecture, Diagram, Component, Relationship, hierarchy, pending, review, navigation, graph, or layout projection.
+- Human checkpoint result: **PASS**.
+- Scope: no structured reusable-reference authoring, Diagram deletion, multiple parents/DAG, persisted pending or layout state, coordinates/routing/shapes, graphical authoring, Diagram kinds, UML, isometric renderer, generic hierarchy/graph/workflow framework, or P2.4 implementation entered P2.3.
+
+P2.3 is complete. Stop here; P2.4 remains unstarted.

@@ -156,6 +156,141 @@ func TestRefreshSlugConflictDoesNotPublishAmbiguousLocator(t *testing.T) {
 	}
 }
 
+func TestRefreshConflictScanPrecedesMandatoryFinalAcceptedObservation(t *testing.T) {
+	fixture := newNativeRefreshFixture(t, false)
+	observed := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
+		return strings.Replace(value, "slug: refresh-fixture", "slug: observed-locator", 1)
+	})
+	base := *fixture.state.loadedSnapshot
+	observedSnapshot, err := fixture.state.architecture.LoadRevision(context.Background(), base, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdCandidate, err := fixture.state.architecture.ConstructCandidate(context.Background(), observedSnapshot, nil, architecture.CandidateComposition{
+		DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: observedSnapshot.RootDiagramID(), Title: "Third revision"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := fixture.state.architecture.CreateSuccessor(context.Background(), observedSnapshot, thirdCandidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.state.beforeRefreshCatalogCheck = func() {
+		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", third, observed)
+	}
+	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action())
+	result := decodeArchitectureBody(t, response)
+	if response.Code != http.StatusConflict || result.ActionError != errorRefreshChanged || result.Revision != fixture.base.Revision || !result.Stale || result.ProjectSlug != fixture.base.ProjectSlug {
+		t.Fatalf("conflict-scan race status=%d result=%+v", response.Code, result)
+	}
+	if accepted := git(t, "--git-dir", fixture.storePath, "rev-parse", "refs/heads/accepted"); accepted != third {
+		t.Fatalf("accepted=%s want third=%s", accepted, third)
+	}
+}
+
+func TestStaleReopenCacheCannotOverrideConclusiveRefreshAuthority(t *testing.T) {
+	for _, scenario := range []string{"invalid", "unsupported", "missing", "third", "catalog conflict"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := newNativeRefreshFixture(t, false)
+			decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
+				ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+				ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
+			}))
+			baseSnapshot := *fixture.state.loadedSnapshot
+			cachedRevision := fixture.advanceTitle(t, baseSnapshot, "Cached current")
+			cachedSnapshot, err := fixture.state.architecture.LoadRevision(context.Background(), baseSnapshot, cachedRevision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": fixture.base.ProjectSlug}))
+			if !reopened.Stale || reopened.Changes == nil || !reopened.Changes.Stale || fixture.state.loadedProject.validatedCurrent == nil {
+				t.Fatalf("fixture did not retain stale base/current cache: %+v project=%+v", reopened, fixture.state.loadedProject)
+			}
+
+			switch scenario {
+			case "invalid":
+				replaceAcceptedManifest(t, fixture.storePath, cachedRevision, func(value string) string {
+					return strings.Replace(value, "slug: refresh-fixture", "slug: Invalid", 1)
+				})
+			case "unsupported":
+				replaceAcceptedManifest(t, fixture.storePath, cachedRevision, func(value string) string {
+					return strings.Replace(value, "version: 2", "version: 3", 1)
+				})
+			case "missing":
+				git(t, "--git-dir", fixture.storePath, "update-ref", "-d", "refs/heads/accepted", cachedRevision)
+			case "third":
+				candidate, constructErr := fixture.state.architecture.ConstructCandidate(context.Background(), cachedSnapshot, nil, architecture.CandidateComposition{
+					DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: cachedSnapshot.RootDiagramID(), Title: "Third"}},
+				})
+				if constructErr != nil {
+					t.Fatal(constructErr)
+				}
+				third, createErr := fixture.state.architecture.CreateSuccessor(context.Background(), cachedSnapshot, candidate)
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				fixture.state.beforeRefreshReobserve = func(string) {
+					git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", third, cachedRevision)
+				}
+			case "catalog conflict":
+				other, createErr := fixture.state.architecture.CreateProject(context.Background(), "Other")
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				otherPath, pathErr := fixture.state.architecture.StorePath(other.StoreID())
+				if pathErr != nil {
+					t.Fatal(pathErr)
+				}
+				replaceAcceptedManifest(t, otherPath, other.Revision(), func(value string) string {
+					return strings.Replace(value, "slug: other", "slug: refresh-fixture", 1)
+				})
+			}
+
+			response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action())
+			result := decodeArchitectureBody(t, response)
+			if response.Code < 400 || !result.Stale || result.Changes == nil || !result.Changes.Stale || fixture.state.loadedProject.validatedCurrent != nil {
+				t.Fatalf("conclusive %s retained cached authority: status=%d result=%+v project=%+v", scenario, response.Code, result, fixture.state.loadedProject)
+			}
+			discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", fixture.action()))
+			if discarded.Revision != fixture.base.Revision || !discarded.Stale || discarded.Changes != nil {
+				t.Fatalf("discard republished cached revision after %s: %+v", scenario, discarded)
+			}
+		})
+	}
+}
+
+func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testing.T) {
+	fixture := newNativeRefreshFixture(t, false)
+	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
+		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
+	}))
+	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
+		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
+	})
+	reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": "moved-locator"}))
+	if reopened.ProjectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent == nil {
+		t.Fatalf("stale reopen did not retain changed locator: %+v project=%+v", reopened, fixture.state.loadedProject)
+	}
+	fixture.state.beforeRefreshReobserve = func(string) {
+		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
+	}
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{
+		ProjectSlug: "moved-locator", StoreID: fixture.base.StoreID,
+	}))
+	if refreshed.Revision != fixture.base.Revision || refreshed.ProjectSlug != fixture.base.ProjectSlug || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale {
+		t.Fatalf("return-to-retained result=%+v", refreshed)
+	}
+	if fixture.state.loadedProject.projectSlug != fixture.base.ProjectSlug || fixture.state.loadedProject.validatedCurrent != nil {
+		t.Fatalf("retained authority did not synchronize project: %+v", fixture.state.loadedProject)
+	}
+	discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", fixture.action()))
+	if discarded.Revision != fixture.base.Revision || discarded.ProjectSlug != fixture.base.ProjectSlug || discarded.Stale || discarded.Changes != nil {
+		t.Fatalf("discard after retained return=%+v", discarded)
+	}
+}
+
 func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
 	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{

@@ -617,15 +617,24 @@ func (manager *Manager) Catalog(ctx context.Context) ([]CatalogProject, error) {
 func (manager *Manager) CatalogSlugAvailable(ctx context.Context, storeID, slug string) (bool, error) {
 	manager.catalogMu.Lock()
 	defer manager.catalogMu.Unlock()
-	projects, err := manager.scanCatalog(ctx)
-	if err != nil {
-		return false, err
+	entries, err := os.ReadDir(manager.storeRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
 	}
-	for _, project := range projects {
-		if project.Unavailable || project.StoreID == storeID {
+	if err != nil {
+		return false, fmt.Errorf("read private Architecture catalog: %w", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".git") {
 			continue
 		}
-		if project.Slug == slug {
+		otherStoreID := strings.TrimSuffix(entry.Name(), ".git")
+		parsed, parseErr := uuid.Parse(otherStoreID)
+		if parseErr != nil || parsed.String() != otherStoreID || otherStoreID == storeID || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		snapshot, loadErr := manager.LoadAccepted(ctx, otherStoreID)
+		if loadErr == nil && snapshot.ProjectSlug() == slug {
 			return false, nil
 		}
 	}

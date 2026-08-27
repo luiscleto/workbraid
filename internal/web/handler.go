@@ -44,6 +44,9 @@ type Handler struct {
 	// replacement snapshot has loaded and before accepted is observed again.
 	// Production never sets it.
 	beforeRefreshReobserve func(revision string)
+	// beforeRefreshCatalogCheck is a narrow test seam immediately before the
+	// other-store slug conflict scan. Production never sets it.
+	beforeRefreshCatalogCheck func()
 }
 
 type loadedProject struct {
@@ -762,6 +765,19 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		}
 		return
 	}
+	if h.beforeRefreshCatalogCheck != nil {
+		h.beforeRefreshCatalogCheck()
+	}
+	available, catalogErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
+	if catalogErr != nil {
+		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
+		return
+	}
+	if !available {
+		h.markKnownNonCurrentLocked()
+		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
+		return
+	}
 	if h.beforeRefreshReobserve != nil {
 		h.beforeRefreshReobserve(observed)
 	}
@@ -782,6 +798,9 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		if finalRevision == loaded.Revision() {
 			// Authority returned to the retained, already validated snapshot.
 			// A pending set already known stale stays stale until discarded.
+			h.loadedProject.projectName = loaded.ProjectName()
+			h.loadedProject.projectSlug = loaded.ProjectSlug()
+			h.loadedProject.validatedCurrent = nil
 			h.loadedStale = false
 			writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 			return
@@ -790,17 +809,6 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshChanged)
 		return
 	}
-	available, catalogErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
-	if catalogErr != nil {
-		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-		return
-	}
-	if !available {
-		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
-		return
-	}
-
 	h.loadedSnapshot = &replacement
 	h.loadedProject.projectName = replacement.ProjectName()
 	h.loadedProject.projectSlug = replacement.ProjectSlug()
@@ -821,6 +829,9 @@ func (h *Handler) writeRefreshResultLocked(response http.ResponseWriter, status 
 
 func (h *Handler) markKnownNonCurrentLocked() {
 	h.loadedStale = true
+	if h.loadedProject != nil {
+		h.loadedProject.validatedCurrent = nil
+	}
 	h.markPendingStaleLocked()
 }
 

@@ -778,6 +778,11 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
 		return
 	}
+	retainedSlugAvailable := available
+	var retainedSlugErr error
+	if loaded.ProjectSlug() != replacement.ProjectSlug() {
+		retainedSlugAvailable, retainedSlugErr = h.architecture.CatalogSlugAvailable(request.Context(), loaded.StoreID(), loaded.ProjectSlug())
+	}
 	if h.beforeRefreshReobserve != nil {
 		h.beforeRefreshReobserve(observed)
 	}
@@ -798,6 +803,15 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		if finalRevision == loaded.Revision() {
 			// Authority returned to the retained, already validated snapshot.
 			// A pending set already known stale stays stale until discarded.
+			if retainedSlugErr != nil {
+				h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
+				return
+			}
+			if !retainedSlugAvailable {
+				h.markKnownNonCurrentLocked()
+				h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
+				return
+			}
 			h.loadedProject.projectName = loaded.ProjectName()
 			h.loadedProject.projectSlug = loaded.ProjectSlug()
 			h.loadedProject.validatedCurrent = nil

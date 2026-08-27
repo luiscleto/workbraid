@@ -291,6 +291,41 @@ func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testin
 	}
 }
 
+func TestRefreshReturnToRetainedRevisionRejectsAmbiguousRetainedSlug(t *testing.T) {
+	fixture := newNativeRefreshFixture(t, false)
+	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
+		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
+	}))
+	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
+		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
+	})
+	reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": "moved-locator"}))
+	if reopened.ProjectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent == nil {
+		t.Fatalf("stale reopen did not retain changed locator: %+v project=%+v", reopened, fixture.state.loadedProject)
+	}
+	other, err := fixture.state.architecture.CreateProject(context.Background(), "Refresh fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ProjectSlug() != fixture.base.ProjectSlug {
+		t.Fatalf("other slug=%q want retained slug=%q", other.ProjectSlug(), fixture.base.ProjectSlug)
+	}
+	fixture.state.beforeRefreshReobserve = func(string) {
+		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
+	}
+	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{
+		ProjectSlug: "moved-locator", StoreID: fixture.base.StoreID,
+	})
+	result := decodeArchitectureBody(t, response)
+	if response.Code != http.StatusConflict || result.ActionError != errorCatalogConflict || !result.Stale || result.ProjectSlug != "moved-locator" {
+		t.Fatalf("ambiguous retained locator was published: status=%d result=%+v", response.Code, result)
+	}
+	if fixture.state.loadedProject.projectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent != nil {
+		t.Fatalf("ambiguous retained locator changed loaded project: %+v", fixture.state.loadedProject)
+	}
+}
+
 func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
 	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{

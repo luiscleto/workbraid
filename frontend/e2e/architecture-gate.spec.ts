@@ -147,7 +147,7 @@ async function openProject(page: Page, origin: string, sourceRoot: string) {
 }
 
 async function addComponent(page: Page, title: string, description: string) {
-  await page.getByRole('button', { name: 'Add component' }).click()
+  await page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Add component' }).click()
   await page.getByLabel('Title').fill(title)
   await page.getByLabel('Description').fill(description)
   await page.getByRole('button', { name: 'Keep change' }).click()

@@ -1987,6 +1987,10 @@ button.catalog-project:hover { border-color: var(--ink); }
 .catalog-project span,
 .catalog-empty { color: var(--muted); }
 
+.catalog-empty {
+  padding-inline: clamp(28px, 7vw, 72px);
+}
+
 .catalog-project.unavailable,
 .catalog-project.conflict { border-style: dashed; }
 

@@ -1137,10 +1137,10 @@ export function App() {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
                 })}
-                onAddComponent={(diagramID) => addComponent(diagramID)}
-                onCreateDetail={(componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' })}
-                onEditDiagramTitle={(diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid })}
-                onMoveHome={(componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid })}
+                onAddComponent={result.format_version === 2 ? (diagramID) => addComponent(diagramID) : undefined}
+                onCreateDetail={result.format_version === 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
+                onEditDiagramTitle={result.format_version === 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
+                onMoveHome={result.format_version === 2 ? (componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid }) : undefined}
                 onReview={() => reviewChanges(result)}
                 onUpdate={() => updateArchitecture(result)}
                 onBeginDiscard={() => setDiscardConfirming(true)}

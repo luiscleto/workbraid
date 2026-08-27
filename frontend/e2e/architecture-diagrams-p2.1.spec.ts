@@ -347,6 +347,8 @@ test('P2.2 deliberately sets up diagrams for one readable legacy Architecture', 
     await page.getByRole('button', { name: 'Set up diagrams' }).click()
     await expect(page.getByRole('heading', { name: 'Changes in progress' })).toBeVisible()
     await expect(page.getByText('Setting up diagrams will make this architecture editable.')).toBeVisible()
+    await expect(page.getByRole('button', { name: /Edit title|Add component|Create detail diagram|Change where it lives/ })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Review changes' })).toBeVisible()
     await page.getByRole('button', { name: 'Review changes' }).click()
     const review = page.locator('.review-workspace-pane')
     await expect(review.getByText('Diagram changes')).toBeVisible()
@@ -361,6 +363,10 @@ test('P2.2 deliberately sets up diagrams for one readable legacy Architecture', 
     expect(accepted).not.toBe(legacy)
     await expect(page.getByRole('button', { name: 'Add component' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Edit component' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Edit title' })).toBeVisible()
+    const acceptedDiagramActions = page.getByRole('group', { name: 'Diagram composition' })
+    await expect(acceptedDiagramActions.getByRole('button', { name: 'Create detail diagram' })).toBeVisible()
+    await expect(acceptedDiagramActions.getByRole('button', { name: 'Change where it lives' })).toBeVisible()
 
     await stopWorkBraid(application)
     application = undefined

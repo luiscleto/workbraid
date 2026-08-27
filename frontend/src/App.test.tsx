@@ -607,12 +607,23 @@ describe('App', () => {
   })
 
   it('offers concise Diagram setup instead of ordinary authoring for readable v1', async () => {
+    const root = '11111111-1111-4111-8111-111111111111'
     const v1 = {
       source_root: '/tmp/example', project_name: 'example', state: 'ready', revision: '1'.repeat(40), format_version: 1,
       component_count: 1, component_titles: ['Gateway'],
       components: [{ id: 'gateway', title: 'Gateway', filename: 'gateway.md', description: 'Accepted.\n', relationships: [] }],
     }
-    const setup = { ...v1, changes: { components: [], valid: true, diagram_setup: true } }
+    const setup = {
+      ...v1,
+      changes: {
+        components: [], valid: true, diagram_setup: true,
+        candidate: {
+          revision: '2'.repeat(40), format_version: 2, component_count: 1, component_titles: ['Gateway'],
+          components: v1.components, root_diagram_id: root,
+          diagrams: [{ id: root, title: 'example', filename: 'root.yaml', depth: 0, breadcrumbs: [], appearances: [{ component_id: 'gateway', role: 'home' }], boundaries: [], relationships: [] }],
+        },
+      },
+    }
     const fetchMock = mockResponses([v1, setup])
     render(<App />)
     await submitPath('/tmp/example')
@@ -621,6 +632,9 @@ describe('App', () => {
     await user.click(await screen.findByRole('button', { name: 'Set up diagrams' }))
     expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
     expect(screen.getByText('Setting up diagrams will make this architecture editable.')).toBeInTheDocument()
+    const setupMutations = screen.queryAllByRole('button', { name: /edit title|add component|create detail diagram|change where it lives/i })
+    expect(setupMutations).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Review changes' })).toBeInTheDocument()
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/setup')
     expect(screen.queryByText(/format|yaml|parser|schema/i)).not.toBeInTheDocument()
   })

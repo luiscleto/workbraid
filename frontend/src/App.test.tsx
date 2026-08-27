@@ -358,6 +358,7 @@ describe('App', () => {
     const worker = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const detail = '22222222-2222-4222-8222-222222222222'
     const nested = '44444444-4444-4444-8444-444444444444'
+    const nestedComponent = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     const candidateDiagrams = accepted.diagrams.map((diagram) => diagram.id === detail
       ? { ...diagram, appearances: diagram.appearances.map((appearance) => appearance.component_id === worker ? { ...appearance, detail_diagram_id: nested, detail_diagram_title: 'Worker internals' } : appearance) }
       : diagram).concat([{ id: nested, title: 'Worker internals', depth: 2, context: 'Inside Worker', parent_diagram_id: detail, parent_anchor_component_id: worker, breadcrumbs: [], appearances: [], boundaries: [], relationships: [] }])
@@ -369,7 +370,24 @@ describe('App', () => {
         candidate: { revision: '3'.repeat(40), format_version: 2, component_count: accepted.component_count, component_titles: accepted.component_titles, components: accepted.components, root_diagram_id: accepted.root_diagram_id, diagrams: candidateDiagrams },
       },
     }
-    const fetchMock = mockResponses([accepted, kept])
+    const nestedComponentValue = { id: nestedComponent, title: 'Nested worker', filename: 'nested-worker.md', description: 'Nested worker documentation.', relationships: [] }
+    const keptWithComponent = {
+      ...kept,
+      changes: {
+        ...kept.changes,
+        components: [{ ...nestedComponentValue, new: true }],
+        candidate: {
+          ...kept.changes.candidate,
+          component_count: accepted.component_count + 1,
+          component_titles: [...accepted.component_titles, nestedComponentValue.title],
+          components: [...accepted.components, nestedComponentValue],
+          diagrams: candidateDiagrams.map((diagram) => diagram.id === nested
+            ? { ...diagram, appearances: [{ component_id: nestedComponent, role: 'home' }] }
+            : diagram),
+        },
+      },
+    }
+    const fetchMock = mockResponses([accepted, kept, keptWithComponent])
     render(<App />)
     await submitPath('/tmp/example')
     const user = userEvent.setup()
@@ -385,8 +403,53 @@ describe('App', () => {
 
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/detail')
     expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: 'Diagram changes in progress' })).getByText('Worker internals')).toBeInTheDocument()
-    expect(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).queryByRole('button', { name: /Worker internals/ })).not.toBeInTheDocument()
+    const pendingComposition = screen.getByRole('region', { name: 'Diagram changes in progress' })
+    expect(within(pendingComposition).getAllByRole('button', { name: 'Add component' })).toHaveLength(candidateDiagrams.length)
+    expect(within(pendingComposition).getAllByRole('button', { name: 'Edit title' }).every((action) => action.classList.contains('pending-diagram-action'))).toBe(true)
+    const nestedDiagramRow = within(pendingComposition).getByText('Worker internals', { exact: true }).closest('.pending-diagram-row') as HTMLElement
+    const pendingTitleAction = within(nestedDiagramRow).getByRole('button', { name: 'Edit title' })
+    const addToNested = within(nestedDiagramRow).getByRole('button', { name: 'Add component' })
+    expect(pendingTitleAction).toHaveClass('text-action', 'pending-diagram-action')
+    expect(addToNested).toHaveClass('text-action', 'pending-diagram-action')
+    await user.click(addToNested)
+    expect(screen.getByRole('heading', { name: 'Add component' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Title'), 'Unsaved nested component')
+    await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'System' }))
+    expect(screen.getByRole('heading', { name: 'Leave without keeping?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByLabelText('Title')).toHaveValue('Unsaved nested component')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+    const restoredNestedRow = within(screen.getByRole('region', { name: 'Diagram changes in progress' })).getByText('Worker internals', { exact: true }).closest('.pending-diagram-row') as HTMLElement
+    await user.click(within(restoredNestedRow).getByRole('button', { name: 'Add component' }))
+    await user.type(screen.getByLabelText('Title'), nestedComponentValue.title)
+    await user.type(screen.getByLabelText('Description'), nestedComponentValue.description)
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestPath(fetchMock, 2)).toBe('/api/architecture/components/add')
+    expect(requestBody(fetchMock, 2)).toEqual({
+      source_root: '/tmp/example', expected_revision: '2'.repeat(40), diagram_id: nested,
+      title: nestedComponentValue.title, description: nestedComponentValue.description, relationships: [],
+    })
+    expect(within(screen.getByRole('region', { name: 'Diagram changes in progress' })).getByText(nestedComponentValue.title)).toBeInTheDocument()
+    const acceptedNavigator = screen.getByRole('navigation', { name: 'Diagrams and components' })
+    expect(within(acceptedNavigator).queryByRole('button', { name: /Worker internals|Nested worker/ })).not.toBeInTheDocument()
+    expect(graphHarness.calls.at(-1)?.elements?.some((element) => (element as { data?: { id?: string } }).data?.id === nestedComponent)).toBe(false)
+  })
+
+  it.each([
+    ['stale', { stale: true }],
+    ['legacy read-only', { legacy_read_only: true }],
+  ])('hides per-Diagram mutations for %s pending work', async (_case, state) => {
+    const accepted = acceptedV2()
+    const readOnly = acceptedV2({ changes: { components: [], valid: true, candidate: accepted, ...state } })
+    mockResponses([readOnly])
+    render(<App />)
+    await submitPath('/tmp/example')
+
+    const composition = await screen.findByRole('region', { name: 'Diagram changes in progress' })
+    expect(within(composition).queryByRole('button', { name: 'Add component' })).not.toBeInTheDocument()
+    expect(within(composition).queryByRole('button', { name: 'Edit title' })).not.toBeInTheDocument()
   })
 
   it('guards a dirty home destination and keeps the move through the Diagram endpoint', async () => {

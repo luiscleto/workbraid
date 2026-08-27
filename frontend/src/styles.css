@@ -1812,6 +1812,24 @@ dd {
   font-style: italic;
 }
 
+.pending-diagram-row .pending-diagram-action {
+  min-height: 0;
+  margin: 4px 12px 0 0;
+  border-bottom: 1px solid var(--accent);
+}
+
+.pending-diagram-row .pending-diagram-action:hover:not(:disabled) {
+  border-bottom-color: #24482f;
+  color: #24482f;
+}
+
+.pending-diagram-row .pending-diagram-action:focus {
+  border-bottom-color: #24482f;
+  color: #24482f;
+  outline: 3px solid rgb(49 91 61 / 25%);
+  outline-offset: 3px;
+}
+
 @media (max-width: 980px) {
   .architecture-workbench {
     grid-template-columns: 170px minmax(360px, 1.6fr) minmax(280px, 1fr);

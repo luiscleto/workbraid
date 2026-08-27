@@ -150,6 +150,7 @@ type ReviewFocus =
 type ComponentEditor = {
   kind: 'add' | 'edit'
   id?: string
+  homeDiagramID?: string
   title: string
   description: string
   descriptionPrefix: string
@@ -497,6 +498,14 @@ export function App() {
     setWorkspaceTask('documentation')
   }
 
+  function addComponent(homeDiagramID?: string) {
+    setAuthoringError('')
+    setEditor({
+      kind: 'add', homeDiagramID, title: '', description: '', descriptionPrefix: '', titleChanged: false, descriptionChanged: false,
+      initialTitle: '', initialDescription: '', relationships: [], initialRelationships: [],
+    })
+  }
+
   function editPending(component: PendingComponent, relationshipIssue?: ComponentEditor['relationshipIssue'], readOnly = false) {
     const relationships = component.relationships ?? []
     const description = editorDescription(component.description)
@@ -528,7 +537,7 @@ export function App() {
         ...(editor.kind === 'add' || relationshipsChanged ? { relationships } : {}),
         ...(editor.kind === 'edit' ? { title_changed: editor.titleChanged, description_changed: editor.descriptionChanged } : {}),
         ...(editor.kind === 'edit' && relationshipsChanged ? { relationships_changed: true } : {}),
-        ...(editor.kind === 'add' && selectedDiagramID ? { diagram_id: selectedDiagramID } : {}),
+        ...(editor.kind === 'add' && (editor.homeDiagramID ?? selectedDiagramID) ? { diagram_id: editor.homeDiagramID ?? selectedDiagramID } : {}),
       })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
@@ -702,11 +711,7 @@ export function App() {
       return
     }
     if (intent.kind === 'add') {
-      setEditor({
-        kind: 'add', title: '', description: '', descriptionPrefix: '', titleChanged: false, descriptionChanged: false,
-        initialTitle: '', initialDescription: '',
-        relationships: [], initialRelationships: [],
-      })
+      addComponent(selectedDiagramID)
       return
     }
     if (intent.kind === 'edit-diagram-title') {
@@ -1132,6 +1137,7 @@ export function App() {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
                 })}
+                onAddComponent={(diagramID) => addComponent(diagramID)}
                 onCreateDetail={(componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' })}
                 onEditDiagramTitle={(diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid })}
                 onMoveHome={(componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid })}
@@ -1460,6 +1466,7 @@ function ChangesTask({
   onFocusDiagram,
   onEdit,
   onFixRelationship,
+  onAddComponent,
   onCreateDetail,
   onEditDiagramTitle,
   onMoveHome,
@@ -1483,6 +1490,7 @@ function ChangesTask({
   onFocusDiagram?: (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => void
   onEdit: (component: PendingComponent) => void
   onFixRelationship: (component: PendingComponent) => void
+  onAddComponent?: (diagramID: string) => void
   onCreateDetail?: (componentID: string) => void
   onEditDiagramTitle?: (diagramID: string, title: string, invalid?: boolean) => void
   onMoveHome?: (componentID: string, currentDiagramID: string, invalid?: boolean) => void
@@ -1584,7 +1592,8 @@ function ChangesTask({
           {changes.candidate.diagrams.map((diagram) => (
             <div className="pending-diagram-row" key={diagram.id}>
               <div><strong>{diagram.title}</strong>{changes.detail_diagrams?.some((addition) => addition.id === diagram.id) && <small> New diagram</small>}</div>
-              {!readOnly && onEditDiagramTitle && <button className="text-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title)}>Edit title</button>}
+              {!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title)}>Edit title</button>}
+              {!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}
               <ul>
                 {diagram.appearances.filter((appearance) => appearance.role === 'home').map((appearance) => {
                   const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
@@ -1604,7 +1613,7 @@ function ChangesTask({
           <h3>Diagram composition</h3>
           {[...(changes.detail_diagrams ?? []).map((diagram) => ({ id: diagram.id, title: diagram.title })), ...(changes.diagram_titles ?? []).map((diagram) => ({ id: diagram.diagram_id, title: diagram.title }))].map((diagram) => {
             const ownsValidation = Boolean(changes.review_blocker && changes.validation_diagram === diagram.id)
-            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}><strong>{diagram.title.trim() || 'Untitled diagram'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onEditDiagramTitle && <button className="text-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}</div>
+            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}><strong>{diagram.title.trim() || 'Untitled diagram'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}{!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}</div>
           })}
           {changes.home_moves?.map((move) => {
             const component = changes.components.find((candidate) => candidate.id === move.component_id) ?? changes.candidate?.components.find((candidate) => candidate.id === move.component_id) ?? result.components?.find((candidate) => candidate.id === move.component_id)

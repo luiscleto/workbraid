@@ -156,6 +156,31 @@ func TestRefreshSlugConflictDoesNotPublishAmbiguousLocator(t *testing.T) {
 	}
 }
 
+func TestRefreshCandidateSlugConflictDoesNotOverrideReturnToRetainedRevision(t *testing.T) {
+	fixture := newNativeRefreshFixture(t, false)
+	other, err := fixture.state.architecture.CreateProject(context.Background(), "Moved locator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ProjectSlug() != "moved-locator" {
+		t.Fatalf("other slug=%q want moved-locator", other.ProjectSlug())
+	}
+	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
+		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
+	})
+	fixture.state.beforeRefreshReobserve = func(string) {
+		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
+	}
+	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action())
+	result := decodeArchitectureBody(t, response)
+	if response.Code != http.StatusOK || result.ActionError != "" || result.Stale || result.ProjectSlug != fixture.base.ProjectSlug || result.Revision != fixture.base.Revision {
+		t.Fatalf("candidate locator conflict overrode retained authority: status=%d result=%+v", response.Code, result)
+	}
+	if fixture.state.loadedProject.projectSlug != fixture.base.ProjectSlug || fixture.state.loadedSnapshot.Revision() != fixture.base.Revision {
+		t.Fatalf("retained authority was not kept current: project=%+v snapshot=%s", fixture.state.loadedProject, fixture.state.loadedSnapshot.Revision())
+	}
+}
+
 func TestRefreshConflictScanPrecedesMandatoryFinalAcceptedObservation(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
 	observed := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {

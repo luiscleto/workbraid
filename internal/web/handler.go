@@ -768,18 +768,8 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 	if h.beforeRefreshCatalogCheck != nil {
 		h.beforeRefreshCatalogCheck()
 	}
-	available, catalogErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
-	if catalogErr != nil {
-		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-		return
-	}
-	if !available {
-		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
-		return
-	}
-	retainedSlugAvailable := available
-	var retainedSlugErr error
+	candidateSlugAvailable, candidateSlugErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
+	retainedSlugAvailable, retainedSlugErr := candidateSlugAvailable, candidateSlugErr
 	if loaded.ProjectSlug() != replacement.ProjectSlug() {
 		retainedSlugAvailable, retainedSlugErr = h.architecture.CatalogSlugAvailable(request.Context(), loaded.StoreID(), loaded.ProjectSlug())
 	}
@@ -821,6 +811,15 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		}
 		h.markKnownNonCurrentLocked()
 		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshChanged)
+		return
+	}
+	if candidateSlugErr != nil {
+		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
+		return
+	}
+	if !candidateSlugAvailable {
+		h.markKnownNonCurrentLocked()
+		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
 		return
 	}
 	h.loadedSnapshot = &replacement

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -10,9 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
-
-	"workbraid/internal/associations"
 	"workbraid/internal/web"
 )
 
@@ -30,19 +26,7 @@ func main() {
 		log.Fatalf("create application-data directory: %v", err)
 	}
 
-	databasePath := filepath.Join(*dataDirectory, "workbraid.db")
-	db, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		log.Fatalf("open operational database: %v", err)
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-
-	if err := associations.Initialize(db); err != nil {
-		log.Fatalf("initialize operational database: %v", err)
-	}
-
-	handler := web.NewHandler(db, expectedOrigin, *uiDirectory, *dataDirectory)
+	handler := web.NewHandler(expectedOrigin, *uiDirectory, *dataDirectory)
 	log.Printf("WorkBraid is available at %s", expectedOrigin)
 	if err := http.ListenAndServe(*listenAddress, handler); err != nil {
 		log.Fatal(err)

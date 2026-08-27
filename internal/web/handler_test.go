@@ -3,1007 +3,675 @@ package web
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
-	"go.yaml.in/yaml/v4"
-	_ "modernc.org/sqlite"
-
-	"workbraid/internal/associations"
+	"workbraid/internal/architecture"
 )
 
 const testOrigin = "http://127.0.0.1:8080"
 
-func TestOpenProjectUsesRealSQLiteAndLeavesSourceRepositoryUntouched(t *testing.T) {
-	db := openWebTestDatabase(t)
-	repository := createSourceRepository(t)
-	before := snapshotRepository(t, repository)
-	handler := newTestHandler(t, db)
-
-	response := postOpenProject(t, handler, testOrigin, repository)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+func TestSlugNativeCreateCatalogOpenAndReload(t *testing.T) {
+	data := t.TempDir()
+	_, handler := newHandler(testOrigin, testUI(t), data)
+	first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "  Example Project  "}))
+	if first.ProjectName != "Example Project" || first.ProjectSlug != "example-project" || first.StoreID == "" || first.FormatVersion != 2 || first.RootDiagramID == "" {
+		t.Fatalf("first = %+v", first)
 	}
-	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("permissive CORS header = %q", got)
+	second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Example Project"}))
+	if second.ProjectSlug != "example-project-2" || second.StoreID == first.StoreID {
+		t.Fatalf("second = %+v", second)
 	}
-	var body struct {
-		SourceRoot  string `json:"source_root"`
-		ProjectName string `json:"project_name"`
-		Known       bool   `json:"known"`
-		StoreID     string `json:"store_id"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.SourceRoot != filepath.Clean(repository) || body.ProjectName != filepath.Base(repository) || body.Known || body.StoreID != "" {
-		t.Fatalf("unexpected response: %+v", body)
+	if _, err := os.Stat(filepath.Join(data, "workbraid.db")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete database exists: %v", err)
 	}
 
-	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM source_architecture_associations`).Scan(&count); err != nil {
-		t.Fatal(err)
+	catalog := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	handler.ServeHTTP(catalog, request)
+	if catalog.Code != http.StatusOK || !strings.Contains(catalog.Body.String(), `"slug":"example-project"`) || !strings.Contains(catalog.Body.String(), `"slug":"example-project-2"`) {
+		t.Fatalf("catalog status=%d body=%s", catalog.Code, catalog.Body.String())
 	}
-	if count != 0 {
-		t.Fatalf("open inserted %d associations, want 0", count)
+	opened := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
+	if opened.StoreID != first.StoreID || opened.Revision != first.Revision {
+		t.Fatalf("opened = %+v, first = %+v", opened, first)
 	}
-	after := snapshotRepository(t, repository)
-	if before != after {
-		t.Fatalf("source repository changed\nbefore:\n%s\nafter:\n%s", before, after)
+	_, fresh := newHandler(testOrigin, testUI(t), data)
+	reloaded := decodeArchitectureResponse(t, postJSONRequest(t, fresh, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
+	if reloaded.StoreID != first.StoreID || reloaded.Revision != first.Revision {
+		t.Fatalf("reloaded = %+v", reloaded)
+	}
+
+	unknown := postJSONRequest(t, fresh, "/api/projects/open", map[string]any{"project_slug": "missing"})
+	if unknown.Code != http.StatusNotFound || !strings.Contains(unknown.Body.String(), errorProjectNotFound) {
+		t.Fatalf("unknown status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+	if entries, err := os.ReadDir(filepath.Join(data, "architecture")); err != nil || len(entries) != 2 {
+		t.Fatalf("unknown open wrote stores: entries=%d err=%v", len(entries), err)
 	}
 }
 
-func TestInitializeProjectCreatesOneAcceptedBootstrapAndLeavesSourceUntouched(t *testing.T) {
-	db := openWebTestDatabase(t)
-	repository := createSourceRepository(t)
-	before := snapshotRepository(t, repository)
-	dataDirectory := t.TempDir()
-	handler := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
-
-	opened := postOpenProject(t, handler, testOrigin, repository)
-	if opened.Code != http.StatusOK || !strings.Contains(opened.Body.String(), `"known":false`) {
-		t.Fatalf("open status=%d body=%s", opened.Code, opened.Body.String())
-	}
-	assertAssociationCount(t, db, 0)
-	if _, err := os.Stat(filepath.Join(dataDirectory, "architecture")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("opening created private Architecture state: %v", err)
-	}
-
-	initialized := postInitializeProject(t, handler, testOrigin, repository)
-	if initialized.Code != http.StatusOK {
-		t.Fatalf("initialize status=%d body=%s", initialized.Code, initialized.Body.String())
-	}
-	if got := initialized.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("permissive CORS header = %q", got)
-	}
-	var result struct {
-		SourceRoot     string `json:"source_root"`
-		ProjectName    string `json:"project_name"`
-		State          string `json:"state"`
-		Revision       string `json:"revision"`
-		ComponentCount int    `json:"component_count"`
-		FormatVersion  int    `json:"format_version"`
-		RootDiagramID  string `json:"root_diagram_id"`
-	}
-	if err := json.Unmarshal(initialized.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.SourceRoot != filepath.Clean(repository) || result.ProjectName != filepath.Base(repository) || result.State != "empty" || result.Revision == "" || result.ComponentCount != 0 || result.FormatVersion != 2 || result.RootDiagramID == "" {
-		t.Fatalf("unexpected initialization result: %+v", result)
-	}
-
-	storeID := associatedStoreID(t, db, filepath.Clean(repository))
-	var tables string
-	if err := db.QueryRow(`SELECT group_concat(name, ',') FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); err != nil {
-		t.Fatal(err)
-	}
-	if tables != "source_architecture_associations" {
-		t.Fatalf("operational database tables = %q", tables)
-	}
-	if _, err := uuid.Parse(storeID); err != nil {
-		t.Fatalf("associated ID is not UUID: %q", storeID)
-	}
-	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "rev-parse", "--is-bare-repository"); got != "true" {
-		t.Fatalf("bare = %q", got)
-	}
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted"); got != result.Revision {
-		t.Fatalf("accepted=%q revision=%q", got, result.Revision)
-	}
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "rev-list", "--parents", "-n", "1", result.Revision); got != result.Revision {
-		t.Fatalf("bootstrap has a parent: %q", got)
-	}
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", result.Revision); !strings.Contains(got, "\tarchitecture.yaml") || !strings.Contains(got, "\tdiagrams") {
-		t.Fatalf("unexpected bootstrap tree: %q", got)
-	}
-	manifestBytes := []byte(runGit(t, dataDirectory, "--git-dir", storePath, "show", result.Revision+":architecture.yaml"))
-	var manifest struct {
-		Format      string `yaml:"format"`
-		Version     int    `yaml:"version"`
-		StoreID     string `yaml:"store_id"`
-		RootDiagram string `yaml:"root_diagram"`
-		Project     struct {
-			Name       string `yaml:"name"`
-			SourceHint string `yaml:"source_hint"`
-		} `yaml:"project"`
-	}
-	if err := yaml.Unmarshal(manifestBytes, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Format != "workbraid-architecture" || manifest.Version != 2 || manifest.StoreID != storeID || manifest.Project.Name != filepath.Base(repository) || manifest.Project.SourceHint != filepath.Clean(repository) || manifest.RootDiagram != result.RootDiagramID {
-		t.Fatalf("unexpected manifest: %+v", manifest)
-	}
-	if got := runGit(t, dataDirectory, "--git-dir", storePath, "ls-tree", result.Revision, "diagrams/root.yaml"); !strings.HasPrefix(got, "100644 blob ") {
-		t.Fatalf("unexpected root Diagram entry: %q", got)
-	}
-	if after := snapshotRepository(t, repository); after != before {
-		t.Fatalf("source repository changed\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-func TestNewApplicationInstanceReopensExactAcceptedEmptyArchitecture(t *testing.T) {
-	repository := createSourceRepository(t)
-	sourceBefore := snapshotRepository(t, repository)
-	dataDirectory := t.TempDir()
-	databasePath := filepath.Join(dataDirectory, "workbraid.db")
-	dbA := openWebDatabaseAt(t, databasePath)
-	handlerA := NewHandler(dbA, testOrigin, t.TempDir(), dataDirectory)
-
-	initialized := postInitializeProject(t, handlerA, testOrigin, repository)
-	if initialized.Code != http.StatusOK {
-		t.Fatalf("initialize status=%d body=%s", initialized.Code, initialized.Body.String())
-	}
-	var original struct {
-		Revision       string `json:"revision"`
-		State          string `json:"state"`
-		ComponentCount int    `json:"component_count"`
-	}
-	if err := json.Unmarshal(initialized.Body.Bytes(), &original); err != nil {
-		t.Fatal(err)
-	}
-	if original.Revision == "" || original.State != "empty" || original.ComponentCount != 0 {
-		t.Fatalf("unexpected initialized Architecture: %+v", original)
-	}
-	storeID := associatedStoreID(t, dbA, filepath.Clean(repository))
-	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	gitBefore := snapshotPrivateArchitecture(t, dataDirectory)
-	associationsBefore := snapshotAssociations(t, dbA)
-	if err := dbA.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// A new database connection, manager, handler, and in-memory snapshot prove
-	// this is application reconstruction rather than reuse of handler state.
-	dbB := openWebDatabaseAt(t, databasePath)
-	handlerB := NewHandler(dbB, testOrigin, t.TempDir(), dataDirectory)
-	reopened := postOpenProject(t, handlerB, testOrigin, repository)
-	if reopened.Code != http.StatusOK {
-		t.Fatalf("reopen status=%d body=%s", reopened.Code, reopened.Body.String())
-	}
-	var loaded struct {
-		Revision       string `json:"revision"`
-		State          string `json:"state"`
-		ComponentCount int    `json:"component_count"`
-	}
-	if err := json.Unmarshal(reopened.Body.Bytes(), &loaded); err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Revision != original.Revision || loaded.State != "empty" || loaded.ComponentCount != 0 {
-		t.Fatalf("reopened Architecture = %+v, original = %+v", loaded, original)
-	}
-	if accepted := runGit(t, dataDirectory, "--git-dir", storePath, "show-ref", "--verify", "--hash", "refs/heads/accepted"); accepted != loaded.Revision {
-		t.Fatalf("accepted=%q reopened=%q", accepted, loaded.Revision)
-	}
-	if after := snapshotPrivateArchitecture(t, dataDirectory); after != gitBefore {
-		t.Fatalf("reopen changed private Architecture\nbefore:\n%s\nafter:\n%s", gitBefore, after)
-	}
-	if after := snapshotAssociations(t, dbB); after != associationsBefore {
-		t.Fatalf("reopen changed associations\nbefore:\n%s\nafter:\n%s", associationsBefore, after)
-	}
-	if sourceAfter := snapshotRepository(t, repository); sourceAfter != sourceBefore {
-		t.Fatalf("source repository changed\nbefore:\n%s\nafter:\n%s", sourceBefore, sourceAfter)
-	}
-}
-
-func TestNewApplicationInstanceReopensExactAcceptedComponents(t *testing.T) {
-	repository := createSourceRepository(t)
-	sourceBefore := snapshotRepository(t, repository)
-	dataDirectory := t.TempDir()
-	databasePath := filepath.Join(dataDirectory, "workbraid.db")
-	dbA := openWebDatabaseAt(t, databasePath)
-	handlerA := NewHandler(dbA, testOrigin, t.TempDir(), dataDirectory)
-
-	initialized := postInitializeProject(t, handlerA, testOrigin, repository)
-	if initialized.Code != http.StatusOK {
-		t.Fatalf("initialize status=%d body=%s", initialized.Code, initialized.Body.String())
-	}
-	var initial struct {
-		Revision string `json:"revision"`
-	}
-	if err := json.Unmarshal(initialized.Body.Bytes(), &initial); err != nil {
-		t.Fatal(err)
-	}
-	storeID := associatedStoreID(t, dbA, filepath.Clean(repository))
-	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	manifest := []byte(runGit(t, dataDirectory, "--git-dir", storePath, "show", initial.Revision+":architecture.yaml") + "\n")
-	apiID := uuid.NewString()
-	workerID := uuid.NewString()
-	accepted := advanceAcceptedToComponents(t, storePath, initial.Revision, manifest, []testComponent{
-		{
-			path:   "arbitrary api.md",
-			mode:   "100644",
-			source: []byte("---\nid: \"" + apiID + "\"\nrelationships:\n  - target: \"" + workerID + "\"\n    label: calls\n---\n# API\n\nAPI body\n"),
-		},
-		{
-			path:   "worker.md",
-			mode:   "100755",
-			source: []byte("---\nid: \"" + workerID + "\"\nrelationships:\n  - target: \"" + apiID + "\"\n    label: responds to\n---\nWorker\n======\nWorker body\n"),
-		},
-	})
-
-	privateBefore := snapshotPrivateArchitecture(t, dataDirectory)
-	associationsBefore := snapshotAssociations(t, dbA)
-	openedA := postOpenProject(t, handlerA, testOrigin, repository)
-	assertComponentInventoryResponse(t, openedA, accepted, []string{"API", "Worker"})
-	openedBody := decodeArchitectureResponse(t, openedA)
-	if openedBody.Components[0].Filename != "arbitrary api.md" || len(openedBody.Components[0].Relationships) != 1 || openedBody.Components[0].Relationships[0].TargetID != workerID {
-		t.Fatalf("accepted projection omitted filename/relationships: %+v", openedBody.Components[0])
-	}
-	if after := snapshotPrivateArchitecture(t, dataDirectory); after != privateBefore {
-		t.Fatalf("component open changed private Architecture\nbefore:\n%s\nafter:\n%s", privateBefore, after)
-	}
-	if after := snapshotAssociations(t, dbA); after != associationsBefore {
-		t.Fatalf("component open changed associations\nbefore:\n%s\nafter:\n%s", associationsBefore, after)
-	}
-	if err := dbA.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	dbB := openWebDatabaseAt(t, databasePath)
-	handlerB := NewHandler(dbB, testOrigin, t.TempDir(), dataDirectory)
-	reopened := postOpenProject(t, handlerB, testOrigin, repository)
-	assertComponentInventoryResponse(t, reopened, accepted, []string{"API", "Worker"})
-	if after := snapshotPrivateArchitecture(t, dataDirectory); after != privateBefore {
-		t.Fatalf("component reopen changed private Architecture\nbefore:\n%s\nafter:\n%s", privateBefore, after)
-	}
-	if after := snapshotAssociations(t, dbB); after != associationsBefore {
-		t.Fatalf("component reopen changed associations\nbefore:\n%s\nafter:\n%s", associationsBefore, after)
-	}
-	if sourceAfter := snapshotRepository(t, repository); sourceAfter != sourceBefore {
-		t.Fatalf("component reopen changed source repository\nbefore:\n%s\nafter:\n%s", sourceBefore, sourceAfter)
-	}
-}
-
-func assertComponentInventoryResponse(t *testing.T, response *httptest.ResponseRecorder, revision string, titles []string) {
-	t.Helper()
-	if response.Code != http.StatusOK {
-		t.Fatalf("open status=%d body=%s", response.Code, response.Body.String())
-	}
-	var loaded struct {
-		State           string   `json:"state"`
-		Revision        string   `json:"revision"`
-		ComponentCount  int      `json:"component_count"`
-		ComponentTitles []string `json:"component_titles"`
-		Components      []struct {
-			ID          string `json:"id"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-		} `json:"components"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
-		t.Fatal(err)
-	}
-	if loaded.State != "ready" || loaded.Revision != revision || loaded.ComponentCount != len(titles) || strings.Join(loaded.ComponentTitles, "|") != strings.Join(titles, "|") {
-		t.Fatalf("component inventory response = %+v", loaded)
-	}
-	if len(loaded.Components) != len(titles) {
-		t.Fatalf("structured authoring components = %+v", loaded.Components)
-	}
-	for _, component := range loaded.Components {
-		if _, err := uuid.Parse(component.ID); err != nil || component.Title == "" {
-			t.Fatalf("structured authoring component = %+v", component)
-		}
-	}
-}
-
-func TestOpenProjectBoundedAcceptedStateFailuresAreReadOnly(t *testing.T) {
-	tests := []struct {
-		name       string
-		wantStatus int
-		wantCode   string
-		arrange    func(t *testing.T, dataDirectory, storePath, storeID, revision string)
-	}{
-		{
-			name:       "associated private location missing",
-			wantStatus: http.StatusConflict,
-			wantCode:   errorArchitectureUnavailable,
-			arrange: func(t *testing.T, _, storePath, _, _ string) {
-				if err := os.Rename(storePath, storePath+".fixture-away"); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name:       "missing accepted ignores plausible fallback",
-			wantStatus: http.StatusConflict,
-			wantCode:   errorArchitectureUnavailable,
-			arrange: func(t *testing.T, dataDirectory, storePath, _, revision string) {
-				runGit(t, dataDirectory, "--git-dir", storePath, "update-ref", "refs/heads/plausible", revision)
-				runGit(t, dataDirectory, "--git-dir", storePath, "symbolic-ref", "HEAD", "refs/heads/plausible")
-				runGit(t, dataDirectory, "--git-dir", storePath, "update-ref", "-d", "refs/heads/accepted", revision)
-			},
-		},
-		{
-			name:       "unsupported manifest version",
-			wantStatus: http.StatusUnprocessableEntity,
-			wantCode:   errorArchitectureUnsupported,
-			arrange: func(t *testing.T, dataDirectory, storePath, _, revision string) {
-				manifest := runGit(t, dataDirectory, "--git-dir", storePath, "show", revision+":architecture.yaml")
-				manifest = strings.Replace(manifest, "version: 2", "version: 3", 1) + "\n"
-				advanceAcceptedToManifest(t, storePath, revision, []byte(manifest), nil)
-			},
-		},
-		{
-			name:       "manifest identity mismatch",
-			wantStatus: http.StatusConflict,
-			wantCode:   errorArchitectureInvalid,
-			arrange: func(t *testing.T, _ string, storePath, _ string, revision string) {
-				manifest := []byte("format: workbraid-architecture\nversion: 1\nstore_id: \"" + uuid.NewString() + "\"\nproject:\n  name: Project\n  source_hint: /tmp/project\n")
-				advanceAcceptedToManifest(t, storePath, revision, manifest, nil)
-			},
-		},
-		{
-			name:       "component with unresolved relationship is invalid",
-			wantStatus: http.StatusConflict,
-			wantCode:   errorArchitectureInvalid,
-			arrange: func(t *testing.T, dataDirectory, storePath, _ string, revision string) {
-				manifest := []byte(runGit(t, dataDirectory, "--git-dir", storePath, "show", revision+":architecture.yaml") + "\n")
-				component := []byte("---\nid: \"" + uuid.NewString() + "\"\nrelationships:\n  - target: \"" + uuid.NewString() + "\"\n    label: calls\n---\n# Component\n")
-				advanceAcceptedToManifest(t, storePath, revision, manifest, component)
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			repository := createSourceRepository(t)
-			sourceBefore := snapshotRepository(t, repository)
-			dataDirectory := t.TempDir()
-			databasePath := filepath.Join(dataDirectory, "workbraid.db")
-			dbA := openWebDatabaseAt(t, databasePath)
-			handlerA := NewHandler(dbA, testOrigin, t.TempDir(), dataDirectory)
-			initialized := postInitializeProject(t, handlerA, testOrigin, repository)
-			if initialized.Code != http.StatusOK {
-				t.Fatalf("initialize status=%d body=%s", initialized.Code, initialized.Body.String())
-			}
-			var initial struct {
-				Revision string `json:"revision"`
-			}
-			if err := json.Unmarshal(initialized.Body.Bytes(), &initial); err != nil {
-				t.Fatal(err)
-			}
-			storeID := associatedStoreID(t, dbA, filepath.Clean(repository))
-			storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-			test.arrange(t, dataDirectory, storePath, storeID, initial.Revision)
-			privateBefore := snapshotPrivateArchitecture(t, dataDirectory)
-			associationsBefore := snapshotAssociations(t, dbA)
-			if err := dbA.Close(); err != nil {
-				t.Fatal(err)
-			}
-
-			dbB := openWebDatabaseAt(t, databasePath)
-			handlerB := NewHandler(dbB, testOrigin, t.TempDir(), dataDirectory)
-			response := postOpenProject(t, handlerB, testOrigin, repository)
-			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
-				t.Fatalf("open status=%d body=%s", response.Code, response.Body.String())
-			}
-			if strings.Contains(response.Body.String(), `"state":`) || strings.Contains(response.Body.String(), `"revision":`) || strings.Contains(response.Body.String(), `"component_titles":`) {
-				t.Fatalf("failed open presented accepted Architecture: %s", response.Body.String())
-			}
-			if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
-				t.Fatalf("permissive CORS header = %q", got)
-			}
-			if privateAfter := snapshotPrivateArchitecture(t, dataDirectory); privateAfter != privateBefore {
-				t.Fatalf("failed open changed private Architecture\nbefore:\n%s\nafter:\n%s", privateBefore, privateAfter)
-			}
-			if associationsAfter := snapshotAssociations(t, dbB); associationsAfter != associationsBefore {
-				t.Fatalf("failed open changed associations\nbefore:\n%s\nafter:\n%s", associationsBefore, associationsAfter)
-			}
-			if sourceAfter := snapshotRepository(t, repository); sourceAfter != sourceBefore {
-				t.Fatalf("failed open changed source repository\nbefore:\n%s\nafter:\n%s", sourceBefore, sourceAfter)
-			}
-		})
-	}
-}
-
-func TestInitializeProjectRetainsAssociationAndRetriesSameStore(t *testing.T) {
-	db := openWebTestDatabase(t)
-	repository := createSourceRepository(t)
-	before := snapshotRepository(t, repository)
-	dataDirectory := t.TempDir()
-	blockingPath := filepath.Join(dataDirectory, "architecture")
-	if err := os.WriteFile(blockingPath, []byte("block"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	handler := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
-
-	failed := postInitializeProject(t, handler, testOrigin, repository)
-	if failed.Code != http.StatusInternalServerError || !strings.Contains(failed.Body.String(), `"code":"setup_incomplete"`) {
-		t.Fatalf("failed status=%d body=%s", failed.Code, failed.Body.String())
-	}
-	storeID := associatedStoreID(t, db, filepath.Clean(repository))
-	assertAssociationCount(t, db, 1)
-	if err := os.Remove(blockingPath); err != nil {
-		t.Fatal(err)
-	}
-
-	retried := postInitializeProject(t, handler, testOrigin, repository)
-	if retried.Code != http.StatusOK {
-		t.Fatalf("retry status=%d body=%s", retried.Code, retried.Body.String())
-	}
-	if got := associatedStoreID(t, db, filepath.Clean(repository)); got != storeID {
-		t.Fatalf("retry replaced store ID %q with %q", storeID, got)
-	}
-	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	if commits := runGit(t, dataDirectory, "--git-dir", storePath, "rev-list", "--all", "--count"); commits != "1" {
-		t.Fatalf("commit count = %s, want 1", commits)
-	}
-	if after := snapshotRepository(t, repository); after != before {
-		t.Fatalf("source repository changed\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-func TestConcurrentInitializationUsesOneAssociationAndStore(t *testing.T) {
-	db := openWebTestDatabase(t)
-	repository := createSourceRepository(t)
-	dataDirectory := t.TempDir()
-	handler := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
+func TestCatalogCreationIsAtomicAndProjectSwitchGuardUsesStoreIdentity(t *testing.T) {
+	data := t.TempDir()
+	state, handler := newHandler(testOrigin, testUI(t), data)
+	first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Same"}))
+	second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Same"}))
+	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
 
 	start := make(chan struct{})
-	responses := make(chan *httptest.ResponseRecorder, 2)
+	results := make(chan int, 2)
 	var wait sync.WaitGroup
-	for range 2 {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			<-start
-			responses <- postInitializeProject(t, handler, testOrigin, repository)
-		}()
-	}
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		response := postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{ProjectSlug: first.ProjectSlug, ExpectedRevision: first.Revision, Title: "Worker", DiagramID: first.RootDiagramID})
+		results <- response.Code
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		response := postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": second.ProjectSlug})
+		results <- response.Code
+	}()
 	close(start)
 	wait.Wait()
-	close(responses)
-	for response := range responses {
-		if response.Code != http.StatusOK {
-			t.Fatalf("initialize status=%d body=%s", response.Code, response.Body.String())
-		}
+	close(results)
+	statuses := map[int]int{}
+	for status := range results {
+		statuses[status]++
 	}
-	assertAssociationCount(t, db, 1)
-	storeID := associatedStoreID(t, db, filepath.Clean(repository))
-	entries, err := os.ReadDir(filepath.Join(dataDirectory, "architecture"))
-	if err != nil {
-		t.Fatal(err)
+	if statuses[http.StatusOK] != 1 || statuses[http.StatusConflict] != 1 {
+		t.Fatalf("race statuses = %v", statuses)
 	}
-	if len(entries) != 1 || entries[0].Name() != storeID+".git" {
-		t.Fatalf("private stores = %v, want only %s.git", entries, storeID)
+	state.stateMutex.Lock()
+	defer state.stateMutex.Unlock()
+	if state.pending != nil && state.loadedProject.storeID != first.StoreID {
+		t.Fatalf("mixed project/pending state: project=%+v pending=%+v", state.loadedProject, state.pending)
 	}
 }
 
-func TestInitializeProjectEnforcesOriginWithoutCORS(t *testing.T) {
-	db := openWebTestDatabase(t)
-	handler := newTestHandler(t, db)
-	repository := t.TempDir()
-	for _, origin := range []string{"", "http://attacker.example"} {
-		response := postInitializeProject(t, handler, origin, repository)
-		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"origin_mismatch"`) {
-			t.Fatalf("origin %q: status=%d body=%s", origin, response.Code, response.Body.String())
-		}
-		if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Fatalf("origin %q: permissive CORS = %q", origin, got)
-		}
-	}
-	assertAssociationCount(t, db, 0)
-}
-
-func TestInitializeProjectReportsInvalidAndUnsupportedAcceptedStates(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		wantStatus int
-		wantCode   string
-		buildTree  func(t *testing.T, repository, manifestBlob string) string
-	}{
-		{
-			name:       "identity mismatch is invalid",
-			wantStatus: http.StatusConflict,
-			wantCode:   "architecture_invalid",
-			buildTree: func(t *testing.T, repository, _ string) string {
-				wrongManifest := "format: workbraid-architecture\nversion: 1\nstore_id: \"" + uuid.NewString() + "\"\nproject:\n  name: Project\n  source_hint: /tmp/project\n"
-				blob := runGitWithInput(t, repository, []byte(wrongManifest), "--git-dir", repository, "hash-object", "-w", "--stdin")
-				return runGitWithInput(t, repository, []byte("100644 blob "+blob+"\tarchitecture.yaml\n"), "--git-dir", repository, "mktree")
-			},
-		},
-		{
-			name:       "empty components tree is invalid",
-			wantStatus: http.StatusConflict,
-			wantCode:   "architecture_invalid",
-			buildTree: func(t *testing.T, repository, manifestBlob string) string {
-				emptyComponentsTree := runGitWithInput(t, repository, nil, "--git-dir", repository, "mktree")
-				root := "100644 blob " + manifestBlob + "\tarchitecture.yaml\n040000 tree " + emptyComponentsTree + "\tcomponents\n"
-				return runGitWithInput(t, repository, []byte(root), "--git-dir", repository, "mktree")
-			},
-		},
-		{
-			name:       "non-string recovery hints are invalid",
-			wantStatus: http.StatusConflict,
-			wantCode:   "architecture_invalid",
-			buildTree: func(t *testing.T, repository, _ string) string {
-				storeID := strings.TrimSuffix(filepath.Base(repository), ".git")
-				typedManifest := "format: workbraid-architecture\nversion: 1\nstore_id: \"" + storeID + "\"\nproject:\n  name: 123\n  source_hint: true\n"
-				blob := runGitWithInput(t, repository, []byte(typedManifest), "--git-dir", repository, "hash-object", "-w", "--stdin")
-				return runGitWithInput(t, repository, []byte("100644 blob "+blob+"\tarchitecture.yaml\n"), "--git-dir", repository, "mktree")
-			},
-		},
-		{
-			name:       "invalid component is rejected",
-			wantStatus: http.StatusConflict,
-			wantCode:   "architecture_invalid",
-			buildTree: func(t *testing.T, repository, manifestBlob string) string {
-				component := []byte("---\nid: \"" + uuid.NewString() + "\"\nrelationships:\n  - target: \"" + uuid.NewString() + "\"\n    label: calls\n---\n# Component\n")
-				componentBlob := runGitWithInput(t, repository, component, "--git-dir", repository, "hash-object", "-w", "--stdin")
-				componentTree := runGitWithInput(t, repository, []byte("100644 blob "+componentBlob+"\tcomponent.md\n"), "--git-dir", repository, "mktree")
-				root := "100644 blob " + manifestBlob + "\tarchitecture.yaml\n040000 tree " + componentTree + "\tcomponents\n"
-				return runGitWithInput(t, repository, []byte(root), "--git-dir", repository, "mktree")
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			db := openWebTestDatabase(t)
-			source := t.TempDir()
-			dataDirectory := t.TempDir()
-			handler := NewHandler(db, testOrigin, t.TempDir(), dataDirectory)
-			initialized := postInitializeProject(t, handler, testOrigin, source)
-			if initialized.Code != http.StatusOK {
-				t.Fatalf("initialize status=%d body=%s", initialized.Code, initialized.Body.String())
-			}
-			storeID := associatedStoreID(t, db, filepath.Clean(source))
-			repository := filepath.Join(dataDirectory, "architecture", storeID+".git")
-			oldRevision := runGit(t, dataDirectory, "--git-dir", repository, "show-ref", "--verify", "--hash", "refs/heads/accepted")
-			manifestBlob := strings.Fields(runGit(t, dataDirectory, "--git-dir", repository, "ls-tree", oldRevision, "architecture.yaml"))[2]
-			tree := test.buildTree(t, repository, manifestBlob)
-			commit := runGitWithInput(t, repository, []byte("external accepted state\n"), "-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid", "--git-dir", repository, "commit-tree", tree)
-			runGit(t, dataDirectory, "--git-dir", repository, "update-ref", "refs/heads/accepted", commit, oldRevision)
-
-			response := postInitializeProject(t, handler, testOrigin, source)
-			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
-				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-			}
-			if accepted := runGit(t, dataDirectory, "--git-dir", repository, "show-ref", "--verify", "--hash", "refs/heads/accepted"); accepted != commit {
-				t.Fatalf("failed load changed accepted from %q to %q", commit, accepted)
-			}
-		})
-	}
-}
-
-func TestOpenProjectDoesNotInitializeAPreseededMissingArchitecture(t *testing.T) {
-	db := openWebTestDatabase(t)
-	repository := t.TempDir()
-	const storeID = "a0b38e04-54bd-464d-8a8f-8f2e78e653ea"
-	if _, err := db.Exec(
-		`INSERT INTO source_architecture_associations(normalized_source_root, store_id) VALUES (?, ?)`,
-		filepath.Clean(repository), storeID,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	dataDirectory := t.TempDir()
-	response := postOpenProject(t, NewHandler(db, testOrigin, t.TempDir(), dataDirectory), testOrigin, repository)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"code":"architecture_unavailable"`) {
-		t.Fatalf("response does not report unavailable Architecture: %s", response.Body.String())
-	}
-	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
-	if _, err := os.Stat(storePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("open created or changed missing private Architecture location: %v", err)
-	}
-	if got := associatedStoreID(t, db, filepath.Clean(repository)); got != storeID {
-		t.Fatalf("open changed associated ID to %q", got)
-	}
-}
-
-func TestOpenProjectReportsOperationalDatabaseFailure(t *testing.T) {
-	db := openWebTestDatabase(t)
-	handler := newTestHandler(t, db)
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	response := postOpenProject(t, handler, testOrigin, t.TempDir())
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"code":"lookup_failed"`) {
-		t.Fatalf("unexpected error body: %s", response.Body.String())
-	}
-}
-
-func TestOpenProjectRejectsUnexpectedOrMissingOriginWithoutCORS(t *testing.T) {
-	db := openWebTestDatabase(t)
-	handler := newTestHandler(t, db)
-	repository := t.TempDir()
-
-	for _, origin := range []string{"", "http://attacker.example"} {
-		response := postOpenProject(t, handler, origin, repository)
-		if response.Code != http.StatusForbidden {
-			t.Fatalf("origin %q: status = %d, want 403", origin, response.Code)
-		}
-		if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Fatalf("origin %q: permissive CORS header = %q", origin, got)
-		}
-		if !strings.Contains(response.Body.String(), `"code":"origin_mismatch"`) {
-			t.Fatalf("origin %q: unexpected body %s", origin, response.Body.String())
-		}
-	}
-}
-
-func TestOpenProjectRejectsInvalidPaths(t *testing.T) {
-	db := openWebTestDatabase(t)
-	handler := newTestHandler(t, db)
-	regularFile := filepath.Join(t.TempDir(), "file.txt")
-	if err := os.WriteFile(regularFile, []byte("file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name string
-		path string
-		code string
-	}{
-		{name: "empty", path: "", code: "path_required"},
-		{name: "relative", path: "relative/project", code: "path_relative"},
-		{name: "missing", path: filepath.Join(t.TempDir(), "missing"), code: "path_missing"},
-		{name: "regular file", path: regularFile, code: "path_not_directory"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			response := postOpenProject(t, handler, testOrigin, test.path)
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-			}
-			if !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
-				t.Fatalf("body = %s, want code %q", response.Body.String(), test.code)
-			}
-		})
-	}
-}
-
-func TestOpenProjectMapsMalformedJSONToGenericFailureCode(t *testing.T) {
-	db := openWebTestDatabase(t)
-	handler := newTestHandler(t, db)
-
-	for _, body := range []string{`{"source_root":`, `{"source_root":"/tmp"} {}`} {
-		request := httptest.NewRequest(http.MethodPost, "/api/projects/open", strings.NewReader(body))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Origin", testOrigin)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("body %q: status = %d, response = %s", body, response.Code, response.Body.String())
-		}
-		if !strings.Contains(response.Body.String(), `"code":"lookup_failed"`) {
-			t.Fatalf("body %q: response = %s", body, response.Body.String())
-		}
-	}
-}
-
-func TestHandlerServesBuiltUI(t *testing.T) {
-	db := openWebTestDatabase(t)
-	uiDirectory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(uiDirectory, "index.html"), []byte("<main>WorkBraid</main>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	response := httptest.NewRecorder()
-	NewHandler(db, testOrigin, uiDirectory, t.TempDir()).ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "WorkBraid") {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-}
-
-func postOpenProject(t *testing.T, handler http.Handler, origin, sourceRoot string) *httptest.ResponseRecorder {
-	t.Helper()
-	body, err := json.Marshal(map[string]string{"source_root": sourceRoot})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/open", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	if origin != "" {
-		request.Header.Set("Origin", origin)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
-}
-
-func postInitializeProject(t *testing.T, handler http.Handler, origin, sourceRoot string) *httptest.ResponseRecorder {
-	t.Helper()
-	body, err := json.Marshal(map[string]string{"source_root": sourceRoot})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/initialize", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	if origin != "" {
-		request.Header.Set("Origin", origin)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
-}
-
-func associatedStoreID(t *testing.T, db *sql.DB, sourceRoot string) string {
-	t.Helper()
-	var storeID string
-	if err := db.QueryRow(`SELECT store_id FROM source_architecture_associations WHERE normalized_source_root = ?`, sourceRoot).Scan(&storeID); err != nil {
-		t.Fatal(err)
-	}
-	return storeID
-}
-
-func assertAssociationCount(t *testing.T, db *sql.DB, want int) {
-	t.Helper()
-	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM source_architecture_associations`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != want {
-		t.Fatalf("association count = %d, want %d", count, want)
-	}
-}
-
-func snapshotAssociations(t *testing.T, db *sql.DB) string {
-	t.Helper()
-	rows, err := db.Query(`SELECT normalized_source_root, store_id FROM source_architecture_associations ORDER BY normalized_source_root`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var values []string
-	for rows.Next() {
-		var sourceRoot, storeID string
-		if err := rows.Scan(&sourceRoot, &storeID); err != nil {
-			t.Fatal(err)
-		}
-		values = append(values, sourceRoot+"\x00"+storeID)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(values, "\n")
-}
-
-func snapshotPrivateArchitecture(t *testing.T, dataDirectory string) string {
-	t.Helper()
-	root := filepath.Join(dataDirectory, "architecture")
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
-		return "<missing>"
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	var entries []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			entries = append(entries, "directory "+relative+" "+info.Mode().String())
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(contents)
-		entries = append(entries, "file "+relative+" "+info.Mode().String()+" "+hex.EncodeToString(sum[:]))
-		return nil
+func TestReferenceMutationAndDiscardShareOneStateBoundary(t *testing.T) {
+	data := t.TempDir()
+	state, handler := newHandler(testOrigin, testUI(t), data)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Reference race"}))
+	base := *state.loadedSnapshot
+	anchor := state.architecture.NewComponentChange(base, nil, "Anchor", "")
+	target := state.architecture.NewComponentChange(base, []architecture.ComponentChange{anchor}, "Target", "")
+	detail := base.NewDetailDiagramChange(nil, "Detail", anchor.ID)
+	candidate, err := state.architecture.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{anchor, target}, architecture.CandidateComposition{
+		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: anchor.ID, DiagramID: base.RootDiagramID()}, {ComponentID: target.ID, DiagramID: base.RootDiagramID()}},
+		DetailDiagrams:    []architecture.DetailDiagramChange{detail},
+		HomeMoves:         []architecture.ComponentHomeMove{{ComponentID: target.ID, DiagramID: detail.ID}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(entries)
-	return strings.Join(entries, "\n")
-}
+	accepted := acceptArchitectureCandidate(t, state.architecture, base, candidate)
+	opened := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
+	if opened.Revision != accepted.Revision() {
+		t.Fatalf("opened revision=%s want=%s", opened.Revision, accepted.Revision())
+	}
 
-func advanceAcceptedToManifest(t *testing.T, storePath, oldRevision string, manifest, component []byte) string {
-	t.Helper()
-	manifestBlob := runGitWithInput(t, storePath, manifest, "--git-dir", storePath, "hash-object", "-w", "--stdin")
-	rootEntries := "100644 blob " + manifestBlob + "\tarchitecture.yaml\n"
-	if component != nil {
-		componentBlob := runGitWithInput(t, storePath, component, "--git-dir", storePath, "hash-object", "-w", "--stdin")
-		componentTree := runGitWithInput(t, storePath, []byte("100644 blob "+componentBlob+"\tcomponent.md\n"), "--git-dir", storePath, "mktree")
-		rootEntries += "040000 tree " + componentTree + "\tcomponents\n"
-	}
-	tree := runGitWithInput(t, storePath, []byte(rootEntries), "--git-dir", storePath, "mktree")
-	commit := runGitWithInput(t, storePath, []byte("external accepted state\n"),
-		"-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid",
-		"--git-dir", storePath, "commit-tree", tree, "-p", oldRevision)
-	runGit(t, storePath, "--git-dir", storePath, "update-ref", "refs/heads/accepted", commit, oldRevision)
-	return commit
-}
-
-type testComponent struct {
-	path   string
-	mode   string
-	source []byte
-}
-
-func advanceAcceptedToComponents(t *testing.T, storePath, oldRevision string, manifest []byte, components []testComponent) string {
-	t.Helper()
-	manifestBlob := runGitWithInput(t, storePath, manifest, "--git-dir", storePath, "hash-object", "-w", "--stdin")
-	componentEntries := make([]string, len(components))
-	for index, component := range components {
-		blob := runGitWithInput(t, storePath, component.source, "--git-dir", storePath, "hash-object", "-w", "--stdin")
-		componentEntries[index] = component.mode + " blob " + blob + "\t" + component.path
-	}
-	componentTree := runGitWithInput(t, storePath, []byte(strings.Join(componentEntries, "\n")+"\n"), "--git-dir", storePath, "mktree")
-	rootEntries := "100644 blob " + manifestBlob + "\tarchitecture.yaml\n040000 tree " + componentTree + "\tcomponents\n"
-	var identity struct {
-		Version     int    `yaml:"version"`
-		RootDiagram string `yaml:"root_diagram"`
-	}
-	if err := yaml.Unmarshal(manifest, &identity); err != nil {
-		t.Fatal(err)
-	}
-	if identity.Version == 2 {
-		var diagram strings.Builder
-		fmt.Fprintf(&diagram, "id: %q\ntitle: Root\nappearances:\n", identity.RootDiagram)
-		for _, component := range components {
-			parts := bytes.SplitN(component.source, []byte("---"), 3)
-			if len(parts) != 3 {
-				t.Fatalf("component fixture %q has no frontmatter", component.path)
-			}
-			var metadata struct {
-				ID string `yaml:"id"`
-			}
-			if err := yaml.Unmarshal(parts[1], &metadata); err != nil || metadata.ID == "" {
-				t.Fatalf("component fixture %q metadata: id=%q err=%v", component.path, metadata.ID, err)
-			}
-			fmt.Fprintf(&diagram, "  - component: %q\n    role: home\n", metadata.ID)
+	start := make(chan struct{})
+	results := make(chan *httptest.ResponseRecorder, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		results <- postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
+			ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: opened.RootDiagramID, ComponentID: target.ID,
+		})
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		results <- postJSONRequest(t, handler, "/api/architecture/discard", map[string]any{"project_slug": opened.ProjectSlug})
+	}()
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK {
+			t.Fatalf("race status=%d body=%s", response.Code, response.Body.String())
 		}
-		diagramBlob := runGitWithInput(t, storePath, []byte(diagram.String()), "--git-dir", storePath, "hash-object", "-w", "--stdin")
-		diagramTree := runGitWithInput(t, storePath, []byte("100644 blob "+diagramBlob+"\troot.yaml\n"), "--git-dir", storePath, "mktree")
-		rootEntries += "040000 tree " + diagramTree + "\tdiagrams\n"
 	}
-	tree := runGitWithInput(t, storePath, []byte(rootEntries), "--git-dir", storePath, "mktree")
-	commit := runGitWithInput(t, storePath, []byte("external accepted components\n"),
-		"-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid",
-		"--git-dir", storePath, "commit-tree", tree, "-p", oldRevision)
-	runGit(t, storePath, "--git-dir", storePath, "update-ref", "refs/heads/accepted", commit, oldRevision)
-	return commit
+	state.stateMutex.Lock()
+	defer state.stateMutex.Unlock()
+	if state.pending != nil {
+		if state.pending.candidate == nil || state.pending.generation != 1 {
+			t.Fatalf("incoherent final pending = %+v", state.pending)
+		}
+		projection := projectSnapshot(state.pending.candidate.Snapshot(), "")
+		if role(&projection, opened.RootDiagramID, target.ID) != "reference" {
+			t.Fatalf("incoherent final reference projection = %+v", projection)
+		}
+	}
 }
 
-func openWebTestDatabase(t *testing.T) *sql.DB {
-	t.Helper()
-	return openWebDatabaseAt(t, filepath.Join(t.TempDir(), "workbraid.db"))
-}
-
-func openWebDatabaseAt(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", path)
+func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testing.T) {
+	data := t.TempDir()
+	state, handler := newHandler(testOrigin, testUI(t), data)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "References"}))
+	base := *state.loadedSnapshot
+	manager := state.architecture
+	anchorB := manager.NewComponentChange(base, nil, "Anchor B", "")
+	anchorC := manager.NewComponentChange(base, []architecture.ComponentChange{anchorB}, "Anchor C", "")
+	moving := manager.NewComponentChange(base, []architecture.ComponentChange{anchorB, anchorC}, "Moving", "")
+	b := base.NewDetailDiagramChange(nil, "B", anchorB.ID)
+	c := base.NewDetailDiagramChange([]architecture.DetailDiagramChange{b}, "C", anchorC.ID)
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{anchorB, anchorC, moving}, architecture.CandidateComposition{
+		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: anchorB.ID, DiagramID: base.RootDiagramID()}, {ComponentID: anchorC.ID, DiagramID: base.RootDiagramID()}, {ComponentID: moving.ID, DiagramID: base.RootDiagramID()}},
+		DetailDiagrams:    []architecture.DetailDiagramChange{b, c},
+		References:        []architecture.ReferenceAppearanceChange{{DiagramID: b.ID, ComponentID: moving.ID, Present: true}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	if err := associations.Initialize(db); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
-
-func newTestHandler(t *testing.T, db *sql.DB) http.Handler {
-	t.Helper()
-	return NewHandler(db, testOrigin, t.TempDir(), t.TempDir())
-}
-
-func createSourceRepository(t *testing.T) string {
-	t.Helper()
-	repository := t.TempDir()
-	runGit(t, repository, "init", "--quiet")
-	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("tracked\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, repository, "add", "tracked.txt")
-	runGit(t, repository, "-c", "user.name=WorkBraid Test", "-c", "user.email=test@workbraid.invalid", "commit", "--quiet", "-m", "test source")
-	if err := os.WriteFile(filepath.Join(repository, "untracked.txt"), []byte("untracked\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return repository
-}
-
-func runGit(t *testing.T, directory string, arguments ...string) string {
-	t.Helper()
-	command := exec.CommandContext(context.Background(), "git", arguments...)
-	command.Dir = directory
-	output, err := command.CombinedOutput()
+	commit, err := manager.CreateSuccessor(context.Background(), base, candidate)
 	if err != nil {
-		t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		t.Fatal(err)
 	}
-	return strings.TrimSpace(string(output))
+	if err := manager.AdvanceAccepted(context.Background(), base, commit); err != nil {
+		t.Fatal(err)
+	}
+	opened := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
+
+	moveB := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	moveC := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: c.ID, ComponentID: moving.ID}))
+	if moveB.Changes == nil || moveC.Changes == nil || moveC.Changes.Candidate == nil {
+		t.Fatalf("moves did not remain one candidate: B=%+v C=%+v", moveB.Changes, moveC.Changes)
+	}
+	if role(moveC.Changes.Candidate, b.ID, moving.ID) != "" || role(moveC.Changes.Candidate, c.ID, moving.ID) != "home" {
+		t.Fatalf("reference resurrected: B=%q C=%q", role(moveC.Changes.Candidate, b.ID, moving.ID), role(moveC.Changes.Candidate, c.ID, moving.ID))
+	}
+	shown := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	if shown.Changes == nil || shown.Changes.Candidate == nil || role(shown.Changes.Candidate, b.ID, moving.ID) != "reference" || role(shown.Changes.Candidate, c.ID, moving.ID) != "home" {
+		t.Fatalf("show-back failed: %+v", shown.Changes)
+	}
+	firstReview := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": opened.ProjectSlug}))
+	if firstReview.Changes == nil || firstReview.Changes.Review == nil {
+		t.Fatalf("first review missing: %+v", firstReview.Changes)
+	}
+	stopped := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/stop-showing-component", diagramMutationRequest{ProjectSlug: opened.ProjectSlug, ExpectedRevision: opened.Revision, DiagramID: b.ID, ComponentID: moving.ID}))
+	if stopped.Changes == nil || stopped.Changes.Candidate == nil || stopped.Changes.Review != nil || role(stopped.Changes.Candidate, b.ID, moving.ID) != "" {
+		t.Fatalf("stop failed: %+v", stopped.Changes)
+	}
+	invalidated := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
+		ProjectSlug: opened.ProjectSlug, BaseRevision: firstReview.Changes.Review.BaseRevision,
+		CandidateTree: firstReview.Changes.Review.CandidateTree, Generation: firstReview.Changes.Review.Generation,
+	})
+	if invalidated.Code != http.StatusConflict || !strings.Contains(invalidated.Body.String(), errorReviewFailed) {
+		t.Fatalf("invalidated review status=%d body=%s", invalidated.Code, invalidated.Body.String())
+	}
+
+	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": opened.ProjectSlug}))
+	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
+		t.Fatalf("review missing: %+v", reviewed.Changes)
+	}
+	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
+	if accepted.Revision == opened.Revision || roleSnapshot(accepted, c.ID, moving.ID) != "home" || roleSnapshot(accepted, b.ID, moving.ID) != "" {
+		t.Fatalf("accepted = %+v", accepted)
+	}
 }
 
-func runGitWithInput(t *testing.T, directory string, input []byte, arguments ...string) string {
+func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *testing.T) {
+	state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Candidate references"}))
+	anchorResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Anchor",
+	}))
+	anchorID := anchorResult.Changes.Components[0].ID
+	newResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending target",
+	}))
+	newID := newResult.Changes.Components[1].ID
+	detailResult := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/detail", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "Candidate detail",
+	}))
+	detailID := detailResult.Changes.DetailDiagrams[0].ID
+	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: newID,
+	}))
+	shownNew := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: newID,
+	}))
+	shownAnchor := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+	}))
+	if shownAnchor.Changes == nil || shownAnchor.Changes.Candidate == nil ||
+		role(shownAnchor.Changes.Candidate, created.RootDiagramID, newID) != "reference" ||
+		role(shownAnchor.Changes.Candidate, detailID, newID) != "home" ||
+		role(shownAnchor.Changes.Candidate, detailID, anchorID) != "reference" {
+		t.Fatalf("candidate-relative references failed: new=%+v anchor=%+v", shownNew.Changes, shownAnchor.Changes)
+	}
+	state.stateMutex.Lock()
+	generation := state.pending.generation
+	state.stateMutex.Unlock()
+	duplicate := postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+	})
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	home := postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, ComponentID: anchorID,
+	})
+	if home.Code != http.StatusConflict {
+		t.Fatalf("home status=%d body=%s", home.Code, home.Body.String())
+	}
+	state.stateMutex.Lock()
+	if state.pending.generation != generation {
+		t.Fatalf("rejected reference mutation changed generation: got %d want %d", state.pending.generation, generation)
+	}
+	state.stateMutex.Unlock()
+
+	invalid := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, ComponentID: anchorID, Title: "   ", TitleChanged: true,
+	}))
+	if invalid.Changes == nil || invalid.Changes.Candidate != nil || len(invalid.ReferenceChoices) != 0 {
+		t.Fatalf("invalid candidate still offered reference authority: %+v", invalid)
+	}
+	blocked := postJSONRequest(t, handler, "/api/architecture/diagrams/stop-showing-component", diagramMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: detailID, ComponentID: anchorID,
+	})
+	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), errorChangesUnavailable) {
+		t.Fatalf("invalid-candidate mutation status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+}
+
+func TestExternalAcceptedSlugRefreshAdoptsLocator(t *testing.T) {
+	data := t.TempDir()
+	_, handler := newHandler(testOrigin, testUI(t), data)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Old Name"}))
+	storePath := filepath.Join(data, "architecture", created.StoreID+".git")
+	manifest := git(t, "--git-dir", storePath, "show", created.Revision+":architecture.yaml")
+	manifest = strings.Replace(manifest, "slug: old-name", "slug: new-locator", 1)
+	manifestBlob := gitInput(t, []byte(manifest), "--git-dir", storePath, "hash-object", "-w", "--stdin")
+	root := strings.Split(git(t, "--git-dir", storePath, "ls-tree", created.Revision), "\n")
+	for index, line := range root {
+		if strings.HasSuffix(line, "\tarchitecture.yaml") {
+			root[index] = "100644 blob " + manifestBlob + "\tarchitecture.yaml"
+		}
+	}
+	tree := gitInput(t, []byte(strings.Join(root, "\n")+"\n"), "--git-dir", storePath, "mktree")
+	commit := gitInput(t, []byte("external slug\n"), "-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid", "--git-dir", storePath, "commit-tree", tree, "-p", created.Revision)
+	git(t, "--git-dir", storePath, "update-ref", "refs/heads/accepted", commit, created.Revision)
+
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", map[string]any{"project_slug": created.ProjectSlug}))
+	if refreshed.ProjectSlug != "new-locator" || refreshed.StoreID != created.StoreID || refreshed.Revision != commit {
+		t.Fatalf("refresh = %+v", refreshed)
+	}
+	old := postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug})
+	if old.Code != http.StatusNotFound {
+		t.Fatalf("old slug status=%d body=%s", old.Code, old.Body.String())
+	}
+	newOpen := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": "new-locator"}))
+	if newOpen.StoreID != created.StoreID {
+		t.Fatalf("new slug opened %+v", newOpen)
+	}
+}
+
+func TestRefreshPreservesOldBasePendingAsStaleUntilDiscard(t *testing.T) {
+	data := t.TempDir()
+	state, handler := newHandler(testOrigin, testUI(t), data)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Refresh"}))
+	pending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Pending",
+	}))
+	if pending.Changes == nil || pending.Changes.Candidate == nil {
+		t.Fatalf("pending = %+v", pending.Changes)
+	}
+
+	base := *state.loadedSnapshot
+	external, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+		DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "Externally renamed"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalRevision, err := state.architecture.CreateSuccessor(context.Background(), base, external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.architecture.AdvanceAccepted(context.Background(), base, externalRevision); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", map[string]any{"project_slug": created.ProjectSlug}))
+	if refreshed.Revision != externalRevision || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale || refreshed.Changes.Review != nil {
+		t.Fatalf("refreshed = %+v changes=%+v", refreshed, refreshed.Changes)
+	}
+	blocked := postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Blocked",
+	})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("stale pending mutation status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	discarded := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", map[string]any{"project_slug": created.ProjectSlug}))
+	if discarded.Changes != nil || discarded.Revision != externalRevision {
+		t.Fatalf("discarded = %+v", discarded)
+	}
+	newPending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+		ProjectSlug: created.ProjectSlug, ExpectedRevision: externalRevision, DiagramID: created.RootDiagramID, Title: "Current",
+	}))
+	if newPending.Changes == nil || newPending.Changes.Stale || newPending.Changes.Candidate == nil {
+		t.Fatalf("new pending = %+v", newPending.Changes)
+	}
+}
+
+func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
+	t.Run("reported CAS failure is classified from accepted", func(t *testing.T) {
+		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
+		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "CAS"}))
+		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+		}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		state.acceptedUpdateReportFailure = func() error { return errors.New("response lost") }
+		accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
+			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
+		}))
+		if accepted.Revision == created.Revision || state.pending != nil {
+			t.Fatalf("accepted = %+v pending=%+v", accepted, state.pending)
+		}
+	})
+
+	t.Run("post-CAS publication failure reloads the accepted successor", func(t *testing.T) {
+		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
+		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Publication"}))
+		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+		}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		state.publicationFailure = func() error { return errors.New("publication lost") }
+		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
+			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
+		})
+		value := decodeArchitectureBody(t, response)
+		if response.Code != http.StatusInternalServerError || value.ActionError != errorUpdatedReload || value.Revision == created.Revision || state.pending != nil {
+			t.Fatalf("response=%d value=%+v pending=%+v", response.Code, value, state.pending)
+		}
+		accepted, present, err := state.architecture.AcceptedRevision(context.Background(), *state.loadedSnapshot)
+		if err != nil || !present || accepted != value.Revision {
+			t.Fatalf("accepted=%q present=%t err=%v response=%q", accepted, present, err, value.Revision)
+		}
+	})
+
+	t.Run("final CAS race preserves external authority and stales pending", func(t *testing.T) {
+		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
+		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Race"}))
+		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
+			ProjectSlug: created.ProjectSlug, ExpectedRevision: created.Revision, DiagramID: created.RootDiagramID, Title: "Worker",
+		}))
+		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", map[string]any{"project_slug": created.ProjectSlug}))
+		base := *state.loadedSnapshot
+		externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+			DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "External"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		externalRevision := ""
+		state.beforeAcceptedCAS = func(string) {
+			var createErr error
+			externalRevision, createErr = state.architecture.CreateSuccessor(context.Background(), base, externalCandidate)
+			if createErr != nil {
+				t.Fatal(createErr)
+			}
+			if createErr = state.architecture.AdvanceAccepted(context.Background(), base, externalRevision); createErr != nil {
+				t.Fatal(createErr)
+			}
+		}
+		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
+			ProjectSlug: created.ProjectSlug, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
+		})
+		value := decodeArchitectureBody(t, response)
+		if response.Code != http.StatusConflict || value.ActionError != errorArchitectureStale || !value.Stale || value.Changes == nil || !value.Changes.Stale {
+			t.Fatalf("response=%d value=%+v", response.Code, value)
+		}
+		accepted, present, err := state.architecture.AcceptedRevision(context.Background(), base)
+		if err != nil || !present || accepted != externalRevision {
+			t.Fatalf("accepted=%q external=%q present=%t err=%v", accepted, externalRevision, present, err)
+		}
+	})
+}
+
+func TestReferenceReviewChangesCompositionWithoutSemanticDeltas(t *testing.T) {
+	ctx := context.Background()
+	manager := architecture.NewManager(t.TempDir())
+	base, err := manager.CreateProject(ctx, "Projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := manager.NewComponentChange(base, nil, "Anchor", "")
+	target := manager.NewComponentChange(base, []architecture.ComponentChange{anchor}, "Target", "")
+	lonely := manager.NewComponentChange(base, []architecture.ComponentChange{anchor, target}, "Lonely", "")
+	source := manager.NewComponentChange(base, []architecture.ComponentChange{anchor, target, lonely}, "Source", "")
+	source.Relationships = []architecture.AuthoringRelationship{{TargetID: target.ID, Label: "calls"}, {TargetID: target.ID, Label: "calls async"}}
+	source.RelationshipsChanged = true
+	detail := base.NewDetailDiagramChange(nil, "Detail", anchor.ID)
+	initial, err := manager.ConstructCandidate(ctx, base, []architecture.ComponentChange{anchor, target, lonely, source}, architecture.CandidateComposition{
+		NewComponentHomes: []architecture.NewComponentHome{
+			{ComponentID: anchor.ID, DiagramID: base.RootDiagramID()},
+			{ComponentID: target.ID, DiagramID: base.RootDiagramID()},
+			{ComponentID: lonely.ID, DiagramID: base.RootDiagramID()},
+			{ComponentID: source.ID, DiagramID: base.RootDiagramID()},
+		},
+		DetailDiagrams: []architecture.DetailDiagramChange{detail},
+		HomeMoves: []architecture.ComponentHomeMove{
+			{ComponentID: target.ID, DiagramID: detail.ID},
+			{ComponentID: lonely.ID, DiagramID: detail.ID},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = acceptArchitectureCandidate(t, manager, base, initial)
+	rootBefore := diagramProjection(t, base, base.RootDiagramID())
+	if len(rootBefore.Boundaries) != 1 || len(rootBefore.Relationships) != 2 {
+		t.Fatalf("base root boundaries=%d relationships=%d", len(rootBefore.Boundaries), len(rootBefore.Relationships))
+	}
+
+	withReferences, err := manager.ConstructCandidate(ctx, base, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
+		{DiagramID: base.RootDiagramID(), ComponentID: target.ID, Present: true},
+		{DiagramID: base.RootDiagramID(), ComponentID: lonely.ID, Present: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, withProjection, comparison := captureReviewPresentation(base, withReferences.Snapshot())
+	if len(comparison.Components) != 0 || len(comparison.Relationships) != 0 || len(comparison.Appearances) != 2 {
+		t.Fatalf("reference comparison = %+v", comparison)
+	}
+	rootWith := diagramProjectionResponse(t, withProjection.Diagrams, base.RootDiagramID())
+	if len(rootWith.Boundaries) != 0 || len(rootWith.Relationships) != 2 {
+		t.Fatalf("reference root boundaries=%d relationships=%d", len(rootWith.Boundaries), len(rootWith.Relationships))
+	}
+	for _, relationship := range rootWith.Relationships {
+		if relationship.TargetNodeKey != target.ID {
+			t.Fatalf("relationship did not connect to canonical target: %+v", relationship)
+		}
+	}
+
+	componentsBefore := git(t, "--git-dir", storePathFor(t, manager, base.StoreID()), "ls-tree", base.Revision(), "components")
+	componentsAfter := git(t, "--git-dir", storePathFor(t, manager, base.StoreID()), "ls-tree", withReferences.Tree(), "components")
+	if componentsBefore != componentsAfter {
+		t.Fatalf("reference edit rewrote Components:\nbefore %s\nafter  %s", componentsBefore, componentsAfter)
+	}
+
+	acceptedWithReferences := acceptArchitectureCandidate(t, manager, base, withReferences)
+	removed, err := manager.ConstructCandidate(ctx, acceptedWithReferences, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
+		{DiagramID: base.RootDiagramID(), ComponentID: target.ID, Present: false},
+		{DiagramID: base.RootDiagramID(), ComponentID: lonely.ID, Present: false},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, removedProjection, removedComparison := captureReviewPresentation(acceptedWithReferences, removed.Snapshot())
+	if len(removedComparison.Components) != 0 || len(removedComparison.Relationships) != 0 || len(removedComparison.Appearances) != 2 {
+		t.Fatalf("removal comparison = %+v", removedComparison)
+	}
+	rootRemoved := diagramProjectionResponse(t, removedProjection.Diagrams, base.RootDiagramID())
+	if len(rootRemoved.Boundaries) != 1 || len(rootRemoved.Relationships) != 2 {
+		t.Fatalf("removed root boundaries=%d relationships=%d", len(rootRemoved.Boundaries), len(rootRemoved.Relationships))
+	}
+	for _, appearance := range rootRemoved.Appearances {
+		if appearance.ComponentID == lonely.ID {
+			t.Fatal("unconnected removed reference remained")
+		}
+	}
+}
+
+func acceptArchitectureCandidate(t *testing.T, manager *architecture.Manager, base architecture.Snapshot, candidate architecture.Candidate) architecture.Snapshot {
+	t.Helper()
+	commit, err := manager.CreateSuccessor(context.Background(), base, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AdvanceAccepted(context.Background(), base, commit); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manager.LoadAccepted(context.Background(), base.StoreID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+func diagramProjection(t *testing.T, snapshot architecture.Snapshot, diagramID string) architecture.DiagramProjection {
+	t.Helper()
+	for _, diagram := range snapshot.DiagramProjections() {
+		if diagram.ID == diagramID {
+			return diagram
+		}
+	}
+	t.Fatalf("diagram %s missing", diagramID)
+	return architecture.DiagramProjection{}
+}
+
+func diagramProjectionResponse(t *testing.T, diagrams []diagramResponse, diagramID string) diagramResponse {
+	t.Helper()
+	for _, diagram := range diagrams {
+		if diagram.ID == diagramID {
+			return diagram
+		}
+	}
+	t.Fatalf("diagram %s missing", diagramID)
+	return diagramResponse{}
+}
+
+func storePathFor(t *testing.T, manager *architecture.Manager, storeID string) string {
+	t.Helper()
+	path, err := manager.StorePath(storeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestProjectRouteServesBuiltApplication(t *testing.T) {
+	ui := testUI(t)
+	handler := NewHandler(testOrigin, ui, t.TempDir())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/projects/example", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "WorkBraid test UI") {
+		t.Fatalf("route status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func postJSONRequest(t *testing.T, handler http.Handler, path string, value any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	request.Header.Set("Origin", testOrigin)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func decodeArchitectureResponse(t *testing.T, response *httptest.ResponseRecorder) architectureResponse {
+	t.Helper()
+	if response.Code < 200 || response.Code >= 300 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	return decodeArchitectureBody(t, response)
+}
+
+func decodeArchitectureBody(t *testing.T, response *httptest.ResponseRecorder) architectureResponse {
+	t.Helper()
+	var value architectureResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func role(snapshot *snapshotProjectionResponse, diagramID, componentID string) string {
+	if snapshot == nil {
+		return ""
+	}
+	for _, diagram := range snapshot.Diagrams {
+		if diagram.ID != diagramID {
+			continue
+		}
+		for _, appearance := range diagram.Appearances {
+			if appearance.ComponentID == componentID {
+				return appearance.Role
+			}
+		}
+	}
+	return ""
+}
+
+func roleSnapshot(snapshot architectureResponse, diagramID, componentID string) string {
+	for _, diagram := range snapshot.Diagrams {
+		if diagram.ID != diagramID {
+			continue
+		}
+		for _, appearance := range diagram.Appearances {
+			if appearance.ComponentID == componentID {
+				return appearance.Role
+			}
+		}
+	}
+	return ""
+}
+
+func testUI(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "index.html"), []byte("<!doctype html><title>WorkBraid test UI</title>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+func git(t *testing.T, arguments ...string) string { return gitInput(t, nil, arguments...) }
+
+func gitInput(t *testing.T, input []byte, arguments ...string) string {
 	t.Helper()
 	command := exec.CommandContext(context.Background(), "git", arguments...)
-	command.Dir = directory
 	command.Stdin = bytes.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", arguments, err, output)
 	}
 	return strings.TrimSpace(string(output))
-}
-
-func snapshotRepository(t *testing.T, repository string) string {
-	t.Helper()
-	head := runGit(t, repository, "rev-parse", "HEAD")
-	status := runGit(t, repository, "status", "--short")
-	var files []string
-	err := filepath.WalkDir(repository, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(repository, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if relative == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(contents)
-		files = append(files, relative+":"+hex.EncodeToString(sum[:]))
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Strings(files)
-	return strings.Join([]string{head, status, strings.Join(files, "\n")}, "\n---\n")
 }

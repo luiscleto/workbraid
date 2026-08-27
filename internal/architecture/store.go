@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -28,10 +29,12 @@ const (
 )
 
 var (
-	ErrIncomplete  = errors.New("Architecture setup is incomplete")
-	ErrUnavailable = errors.New("Architecture is unavailable")
-	ErrInvalid     = errors.New("Architecture store is invalid")
-	ErrUnsupported = errors.New("Architecture is unsupported")
+	ErrIncomplete      = errors.New("Architecture setup is incomplete")
+	ErrUnavailable     = errors.New("Architecture is unavailable")
+	ErrInvalid         = errors.New("Architecture store is invalid")
+	ErrUnsupported     = errors.New("Architecture is unsupported")
+	ErrProjectNotFound = errors.New("project was not found")
+	ErrCatalogConflict = errors.New("project slug is used by more than one store")
 )
 
 // Snapshot is immutable accepted Architecture state pinned to one Git commit.
@@ -40,7 +43,7 @@ type Snapshot struct {
 	revision      string
 	formatVersion int
 	projectName   string
-	sourceHint    string
+	projectSlug   string
 	components    []component
 	rootDiagram   uuid.UUID
 	diagrams      []diagram
@@ -91,6 +94,8 @@ func (snapshot Snapshot) Revision() string    { return snapshot.revision }
 func (snapshot Snapshot) ComponentCount() int { return len(snapshot.components) }
 func (snapshot Snapshot) StoreID() string     { return snapshot.storeID.String() }
 func (snapshot Snapshot) FormatVersion() int  { return snapshot.formatVersion }
+func (snapshot Snapshot) ProjectName() string { return snapshot.projectName }
+func (snapshot Snapshot) ProjectSlug() string { return snapshot.projectSlug }
 func (snapshot Snapshot) ComponentTitles() []string {
 	titles := make([]string, len(snapshot.components))
 	for index := range snapshot.components {
@@ -370,18 +375,20 @@ type ComponentChange struct {
 // one candidate-construction path. The owning pending Architecture change set
 // supplies it alongside its Component edits.
 type CandidateComposition struct {
-	DiagramSetup      *DiagramSetupChange
 	NewComponentHomes []NewComponentHome
 	DetailDiagrams    []DetailDiagramChange
 	DiagramTitles     []DiagramTitleChange
 	HomeMoves         []ComponentHomeMove
+	References        []ReferenceAppearanceChange
 }
 
-// DiagramSetupChange is the one deliberate v1-to-v2 setup fact. Its identity
-// is generated once when pending work begins and remains stable for that
-// in-process pending generation.
-type DiagramSetupChange struct {
-	RootDiagramID string
+// ReferenceAppearanceChange is the final intended reference state for one
+// Diagram/Component pair. Presence and absence are both explicit so repeated
+// home moves cannot resurrect a reference from the accepted base.
+type ReferenceAppearanceChange struct {
+	DiagramID   string `json:"diagram_id"`
+	ComponentID string `json:"component_id"`
+	Present     bool   `json:"present"`
 }
 
 // NewComponentHome associates one newly generated Component with its required
@@ -429,10 +436,6 @@ var (
 	ErrDiagramCycle         = fmt.Errorf("%w: Diagram move creates a hierarchy cycle", ErrInvalid)
 )
 
-func (snapshot Snapshot) NewDiagramSetupChange() DiagramSetupChange {
-	return DiagramSetupChange{RootDiagramID: uuid.NewString()}
-}
-
 func (snapshot Snapshot) HasDiagram(id string) bool {
 	parsed, err := uuid.Parse(id)
 	if err != nil || snapshot.formatVersion != 2 {
@@ -476,6 +479,28 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 		}
 	}
 	return "", "", false
+}
+
+// ComponentAppearanceRole reports canonical composition only. Derived
+// boundary references are deliberately absent from this query.
+func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) (string, bool) {
+	diagramUUID, diagramErr := uuid.Parse(diagramID)
+	componentUUID, componentErr := uuid.Parse(componentID)
+	if diagramErr != nil || componentErr != nil || snapshot.formatVersion != 2 {
+		return "", false
+	}
+	for _, current := range snapshot.diagrams {
+		if current.id != diagramUUID {
+			continue
+		}
+		for _, appearance := range current.appearances {
+			if appearance.component == componentUUID {
+				return appearance.role, true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // ComponentHomeDestinationDiagramIDs returns the concrete Diagram destinations
@@ -558,6 +583,19 @@ func (err *ComponentValidationError) Unwrap() error { return err.Err }
 type Manager struct {
 	storeRoot string
 	git       gitRunner
+	catalogMu sync.Mutex
+}
+
+// CatalogProject is one private store discovered from its accepted Git state.
+// Unavailable entries expose only bounded operational identity and status.
+type CatalogProject struct {
+	StoreID     string
+	Name        string
+	Slug        string
+	Revision    string
+	Unavailable bool
+	Conflict    bool
+	Snapshot    Snapshot
 }
 
 func NewManager(dataDirectory string) *Manager {
@@ -567,15 +605,143 @@ func NewManager(dataDirectory string) *Manager {
 	}
 }
 
-func (manager *Manager) ValidateSourceIsolation(sourceRoot string) error {
-	relative, err := filepath.Rel(sourceRoot, manager.storeRoot)
+func (manager *Manager) Catalog(ctx context.Context) ([]CatalogProject, error) {
+	manager.catalogMu.Lock()
+	defer manager.catalogMu.Unlock()
+	return manager.scanCatalog(ctx)
+}
+
+func (manager *Manager) OpenProject(ctx context.Context, slug string) (Snapshot, error) {
+	manager.catalogMu.Lock()
+	defer manager.catalogMu.Unlock()
+	projects, err := manager.scanCatalog(ctx)
 	if err != nil {
-		return fmt.Errorf("compare project and private Architecture paths: %w", err)
+		return Snapshot{}, err
 	}
-	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-		return errors.New("private Architecture directory must be outside the project folder")
+	var match *CatalogProject
+	for index := range projects {
+		if projects[index].Unavailable || projects[index].Slug != slug {
+			continue
+		}
+		if projects[index].Conflict || match != nil {
+			return Snapshot{}, ErrCatalogConflict
+		}
+		match = &projects[index]
 	}
-	return nil
+	if match == nil {
+		return Snapshot{}, ErrProjectNotFound
+	}
+	return match.Snapshot, nil
+}
+
+func (manager *Manager) CreateProject(ctx context.Context, name string) (Snapshot, error) {
+	manager.catalogMu.Lock()
+	defer manager.catalogMu.Unlock()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Snapshot{}, errors.New("project name is required")
+	}
+	projects, err := manager.scanCatalog(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	used := make(map[string]struct{}, len(projects))
+	for _, project := range projects {
+		if !project.Unavailable {
+			used[project.Slug] = struct{}{}
+		}
+	}
+	base := projectSlug(name)
+	slug := base
+	for suffix := 2; ; suffix++ {
+		if _, exists := used[slug]; !exists {
+			break
+		}
+		slug = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	storeID := uuid.NewString()
+	return manager.InitializeOrLoad(ctx, storeID, name, slug)
+}
+
+func projectSlug(name string) string {
+	var result strings.Builder
+	separator := false
+	for _, character := range name {
+		switch {
+		case character >= 'A' && character <= 'Z':
+			if separator && result.Len() > 0 {
+				result.WriteByte('-')
+			}
+			separator = false
+			result.WriteByte(byte(character + ('a' - 'A')))
+		case character >= 'a' && character <= 'z', character >= '0' && character <= '9':
+			if separator && result.Len() > 0 {
+				result.WriteByte('-')
+			}
+			separator = false
+			result.WriteRune(character)
+		default:
+			separator = true
+		}
+	}
+	value := strings.Trim(result.String(), "-")
+	if value == "" {
+		return "project"
+	}
+	return value
+}
+
+func (manager *Manager) scanCatalog(ctx context.Context) ([]CatalogProject, error) {
+	entries, err := os.ReadDir(manager.storeRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return []CatalogProject{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read private Architecture catalog: %w", err)
+	}
+	projects := make([]CatalogProject, 0, len(entries))
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".git") {
+			continue
+		}
+		storeID := strings.TrimSuffix(entry.Name(), ".git")
+		parsed, parseErr := uuid.Parse(storeID)
+		if parseErr != nil {
+			continue
+		}
+		if parsed.String() != storeID || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			projects = append(projects, CatalogProject{StoreID: storeID, Unavailable: true})
+			continue
+		}
+		snapshot, loadErr := manager.LoadAccepted(ctx, storeID)
+		if loadErr != nil {
+			projects = append(projects, CatalogProject{StoreID: storeID, Unavailable: true})
+			continue
+		}
+		projects = append(projects, CatalogProject{
+			StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: snapshot.ProjectSlug(),
+			Revision: snapshot.Revision(), Snapshot: snapshot,
+		})
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].Name != projects[j].Name {
+			return projects[i].Name < projects[j].Name
+		}
+		if projects[i].Slug != projects[j].Slug {
+			return projects[i].Slug < projects[j].Slug
+		}
+		return projects[i].StoreID < projects[j].StoreID
+	})
+	counts := make(map[string]int)
+	for _, project := range projects {
+		if !project.Unavailable {
+			counts[project.Slug]++
+		}
+	}
+	for index := range projects {
+		projects[index].Conflict = !projects[index].Unavailable && counts[projects[index].Slug] > 1
+	}
+	return projects, nil
 }
 
 func (manager *Manager) StorePath(storeID string) (string, error) {
@@ -634,10 +800,10 @@ func (manager *Manager) LoadRevision(ctx context.Context, base Snapshot, revisio
 	return manager.load(ctx, storePath, base.storeID, revision)
 }
 
-// InitializeOrLoad completes a compatible manifest-only bootstrap or loads the
-// exact valid revision already named by accepted. It never changes an existing
-// accepted ref.
-func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectName, sourceHint string) (Snapshot, error) {
+// InitializeOrLoad creates the native-v2 parentless bootstrap when accepted is
+// absent, or loads the exact valid revision already named by accepted. It never
+// changes an existing accepted ref.
+func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectName, projectSlug string) (Snapshot, error) {
 	parsedStoreID, err := uuid.Parse(storeID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("%w: associated store ID is not a UUID", ErrInvalid)
@@ -671,7 +837,7 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 		Format:      "workbraid-architecture",
 		Version:     2,
 		StoreID:     parsedStoreID.String(),
-		Project:     manifestProject{Name: projectName, SourceHint: sourceHint},
+		Project:     manifestProject{Name: projectName, Slug: projectSlug},
 		RootDiagram: rootDiagramID,
 	})
 	if err != nil {
@@ -837,7 +1003,7 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 	}
 	snapshot := Snapshot{
 		storeID: expectedStoreID, revision: revision, formatVersion: parsed.Version,
-		projectName: parsed.Project.Name, sourceHint: parsed.Project.SourceHint, components: components,
+		projectName: parsed.Project.Name, projectSlug: parsed.Project.Slug, components: components,
 	}
 	if parsed.Version == 2 {
 		diagrams, root, err := manager.loadDiagrams(ctx, storePath, diagramEntries, parsed.RootDiagram, components)
@@ -1074,17 +1240,6 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		return Candidate{}, fmt.Errorf("%w: architecture identity is missing", ErrInvalid)
 	}
 
-	if base.formatVersion == 1 {
-		if composition.DiagramSetup == nil {
-			return Candidate{}, fmt.Errorf("%w: accepted Architecture must be set up for editing", ErrInvalid)
-		}
-		if len(changes) != 0 || len(composition.NewComponentHomes) != 0 {
-			return Candidate{}, fmt.Errorf("%w: Diagram setup cannot include other changes", ErrInvalid)
-		}
-	} else if composition.DiagramSetup != nil {
-		return Candidate{}, fmt.Errorf("%w: Diagrams are already set up", ErrInvalid)
-	}
-
 	baseByID := make(map[string]component, len(base.components))
 	candidateIDs := make(map[string]struct{}, len(base.components)+len(changes))
 	for _, component := range base.components {
@@ -1171,39 +1326,6 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 			return Candidate{}, fmt.Errorf("write candidate component: %w", err)
 		}
 		byPath[change.Path] = treeEntry{Mode: mode, Type: "blob", Object: blob, Path: change.Path}
-	}
-
-	if composition.DiagramSetup != nil {
-		rootID, err := uuid.Parse(composition.DiagramSetup.RootDiagramID)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("%w: root Diagram identity is invalid", ErrInvalid)
-		}
-		root := diagram{id: rootID, path: "diagrams/root.yaml", title: base.projectName, mode: "100644"}
-		for _, component := range base.components {
-			root.appearances = append(root.appearances, diagramAppearance{component: component.id, role: "home"})
-		}
-		contents, err := marshalDiagram(root)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("serialize Diagram setup: %w", err)
-		}
-		blob, err := manager.git.writeBlob(ctx, storePath, contents)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("write Diagram setup: %w", err)
-		}
-		byPath[root.path] = treeEntry{Mode: root.mode, Type: "blob", Object: blob, Path: root.path}
-		manifestBytes, err := marshalManifest(manifest{
-			Format: "workbraid-architecture", Version: 2, StoreID: base.storeID.String(),
-			Project: manifestProject{Name: base.projectName, SourceHint: base.sourceHint}, RootDiagram: rootID.String(),
-		})
-		if err != nil {
-			return Candidate{}, fmt.Errorf("serialize Diagram setup manifest: %w", err)
-		}
-		blob, err = manager.git.writeBlob(ctx, storePath, manifestBytes)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("write Diagram setup manifest: %w", err)
-		}
-		byPath["architecture.yaml"] = treeEntry{Mode: "100644", Type: "blob", Object: blob, Path: "architecture.yaml"}
-		manifestEntry = byPath["architecture.yaml"]
 	}
 
 	if base.formatVersion == 2 {
@@ -1373,6 +1495,59 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 			}
 			diagrams[destinationID] = destination
 			changedDiagrams[destinationID] = struct{}{}
+		}
+		seenReferences := make(map[string]struct{}, len(composition.References))
+		for _, change := range composition.References {
+			componentID, componentErr := uuid.Parse(change.ComponentID)
+			diagramID, diagramErr := uuid.Parse(change.DiagramID)
+			key := change.DiagramID + "\x00" + change.ComponentID
+			if componentErr != nil || diagramErr != nil {
+				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+			}
+			if _, duplicate := seenReferences[key]; duplicate {
+				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+			}
+			seenReferences[key] = struct{}{}
+			current, exists := diagrams[diagramID]
+			if !exists {
+				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+			}
+			if _, exists := candidateIDs[change.ComponentID]; !exists {
+				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+			}
+			appearanceIndex := -1
+			for index, appearance := range current.appearances {
+				if appearance.component == componentID {
+					appearanceIndex = index
+					break
+				}
+			}
+			if change.Present {
+				if appearanceIndex >= 0 {
+					// A home subsumes any requested reference state. A reference is
+					// already the requested final state.
+					if current.appearances[appearanceIndex].role == "home" || current.appearances[appearanceIndex].role == "reference" {
+						continue
+					}
+					return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+				}
+				homeDiagram := uuid.Nil
+				for candidateDiagramID, candidateDiagram := range diagrams {
+					for _, appearance := range candidateDiagram.appearances {
+						if appearance.component == componentID && appearance.role == "home" {
+							homeDiagram = candidateDiagramID
+						}
+					}
+				}
+				if homeDiagram == uuid.Nil || homeDiagram == diagramID {
+					return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
+				}
+				current.appearances = append(current.appearances, diagramAppearance{component: componentID, role: "reference"})
+			} else if appearanceIndex >= 0 && current.appearances[appearanceIndex].role == "reference" {
+				current.appearances = append(current.appearances[:appearanceIndex:appearanceIndex], current.appearances[appearanceIndex+1:]...)
+			}
+			diagrams[diagramID] = current
+			changedDiagrams[diagramID] = struct{}{}
 		}
 		for _, move := range composition.HomeMoves {
 			componentID, componentErr := uuid.Parse(move.ComponentID)
@@ -2013,8 +2188,8 @@ type manifest struct {
 }
 
 type manifestProject struct {
-	Name       string `yaml:"name"`
-	SourceHint string `yaml:"source_hint"`
+	Name string `yaml:"name"`
+	Slug string `yaml:"slug"`
 }
 
 func marshalManifest(value manifest) ([]byte, error) {
@@ -2047,7 +2222,7 @@ func parseManifest(contents []byte) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
-	if version != 1 && version != 2 {
+	if version != 2 {
 		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if err := validateManifestYAML(document.Content[0], version); err != nil {
@@ -2141,7 +2316,7 @@ func validateManifestProjectYAML(project *yaml.Node) error {
 	if project.Kind != yaml.MappingNode || project.ShortTag() != "!!map" {
 		return errors.New("architecture.yaml field project must be a mapping")
 	}
-	required := map[string]bool{"name": false, "source_hint": false}
+	required := map[string]bool{"name": false, "slug": false}
 	for index := 0; index < len(project.Content); index += 2 {
 		key := project.Content[index]
 		value := project.Content[index+1]
@@ -2171,7 +2346,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version != 1 && value.Version != 2 {
+	if value.Version != 2 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -2180,11 +2355,8 @@ func validateManifest(value manifest) error {
 	if strings.TrimSpace(value.Project.Name) == "" {
 		return errors.New("project.name is empty")
 	}
-	if strings.TrimSpace(value.Project.SourceHint) == "" {
-		return errors.New("project.source_hint is empty")
-	}
-	if value.Version == 1 && value.RootDiagram != "" {
-		return errors.New("format v1 must not contain root_diagram")
+	if !validProjectSlug(value.Project.Slug) {
+		return errors.New("project.slug is invalid")
 	}
 	if value.Version == 2 {
 		if _, err := uuid.Parse(value.RootDiagram); err != nil {
@@ -2192,6 +2364,24 @@ func validateManifest(value manifest) error {
 		}
 	}
 	return nil
+}
+
+func validProjectSlug(value string) bool {
+	if value == "" || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	previousHyphen := false
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z', character >= '0' && character <= '9':
+			previousHyphen = false
+		case character == '-' && !previousHyphen:
+			previousHyphen = true
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type diagramYAML struct {

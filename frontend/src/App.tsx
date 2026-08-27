@@ -9,14 +9,11 @@ import {
 import { MarkdownBody } from './MarkdownBody'
 import { RawDiff } from './RawDiff'
 
-type Inspection = {
-  source_root: string
-  project_name: string
-  known: boolean
-}
+type CatalogProject = { name?: string; slug?: string; revision?: string; store_id?: string; unavailable?: boolean; conflict?: boolean }
 
 type ArchitectureResult = {
-  source_root: string
+  project_slug: string
+  store_id: string
   project_name: string
   state: 'empty' | 'ready'
   revision: string
@@ -27,6 +24,7 @@ type ArchitectureResult = {
   root_diagram_id?: string
   diagrams?: DiagramProjection[]
   home_move_destinations?: { component_id: string; diagram_ids: string[] }[]
+  reference_choices?: { diagram_id: string; component_id: string; title: string; context?: string; home_diagram: string }[]
   changes?: ChangesInProgress
   stale?: boolean
   parent_diff?: string
@@ -93,13 +91,12 @@ type ChangesInProgress = {
   review?: ChangeReview
   review_blocker?: string
   stale?: boolean
-  diagram_setup?: boolean
-  legacy_read_only?: boolean
   validation_diagram?: string
   validation_diagram_field?: 'title' | 'home' | 'detail'
   detail_diagrams?: { id: string; path: string; title: string; anchor_component_id: string }[]
   diagram_titles?: { diagram_id: string; title: string }[]
   home_moves?: { component_id: string; diagram_id: string }[]
+  references?: { diagram_id: string; component_id: string; present: boolean }[]
   diagram_options?: DiagramAuthoringOption[]
   candidate?: ReviewSnapshot
 }
@@ -184,13 +181,13 @@ type NavigationIntent =
   | { kind: 'review-result'; result: ArchitectureResult }
 
 type ErrorCode =
-  | 'path_required'
-  | 'path_relative'
-  | 'path_missing'
-  | 'path_not_directory'
+  | 'name_required'
+  | 'project_not_found'
+  | 'catalog_conflict'
+  | 'catalog_unavailable'
   | 'origin_mismatch'
   | 'lookup_failed'
-  | 'setup_incomplete'
+  | 'project_create_failed'
   | 'architecture_unavailable'
   | 'architecture_invalid'
   | 'architecture_unsupported'
@@ -198,15 +195,11 @@ type ErrorCode =
 type ErrorPayload = { code?: string }
 
 type ViewState =
-  | { kind: 'idle' }
+  | { kind: 'catalog'; projects: CatalogProject[] }
   | { kind: 'looking' }
-  | { kind: 'inspection'; value: Inspection }
-  | { kind: 'confirming'; value: Inspection }
-  | { kind: 'setting-up'; value: Inspection }
   | { kind: 'ready'; value: ArchitectureResult }
-  | { kind: 'setup-error'; inspection: Inspection; code?: string }
-  | { kind: 'architecture-error'; sourceRoot: string; code?: string }
-  | { kind: 'path-error'; message: string }
+  | { kind: 'not-found'; slug: string }
+  | { kind: 'catalog-error'; message: string }
 
 let relationshipRowCounter = 0
 
@@ -319,8 +312,8 @@ function relationshipStatusText(status: Extract<ReviewFocus, { kind: 'relationsh
 }
 
 export function App() {
-  const [sourceRoot, setSourceRoot] = useState('')
-  const [state, setState] = useState<ViewState>({ kind: 'idle' })
+  const [projectName, setProjectName] = useState('')
+  const [state, setState] = useState<ViewState>({ kind: 'looking' })
   const [editor, setEditor] = useState<ComponentEditor | null>(null)
   const [diagramEditor, setDiagramEditor] = useState<DiagramEditor | null>(null)
   const [authoringError, setAuthoringError] = useState('')
@@ -354,7 +347,7 @@ export function App() {
   }, [selectedDiagramID])
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
-  const currentReview = readyResult?.stale || readyResult?.changes?.stale || readyResult?.changes?.legacy_read_only
+  const currentReview = readyResult?.stale || readyResult?.changes?.stale
     ? undefined
     : readyResult?.changes?.review
   const reviewIdentity = currentReview ? `${currentReview.base_revision}:${currentReview.candidate_tree}:${currentReview.generation}` : ''
@@ -394,7 +387,7 @@ export function App() {
 
   useEffect(() => {
     if (state.kind !== 'ready') return
-    const heldReview = state.value.stale || state.value.changes?.stale || state.value.changes?.legacy_read_only
+    const heldReview = state.value.stale || state.value.changes?.stale
       ? undefined
       : state.value.changes?.review
     const review = reviewVisible ? heldReview : undefined
@@ -437,44 +430,63 @@ export function App() {
     setSelectedComponentID(state.value.components?.[0]?.id)
   }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSelectionCleared, reviewSide, reviewVisible, workspaceTask])
 
-  async function inspectProject(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    const slug = decodeProjectSlug(window.location.pathname)
+    if (slug) void openProject(slug, true)
+    else void loadCatalog()
+  }, [])
+
+  async function loadCatalog() {
+    setState({ kind: 'looking' })
+    try {
+      const response = await fetch('/api/projects')
+      const payload = await response.json() as { projects?: CatalogProject[] } | ErrorPayload
+      if (!response.ok || !('projects' in payload)) {
+        setState({ kind: 'catalog-error', message: 'WorkBraid could not read the project catalog. Try again.' })
+        return
+      }
+      setState({ kind: 'catalog', projects: payload.projects ?? [] })
+    } catch {
+      setState({ kind: 'catalog-error', message: 'WorkBraid could not read the project catalog. Try again.' })
+    }
+  }
+
+  async function openProject(slug: string, replaceRoute = false) {
+    setState({ kind: 'looking' })
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/projects/open', { project_slug: slug })
+      const result = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in result)) {
+        if ('code' in result && result.code === 'project_not_found') setState({ kind: 'not-found', slug })
+        else setState({ kind: 'catalog-error', message: messageForError('code' in result ? result.code : undefined) })
+        return
+      }
+      window.history[replaceRoute ? 'replaceState' : 'pushState']({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
+      enterWorkspace(result)
+    } catch {
+      setState({ kind: 'catalog-error', message: 'WorkBraid could not open that project. Try again.' })
+    }
+  }
+
+  async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const trimmedSourceRoot = sourceRoot.trim()
-    setSourceRoot(trimmedSourceRoot)
+    const name = projectName.trim()
     setState({ kind: 'looking' })
     setArchitectureNotice('')
     setAcceptanceUnknown(false)
-
     try {
-      const response = await postJSON('/api/projects/open', { source_root: trimmedSourceRoot })
-      const result = (await response.json()) as Inspection | ArchitectureResult | ErrorPayload
-      if (!response.ok) {
-        if ('state' in result && result.action_error === 'pending_blocks_switch') {
-          setSourceRoot(result.source_root)
-          setEditor(null)
-          setAuthoringError('')
-          setDiscardConfirming(false)
-          enterWorkspace({ ...result, action_error: undefined }, 'changes')
-          setArchitectureNotice('Keep working here or discard these changes before opening another project.')
-          return
-        }
-        const code = 'code' in result ? result.code : undefined
-        if (isArchitectureError(code)) {
-          setState({ kind: 'architecture-error', sourceRoot: trimmedSourceRoot, code })
-        } else {
-          setState({ kind: 'path-error', message: messageForError(code) })
-        }
+      const response = await postJSON('/api/projects/create', { name })
+      const result = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in result)) {
+        setState({ kind: 'catalog-error', message: messageForError('code' in result ? result.code : undefined) })
         return
       }
-      if ('state' in result) {
-        setEditor(null)
-        setAuthoringError('')
-        enterWorkspace(result as ArchitectureResult)
-      } else {
-        setState({ kind: 'inspection', value: result as Inspection })
-      }
+      window.history.pushState({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
+      setProjectName('')
+      enterWorkspace(result)
     } catch {
-      setState({ kind: 'path-error', message: messageForError() })
+      setState({ kind: 'catalog-error', message: 'WorkBraid could not create that project. Try again.' })
     }
   }
 
@@ -530,7 +542,7 @@ export function App() {
     const relationshipsChanged = !sameRelationships(relationships, editor.initialRelationships)
     try {
       const response = await postJSON(endpoint, {
-        source_root: result.source_root,
+        project_slug: result.project_slug,
         expected_revision: result.revision,
         ...(editor.id ? { component_id: editor.id } : {}),
         ...(editor.kind === 'add' || editor.titleChanged ? { title: editor.title } : {}),
@@ -552,30 +564,11 @@ export function App() {
     }
   }
 
-  async function setupArchitecture(inspection: Inspection) {
-    setState({ kind: 'setting-up', value: inspection })
-    try {
-      const response = await postJSON('/api/projects/initialize', { source_root: inspection.source_root })
-      const result = (await response.json()) as ArchitectureResult | ErrorPayload
-      if (!response.ok) {
-        setState({
-          kind: 'setup-error',
-          inspection,
-          code: 'code' in result ? result.code : undefined,
-        })
-        return
-      }
-      enterWorkspace(result as ArchitectureResult)
-    } catch {
-      setState({ kind: 'setup-error', inspection })
-    }
-  }
-
   async function reviewChanges(result: ArchitectureResult) {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/review', { source_root: result.source_root })
+      const response = await postJSON('/api/architecture/review', { project_slug: result.project_slug })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if ('state' in payload) {
         setAcceptanceUnknown(false)
@@ -594,24 +587,6 @@ export function App() {
     }
   }
 
-  async function setupDiagrams(result: ArchitectureResult) {
-    setArchitectureBusy(true)
-    setArchitectureNotice('')
-    try {
-      const response = await postJSON('/api/architecture/diagrams/setup', { source_root: result.source_root })
-      const payload = (await response.json()) as ArchitectureResult | ErrorPayload
-      if (!response.ok || !('state' in payload)) {
-        setArchitectureNotice("WorkBraid couldn't set up diagrams. Try again.")
-        return
-      }
-      enterWorkspace(payload, 'changes')
-    } catch {
-      setArchitectureNotice("WorkBraid couldn't set up diagrams. Try again.")
-    } finally {
-      setArchitectureBusy(false)
-    }
-  }
-
   async function submitDiagramChange(event: FormEvent<HTMLFormElement>, result: ArchitectureResult) {
     event.preventDefault()
     if (!diagramEditor) return
@@ -623,7 +598,7 @@ export function App() {
     setAuthoringError('')
     try {
       const response = await postJSON(endpoint, {
-        source_root: result.source_root,
+        project_slug: result.project_slug,
         expected_revision: result.revision,
         ...(diagramEditor.kind === 'detail' ? { component_id: diagramEditor.componentID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'title' ? { diagram_id: diagramEditor.diagramID, title: diagramEditor.title } : {}),
@@ -643,6 +618,31 @@ export function App() {
     }
   }
 
+  async function changeReference(result: ArchitectureResult, diagramID: string, componentID: string, present: boolean) {
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON(present
+        ? '/api/architecture/diagrams/show-component'
+        : '/api/architecture/diagrams/stop-showing-component', {
+        project_slug: result.project_slug,
+        expected_revision: result.revision,
+        diagram_id: diagramID,
+        component_id: componentID,
+      })
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload)) {
+        setArchitectureNotice(present ? "WorkBraid couldn't show that component here." : "WorkBraid couldn't stop showing that component here.")
+        return
+      }
+      enterWorkspace(payload, 'changes')
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't keep that diagram change. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
   async function updateArchitecture(result: ArchitectureResult) {
     const review = result.changes?.review
     if (!review) return
@@ -652,7 +652,7 @@ export function App() {
     enterWorkspace({ ...result, changes: result.changes ? { ...result.changes, review: undefined } : undefined }, 'changes')
     try {
       const response = await postJSON('/api/architecture/accept', {
-        source_root: result.source_root,
+        project_slug: result.project_slug,
         base_revision: review.base_revision,
         candidate_tree: review.candidate_tree,
         generation: review.generation,
@@ -671,7 +671,7 @@ export function App() {
     }
   }
 
-  const busy = state.kind === 'looking' || state.kind === 'setting-up'
+  const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
     if (editorDirty || diagramEditorDirty) {
@@ -734,13 +734,13 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/projects/leave', { source_root: state.value.source_root })
+      const response = await postJSON('/api/projects/leave', { project_slug: state.value.project_slug })
       if (response.ok) {
-        setState({ kind: 'idle' })
-        setSourceRoot('')
+        window.history.pushState({}, '', '/')
         setSelectedComponentID(undefined)
         setSelectedDiagramID(undefined)
         setWorkspaceTask('empty')
+        await loadCatalog()
         return
       }
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
@@ -761,7 +761,7 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/discard', { source_root: result.source_root })
+      const response = await postJSON('/api/architecture/discard', { project_slug: result.project_slug })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
         setArchitectureNotice("WorkBraid couldn't discard these changes. Try again.")
@@ -780,7 +780,7 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/refresh', { source_root: result.source_root })
+      const response = await postJSON('/api/architecture/refresh', { project_slug: result.project_slug })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!('state' in payload)) {
         setArchitectureNotice(messageForArchitectureAction('code' in payload ? payload.code : undefined))
@@ -788,10 +788,11 @@ export function App() {
       }
       const notice = payload.action_error ? messageForArchitectureAction(payload.action_error) : ''
       const nextTask = payload.changes?.stale ? 'changes' : workspaceTask
+      if (payload.project_slug !== result.project_slug) window.history.replaceState({}, '', `/projects/${encodeURIComponent(payload.project_slug)}`)
       enterWorkspace(payload, nextTask)
       setArchitectureNotice(notice)
     } catch {
-      setState((current) => current.kind === 'ready' && current.value.source_root === result.source_root
+      setState((current) => current.kind === 'ready' && current.value.store_id === result.store_id
         ? { kind: 'ready', value: { ...current.value, action_error: 'refresh_failed' } }
         : current)
       setArchitectureNotice(messageForArchitectureAction('refresh_failed'))
@@ -1041,8 +1042,20 @@ export function App() {
                 })}
               </ul>
             ) : <p className="index-empty">No components</p>}
-            {!review && result.format_version !== 1 && authoringAvailable && (
+            {!review && authoringAvailable && (
               <button className="index-add" type="button" onClick={() => requestNavigation({ kind: 'add' })}>Add component</button>
+            )}
+            {!review && authoringAvailable && activeDiagram && (result.reference_choices?.some((choice) => choice.diagram_id === activeDiagram.id)) && (
+              <label className="reference-picker">Show component here
+                <select value="" onChange={(event) => {
+                  if (event.target.value) void changeReference(result, activeDiagram.id, event.target.value, true)
+                }}>
+                  <option value="">Choose a component</option>
+                  {result.reference_choices.filter((choice) => choice.diagram_id === activeDiagram.id).map((choice) => (
+                    <option key={choice.component_id} value={choice.component_id}>{choice.title}{choice.context ? ` — ${choice.context}` : ''} — Lives in {choice.home_diagram}</option>
+                  ))}
+                </select>
+              </label>
             )}
           </nav>
           <section className={`map-region ${activeDiagram ? 'has-diagram' : ''}`}>
@@ -1104,7 +1117,7 @@ export function App() {
                   setSelectedComponentID(undefined)
                   setReviewFocus(focus)
                 }}
-                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale || result.changes?.legacy_read_only)}
+                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
@@ -1140,7 +1153,7 @@ export function App() {
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
                 onReturnToReview={currentReview && !acceptanceUnknown ? () => setReviewVisible(true) : undefined}
-                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale || result.changes?.legacy_read_only)}
+                onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
@@ -1149,6 +1162,8 @@ export function App() {
                 onCreateDetail={result.format_version === 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
                 onEditDiagramTitle={result.format_version === 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
                 onMoveHome={result.format_version === 2 ? (componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: invalid ? diagramID : '', invalid }) : undefined}
+                onShowComponent={(diagramID, componentID) => changeReference(result, diagramID, componentID, true)}
+                onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
                 onUpdate={() => updateArchitecture(result)}
                 onBeginDiscard={() => setDiscardConfirming(true)}
@@ -1159,33 +1174,31 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
-                {(result.format_version !== 1 && authoringAvailable || selectedAppearance?.detail_diagram_id) && (
+                {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
-                    {result.format_version !== 1 && authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                    {authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
                     {selectedAppearance?.detail_diagram_id && (
                       <button className="secondary-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
                         Open {selectedAppearance.detail_diagram_title}
                       </button>
                     )}
-                    {result.format_version !== 1 && authoringAvailable && selectedAppearance && (
+                    {authoringAvailable && selectedAppearance && (
                       <div className="diagram-composition-actions" role="group" aria-label="Diagram composition">
                         <span>Diagram</span>
                         <div>
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
                             <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
                           )}
-                          <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>
+                          {selectedAppearance.role === 'home' && <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: '' })}>Change where it lives</button>}
+                          {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => changeReference(result, activeDiagram.id, selected.id, false)}>Stop showing here</button>}
                         </div>
                       </div>
                     )}
                   </div>
                 )}
-                {result.format_version === 1 && authoringAvailable && !result.changes && <div className="legacy-diagram-setup"><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>}
               </article>
             ) : activeDiagram ? (
               <div className="workspace-empty"><p className="eyebrow">Diagram</p><h2>{activeDiagram.appearances.length ? 'Select a component' : 'No components here'}</h2><p>{activeDiagram.appearances.length ? 'Choose a component from the index or map to read its documentation.' : 'This diagram is intentionally empty.'}</p></div>
-            ) : result.format_version === 1 && authoringAvailable && !result.changes ? (
-              <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Set up diagrams</h2><p>Set up diagrams to start editing this architecture.</p><button className="inline-action" type="button" disabled={architectureBusy} onClick={() => setupDiagrams(result)}>Set up diagrams</button></div>
             ) : result.components?.length ? (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Select a component</h2><p>Choose a component from the index or map to read its documentation.</p></div>
             ) : (
@@ -1193,7 +1206,7 @@ export function App() {
             )}
             <details className="technical-details">
               <summary>Technical details</summary>
-              <dl><dt>Folder</dt><dd>{result.source_root}</dd><dt>Revision</dt><dd>{result.revision}</dd></dl>
+              <dl><dt>Project slug</dt><dd>{result.project_slug}</dd><dt>Revision</dt><dd>{result.revision}</dd></dl>
               {result.parent_diff && <div className="accepted-diff"><h3>Parent diff</h3><pre>{result.parent_diff}</pre></div>}
             </details>
           </aside>
@@ -1219,81 +1232,56 @@ export function App() {
       <article className="sheet">
         <header className="sheet-header">
           <p className="eyebrow">WorkBraid</p>
-          <h1>Open a project</h1>
-          <p className="introduction">
-            Choose a project folder on this computer. WorkBraid will look for its architecture without changing the folder.
-          </p>
+          <h1>Projects</h1>
+          <p className="introduction">Open an Architecture project or begin a new one.</p>
         </header>
 
-        <form onSubmit={inspectProject}>
-          <label htmlFor="source-root">Project folder</label>
+        {state.kind === 'catalog' && state.projects.length > 0 && (
+          <nav className="project-catalog" aria-label="Projects">
+            {state.projects.map((project, index) => project.unavailable ? (
+              <div className="catalog-project unavailable" key={project.store_id ?? index}>
+                <strong>Project unavailable</strong>
+                <small>{project.store_id}</small>
+              </div>
+            ) : project.conflict ? (
+              <div className="catalog-project conflict" key={project.store_id ?? index}>
+                <strong>{project.name}</strong><span>Project address conflict</span><small>{project.slug}</small>
+              </div>
+            ) : (
+              <button
+                className="catalog-project"
+                type="button"
+                key={project.store_id ?? project.slug}
+                aria-label={state.projects.filter((candidate) => !candidate.unavailable && candidate.name === project.name).length > 1
+                  ? `${project.name}, ${project.slug}`
+                  : project.name}
+                onClick={() => void openProject(project.slug ?? '')}
+              >
+                <strong>{project.name}</strong>
+                {state.projects.filter((candidate) => !candidate.unavailable && candidate.name === project.name).length > 1 && <small>{project.slug}</small>}
+              </button>
+            ))}
+          </nav>
+        )}
+        {state.kind === 'catalog' && state.projects.length === 0 && <p className="catalog-empty">No projects yet.</p>}
+        <form onSubmit={createProject}>
+          <label htmlFor="project-name">New project</label>
           <div className="input-row">
             <input
-              id="source-root"
-              name="source-root"
+              id="project-name"
+              name="project-name"
               type="text"
-              value={sourceRoot}
-              onChange={(event) => {
-                setSourceRoot(event.target.value)
-                setState({ kind: 'idle' })
-                setEditor(null)
-                setAuthoringError('')
-              }}
-              placeholder="/home/alice/src/example-project"
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="Example project"
               autoComplete="off"
-              aria-describedby="folder-hint"
             />
-            <button type="submit" disabled={busy}>
-              {state.kind === 'looking' ? 'Looking up…' : 'Open'}
-            </button>
+            <button type="submit" disabled={busy || !projectName.trim()}>{busy ? 'Working…' : 'Create project'}</button>
           </div>
-          <p className="field-hint" id="folder-hint">
-            Paste the full folder path, starting with /.
-          </p>
         </form>
-
-        {state.kind !== 'idle' && (
-          <section className={`result-note ${isErrorState(state) ? 'error' : ''}`} aria-live="polite">
-            {state.kind === 'looking' && <p className="lookup-status">Looking up this folder…</p>}
-            {state.kind === 'path-error' && (
-              <div className="message" role="alert">
-                <h2>That path did not work</h2>
-                <p>{state.message}</p>
-              </div>
-            )}
-            {state.kind === 'inspection' && !state.value.known && (
-              <div className="message">
-                <h2>Not linked</h2>
-                <p>WorkBraid has not linked this folder to architecture.</p>
-                <FolderPath path={state.value.source_root} />
-                <button className="inline-action" type="button" onClick={() => setState({ kind: 'confirming', value: state.value })}>
-                  Set up architecture
-                </button>
-              </div>
-            )}
-            {state.kind === 'confirming' && (
-              <div className="message confirmation">
-                <h2>Set up architecture?</h2>
-                <p>WorkBraid will create private architecture for this project without changing the folder.</p>
-                <p className="project-name">{state.value.project_name}</p>
-                <FolderPath path={state.value.source_root} />
-                <div className="button-group">
-                  <button className="secondary-action" type="button" onClick={() => setState({ kind: 'inspection', value: state.value })}>
-                    Cancel
-                  </button>
-                  <button className="inline-action" type="button" onClick={() => setupArchitecture(state.value)}>
-                    Set up
-                  </button>
-                </div>
-              </div>
-            )}
-            {state.kind === 'setting-up' && <p className="lookup-status">Setting up architecture…</p>}
-            {state.kind === 'setup-error' && (
-              <SetupError state={state} onRetry={() => setupArchitecture(state.inspection)} />
-            )}
-            {state.kind === 'architecture-error' && <ArchitectureError state={state} />}
-          </section>
-        )}
+        {state.kind === 'looking' && <p className="lookup-status">Opening projects…</p>}
+        {state.kind === 'not-found' && <section className="result-note error" role="alert"><h2>Project not found</h2><p>No project currently uses <strong>{state.slug}</strong>.</p><button className="inline-action" type="button" onClick={() => { window.history.pushState({}, '', '/'); void loadCatalog() }}>Back to projects</button></section>}
+        {state.kind === 'catalog-error' && <section className="result-note error" role="alert"><h2>Projects unavailable</h2><p>{state.message}</p><button className="inline-action" type="button" onClick={() => void loadCatalog()}>Try again</button></section>}
       </article>
     </main>
   )
@@ -1478,6 +1466,8 @@ function ChangesTask({
   onCreateDetail,
   onEditDiagramTitle,
   onMoveHome,
+  onShowComponent,
+  onStopShowing,
   onReview,
   onUpdate,
   onBeginDiscard,
@@ -1502,6 +1492,8 @@ function ChangesTask({
   onCreateDetail?: (componentID: string) => void
   onEditDiagramTitle?: (diagramID: string, title: string, invalid?: boolean) => void
   onMoveHome?: (componentID: string, currentDiagramID: string, invalid?: boolean) => void
+  onShowComponent?: (diagramID: string, componentID: string) => void
+  onStopShowing?: (diagramID: string, componentID: string) => void
   onReview: () => void
   onUpdate: () => void
   onBeginDiscard: () => void
@@ -1510,7 +1502,7 @@ function ChangesTask({
 }) {
   const changes = result.changes
   if (!changes) return null
-  const readOnly = Boolean(result.stale || changes.stale || changes.legacy_read_only)
+  const readOnly = Boolean(result.stale || changes.stale)
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field
     ? changes.components.find((component) => component.id === changes.validation_item)
     : undefined
@@ -1589,8 +1581,7 @@ function ChangesTask({
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
       <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="changes-heading">Changes in progress</h2></div>
-      <p>{changes.legacy_read_only || changes.stale ? 'These changes started from an older architecture and are read-only.' : changes.diagram_setup ? 'Diagrams are ready to review before the architecture is updated.' : 'These changes have not updated the architecture yet.'}</p>
-      {changes.diagram_setup && <p>Setting up diagrams will make this architecture editable.</p>}
+      <p>{changes.stale ? 'These changes started from an older architecture and are read-only.' : 'These changes have not updated the architecture yet.'}</p>
       <ul>
         {changes.components.map((component) => {
           const ownsReviewBlocker = Boolean(changes.review_blocker && changes.validation_item === component.id)
@@ -1618,15 +1609,28 @@ function ChangesTask({
                 </header>
                 <div className="pending-diagram-body">
                   <ul>
-                    {diagram.appearances.filter((appearance) => appearance.role === 'home').map((appearance) => {
+                    {diagram.appearances.map((appearance) => {
                       const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
                       return <li key={appearance.component_id}>
-                        <span>{component?.title ?? 'Component'}</span>
-                        {!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
-                        {!readOnly && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
+                        <span>{component?.title ?? 'Component'}{appearance.role === 'reference' && <small className="appearance-note"> Included here</small>}</span>
+                        {!readOnly && appearance.role === 'home' && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
+                        {!readOnly && appearance.role === 'home' && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
+                        {!readOnly && appearance.role === 'reference' && onStopShowing && <button className="text-action" type="button" onClick={() => onStopShowing(diagram.id, appearance.component_id)}>Stop showing here</button>}
                       </li>
                     })}
                   </ul>
+                  {!readOnly && onShowComponent && result.reference_choices?.some((choice) => choice.diagram_id === diagram.id) && (
+                    <label className="pending-reference-picker">Show component here
+                      <select value="" onChange={(event) => {
+                        if (event.target.value) onShowComponent(diagram.id, event.target.value)
+                      }}>
+                        <option value="">Choose a component</option>
+                        {result.reference_choices.filter((choice) => choice.diagram_id === diagram.id).map((choice) => (
+                          <option key={choice.component_id} value={choice.component_id}>{choice.title}{choice.context ? ` — ${choice.context}` : ''} — Lives in {choice.home_diagram}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </div>
               </section>
             ))}
@@ -1687,7 +1691,7 @@ function ChangesTask({
           {!readOnly && changes.review && onReturnToReview && (
             <button className="inline-action" type="button" onClick={onReturnToReview}>Return to review</button>
           )}
-          {!result.stale && !changes.stale && !changes.legacy_read_only && !changes.review && (
+          {!result.stale && !changes.stale && !changes.review && (
             <button className="inline-action" type="button" disabled={busy} onClick={onReview}>{busy ? 'Preparing…' : 'Review changes'}</button>
           )}
           {discardAction}
@@ -1782,79 +1786,6 @@ function DiscardChangesDialog({ busy, onCancel, onDiscard }: { busy: boolean; on
   )
 }
 
-function ArchitectureError({ state }: { state: Extract<ViewState, { kind: 'architecture-error' }> }) {
-  if (state.code === 'architecture_unsupported') {
-    return (
-      <div className="message" role="alert">
-        <h2>Architecture not supported yet</h2>
-        <p>This architecture uses features that this version of WorkBraid cannot open yet.</p>
-        <FolderPath path={state.sourceRoot} />
-      </div>
-    )
-  }
-  if (state.code === 'architecture_invalid') {
-    return (
-      <div className="message" role="alert">
-        <h2>Architecture needs attention</h2>
-        <p>WorkBraid could not read this project's architecture.</p>
-        <FolderPath path={state.sourceRoot} />
-      </div>
-    )
-  }
-  return (
-    <div className="message" role="alert">
-      <h2>Architecture unavailable</h2>
-      <p>WorkBraid could not open the architecture linked to this project.</p>
-      <FolderPath path={state.sourceRoot} />
-    </div>
-  )
-}
-
-function FolderPath({ path }: { path: string }) {
-  return <p className="folder-path">{path}</p>
-}
-
-function SetupError({
-  state,
-  onRetry,
-}: {
-  state: Extract<ViewState, { kind: 'setup-error' }>
-  onRetry: () => void
-}) {
-  if (state.code === 'architecture_invalid') {
-    return (
-      <div className="message" role="alert">
-        <h2>Architecture needs attention</h2>
-        <p>WorkBraid could not read this project's architecture.</p>
-        <FolderPath path={state.inspection.source_root} />
-      </div>
-    )
-  }
-  if (state.code === 'architecture_unsupported') {
-    return (
-      <div className="message" role="alert">
-        <h2>Architecture not supported yet</h2>
-        <p>This architecture uses features that this version of WorkBraid cannot open yet.</p>
-        <FolderPath path={state.inspection.source_root} />
-      </div>
-    )
-  }
-  return (
-    <div className="message" role="alert">
-      <h2>Setup did not finish</h2>
-      <p>WorkBraid could not finish setting up architecture. Try again.</p>
-      <FolderPath path={state.inspection.source_root} />
-      <button className="inline-action" type="button" onClick={onRetry}>
-        Retry
-      </button>
-    </div>
-  )
-}
-
-function isErrorState(state: ViewState) {
-  return state.kind === 'path-error' || state.kind === 'setup-error' || state.kind === 'architecture-error'
-}
-
 async function postJSON(path: string, value: unknown) {
   return fetch(path, {
     method: 'POST',
@@ -1864,20 +1795,22 @@ async function postJSON(path: string, value: unknown) {
 }
 
 const errorMessages: Record<ErrorCode, string> = {
-  path_required: 'Enter a folder path.',
-  path_relative: 'Use a full path, starting with /.',
-  path_missing: 'That folder is not on this computer.',
-  path_not_directory: 'That path is a file. Choose the project folder.',
+  name_required: 'Enter a project name.',
+  project_not_found: 'That project does not exist.',
+  catalog_conflict: 'Two projects use the same address. Resolve the catalog conflict before opening either one.',
+  catalog_unavailable: 'WorkBraid could not read the project catalog.',
   origin_mismatch: 'Open WorkBraid at the address printed in the terminal.',
   lookup_failed: "WorkBraid couldn't look that up. Try again.",
-  setup_incomplete: 'WorkBraid could not finish setting up architecture. Try again.',
+  project_create_failed: 'WorkBraid could not create the project. Try again.',
   architecture_unavailable: 'WorkBraid could not open this architecture.',
   architecture_invalid: 'WorkBraid could not open this architecture.',
   architecture_unsupported: 'This architecture is not supported yet.',
 }
 
-function isArchitectureError(code?: string): code is Extract<ErrorCode, `architecture_${string}`> {
-  return code === 'architecture_unavailable' || code === 'architecture_invalid' || code === 'architecture_unsupported'
+function decodeProjectSlug(pathname: string) {
+  const match = /^\/projects\/([^/]+)\/?$/.exec(pathname)
+  if (!match) return undefined
+  try { return decodeURIComponent(match[1]) } catch { return undefined }
 }
 
 function messageForError(code?: string) {

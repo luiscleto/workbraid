@@ -13,7 +13,7 @@ import (
 func TestLoadAcceptedV2DiagramProjectionFromRealGit(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestLoadAcceptedV2RejectsBoundedInvalidMatrix(t *testing.T) {
 	componentID := uuid.NewString()
 	otherComponentID := uuid.NewString()
 	manifest := func(root string) string {
-		return fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  source_hint: /tmp/project\nroot_diagram: %q\n", storeID, root)
+		return fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  slug: project\nroot_diagram: %q\n", storeID, root)
 	}
 	component := func(id string) string { return fmt.Sprintf("---\nid: %q\n---\n# Component\n", id) }
 
@@ -177,7 +177,7 @@ func TestLoadAcceptedV2RejectsBoundedInvalidMatrix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(t.TempDir())
-			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,7 +214,7 @@ func TestLoadAcceptedV2RejectsNonOrdinaryDiagramEntry(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(t.TempDir())
 			storeID := uuid.NewString()
-			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +222,7 @@ func TestLoadAcceptedV2RejectsNonOrdinaryDiagramEntry(t *testing.T) {
 			rootID := uuid.NewString()
 			diagramSource := fmt.Sprintf("id: %q\ntitle: Root\nappearances: []\n", rootID)
 			diagramTree := mktree(t, storePath, test.entry(t, storePath, diagramSource))
-			manifest := fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  source_hint: /tmp/project\nroot_diagram: %q\n", storeID, rootID)
+			manifest := fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  slug: project\nroot_diagram: %q\n", storeID, rootID)
 			commit := commitManifestTree(t, storePath, []byte(manifest), "100644", []string{"040000 tree " + diagramTree + "\tdiagrams"})
 			gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, base.Revision())
 			before := acceptedAuthorityState(t, storePath)
@@ -254,7 +254,7 @@ func commitV2Fixture(t *testing.T, storePath, storeID string, ids diagramFixture
 		"detail.yaml": fmt.Sprintf("id: %q\ntitle: Detail\nappearances:\n  - component: %q\n    role: home\n  - component: %q\n    role: reference\n", ids.detail, ids.worker, ids.ledger),
 		"empty.yaml":  fmt.Sprintf("id: %q\ntitle: Detail\nappearances: []\n", ids.empty),
 	}
-	manifest := fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  source_hint: /tmp/project\nroot_diagram: %q\n", storeID, ids.root)
+	manifest := fmt.Sprintf("format: workbraid-architecture\nversion: 2\nstore_id: %q\nproject:\n  name: Project\n  slug: project\nroot_diagram: %q\n", storeID, ids.root)
 	return commitV2Sources(t, storePath, manifest, components, diagrams, nil)
 }
 

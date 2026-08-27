@@ -20,9 +20,9 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	dataDirectory := t.TempDir()
 	manager := NewManager(dataDirectory)
 	storeID := uuid.NewString()
-	sourceHint := filepath.Join(t.TempDir(), "example-project")
+	projectSlug := "example-project"
 
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Example Project", sourceHint)
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Example Project", projectSlug)
 	if err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse generated manifest: %v", err)
 	}
-	if parsed.Format != "workbraid-architecture" || parsed.Version != 2 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.SourceHint != sourceHint || parsed.RootDiagram == "" {
+	if parsed.Format != "workbraid-architecture" || parsed.Version != 2 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.Slug != projectSlug || parsed.RootDiagram == "" {
 		t.Fatalf("unexpected manifest: %+v", parsed)
 	}
 	rootBytes, err := runGit(context.Background(), nil, "--git-dir", storePath, "show", snapshot.Revision()+":diagrams/root.yaml")
@@ -96,7 +96,7 @@ func TestIncompleteInitializationRetriesAtSameLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	_, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("first initialization error = %v, want incomplete", err)
 	}
@@ -108,7 +108,7 @@ func TestIncompleteInitializationRetriesAtSameLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestLoadAcceptedNeverFallsBackFromMissingAccepted(t *testing.T) {
 	dataDirectory := t.TempDir()
 	manager := NewManager(dataDirectory)
 	storeID := uuid.NewString()
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestRetryCompletesAnEmptyAssociatedStoreDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatalf("retry empty store directory: %v", err)
 	}
@@ -181,15 +181,15 @@ func TestRetryCompletesAnEmptyAssociatedStoreDirectory(t *testing.T) {
 func TestLoadRejectsIdentityMismatchWithoutChangingAccepted(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	associatedID := uuid.NewString()
-	snapshot, err := manager.InitializeOrLoad(context.Background(), associatedID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), associatedID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
 	storePath, _ := manager.StorePath(associatedID)
 
 	wrongManifest, err := marshalManifest(manifest{
-		Format: "workbraid-architecture", Version: 1, StoreID: uuid.NewString(),
-		Project: manifestProject{Name: "Project", SourceHint: "/tmp/project"},
+		Format: "workbraid-architecture", Version: 2, StoreID: uuid.NewString(),
+		Project: manifestProject{Name: "Project", Slug: "project"}, RootDiagram: uuid.NewString(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,12 +209,12 @@ func TestLoadRejectsIdentityMismatchWithoutChangingAccepted(t *testing.T) {
 func TestLoadRejectsNonStringRecoveryHintsFromAcceptedGitTree(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
 	storePath, _ := manager.StorePath(storeID)
-	typedManifest := []byte("format: workbraid-architecture\nversion: 1\nstore_id: \"" + storeID + "\"\nproject:\n  name: 123\n  source_hint: true\n")
+	typedManifest := []byte("format: workbraid-architecture\nversion: 2\nstore_id: \"" + storeID + "\"\nproject:\n  name: 123\n  slug: true\nroot_diagram: \"" + uuid.NewString() + "\"\n")
 	commit := commitManifestTree(t, storePath, typedManifest, "100644", nil)
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, snapshot.Revision())
 
@@ -231,7 +231,7 @@ func TestLoadAcceptedComponentSnapshotFromRealGit(t *testing.T) {
 	dataDirectory := t.TempDir()
 	manager := NewManager(dataDirectory)
 	storeID := uuid.NewString()
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestLoadAcceptedProjectsInlineMarkdownTitlesToHumanReadableText(t *testing.
 	dataDirectory := t.TempDir()
 	manager := NewManager(dataDirectory)
 	storeID := uuid.NewString()
-	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestConstructCandidatePreservesExactExistingSourceSectionsAndAcceptedAuthor
 	dataDirectory := t.TempDir()
 	manager := NewManager(dataDirectory)
 	storeID := uuid.NewString()
-	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestConstructCandidatePreservesExactExistingSourceSectionsAndAcceptedAuthor
 func TestConstructCandidateRelationshipReplacementPreservesAuthoredSectionsAndLabelValues(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestConstructCandidateRelationshipReplacementPreservesAuthoredSectionsAndLa
 func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.
 func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +615,7 @@ func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *test
 func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +696,7 @@ func mustStorePath(t *testing.T, manager *Manager, storeID string) string {
 func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	bootstrap, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +922,7 @@ func TestLoadRejectsDuplicateIDsAndUnresolvedRelationshipsAtomically(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(t.TempDir())
 			storeID := uuid.NewString()
-			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+			base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -952,7 +952,7 @@ func TestLoadRejectsDuplicateIDsAndUnresolvedRelationshipsAtomically(t *testing.
 func TestLoadRejectsEmptyComponentsTreeInsteadOfLoadingEmptySnapshot(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -962,7 +962,7 @@ func TestLoadRejectsEmptyComponentsTreeInsteadOfLoadingEmptySnapshot(t *testing.
 	commit := commitManifestTree(t, storePath, manifestBytes, "100644", []string{"040000 tree " + emptyComponentsTree + "\tcomponents"})
 	gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, snapshot.Revision())
 
-	loaded, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	loaded, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrUnsupported) {
 		t.Fatalf("empty components tree load = (%+v, %v), want invalid and not unsupported", loaded, err)
 	}
@@ -976,7 +976,7 @@ func TestLoadRejectsNonOrdinaryManifestPath(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			manager := NewManager(t.TempDir())
 			storeID := uuid.NewString()
-			snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+			snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -993,7 +993,7 @@ func TestLoadRejectsNonOrdinaryManifestPath(t *testing.T) {
 			commit := gitTextWithInput(t, []byte("non-ordinary manifest\n"), "--git-dir", storePath, "commit-tree", tree)
 			gitText(t, "--git-dir", storePath, "update-ref", acceptedRef, commit, snapshot.Revision())
 
-			_, err = manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+			_, err = manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("non-ordinary manifest error = %v, want invalid", err)
 			}
@@ -1007,7 +1007,7 @@ func TestLoadRejectsNonOrdinaryManifestPath(t *testing.T) {
 func TestLoadRejectsNonOrdinaryComponentPath(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	storeID := uuid.NewString()
-	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	base, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1040,7 +1040,7 @@ func TestUnacceptedObjectsDoNotBecomeAcceptedState(t *testing.T) {
 	}
 	dangling := commitManifestTree(t, storePath, []byte("not: the bootstrap\n"), "100644", nil)
 
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1067,7 +1067,7 @@ func TestAcceptedRefCreationFailureLeavesOnlyUnacceptedObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	_, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("ref creation error = %v, want incomplete", err)
 	}
@@ -1080,7 +1080,7 @@ func TestAcceptedRefCreationFailureLeavesOnlyUnacceptedObjects(t *testing.T) {
 	if err := os.Remove(lockPath); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "/tmp/project")
+	snapshot, err := manager.InitializeOrLoad(context.Background(), storeID, "Project", "project")
 	if err != nil {
 		t.Fatalf("retry after external lock: %v", err)
 	}
@@ -1091,23 +1091,30 @@ func TestAcceptedRefCreationFailureLeavesOnlyUnacceptedObjects(t *testing.T) {
 
 func TestManifestSchemaIsClosed(t *testing.T) {
 	storeID := uuid.NewString()
-	base := "format: workbraid-architecture\nversion: 1\nstore_id: \"" + storeID + "\"\nproject:\n  name: Project\n  source_hint: /tmp/project\n"
+	rootID := uuid.NewString()
+	base := "format: workbraid-architecture\nversion: 2\nstore_id: \"" + storeID + "\"\nproject:\n  name: Project\n  slug: project\nroot_diagram: \"" + rootID + "\"\n"
+	if parsed, err := parseManifest([]byte(base)); err != nil || parsed.Version != 2 || parsed.Project.Slug != "project" || parsed.RootDiagram != rootID {
+		t.Fatalf("valid manifest = %+v, %v", parsed, err)
+	}
 	for name, contents := range map[string]string{
 		"top-level unknown":       base + "extra: true\n",
 		"duplicate top field":     base + "format: workbraid-architecture\n",
-		"project unknown":         strings.Replace(base, "  source_hint: /tmp/project\n", "  source_hint: /tmp/project\n  extra: true\n", 1),
-		"duplicate project field": strings.Replace(base, "  source_hint: /tmp/project\n", "  source_hint: /tmp/project\n  name: Again\n", 1),
-		"unsupported version":     strings.Replace(base, "version: 1", "version: 2", 1),
+		"project unknown":         strings.Replace(base, "  slug: project\n", "  slug: project\n  extra: true\n", 1),
+		"duplicate project field": strings.Replace(base, "  slug: project\n", "  slug: project\n  name: Again\n", 1),
+		"unsupported version":     strings.Replace(base, "version: 2", "version: 1", 1),
 		"empty name":              strings.Replace(base, "name: Project", "name: '   '", 1),
 		"multiple documents":      base + "---\nformat: workbraid-architecture\n",
 		"wrong format type":       strings.Replace(base, "format: workbraid-architecture", "format: [workbraid-architecture]", 1),
 		"boolean format":          strings.Replace(base, "format: workbraid-architecture", "format: true", 1),
-		"wrong version type":      strings.Replace(base, "version: 1", "version: one", 1),
-		"quoted version":          strings.Replace(base, "version: 1", "version: \"1\"", 1),
+		"wrong version type":      strings.Replace(base, "version: 2", "version: two", 1),
+		"quoted version":          strings.Replace(base, "version: 2", "version: \"2\"", 1),
 		"numeric store ID":        strings.Replace(base, "store_id: \""+storeID+"\"", "store_id: 123", 1),
-		"wrong project type":      strings.Replace(base, "project:\n  name: Project\n  source_hint: /tmp/project", "project: Project", 1),
+		"wrong project type":      strings.Replace(base, "project:\n  name: Project\n  slug: project", "project: Project", 1),
 		"numeric project name":    strings.Replace(base, "name: Project", "name: 123", 1),
-		"boolean source hint":     strings.Replace(base, "source_hint: /tmp/project", "source_hint: true", 1),
+		"boolean slug":            strings.Replace(base, "slug: project", "slug: true", 1),
+		"invalid slug":            strings.Replace(base, "slug: project", "slug: Project_Path", 1),
+		"source hint rejected":    strings.Replace(base, "  slug: project\n", "  slug: project\n  source_hint: /tmp/project\n", 1),
+		"missing root":            strings.Replace(base, "root_diagram: \""+rootID+"\"\n", "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseManifest([]byte(contents)); err == nil {

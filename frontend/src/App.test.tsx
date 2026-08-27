@@ -404,6 +404,12 @@ describe('App', () => {
     expect(requestPath(fetchMock, 1)).toBe('/api/architecture/diagrams/detail')
     expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
     const pendingComposition = screen.getByRole('region', { name: 'Diagram changes in progress' })
+    const groupedDiagrams = [...pendingComposition.querySelectorAll<HTMLElement>('.pending-diagram-row')]
+    expect(groupedDiagrams.length).toBeGreaterThanOrEqual(2)
+    for (const diagram of groupedDiagrams.slice(0, 2)) {
+      expect(diagram.querySelector(':scope > .pending-diagram-header')).toBeInTheDocument()
+      expect(diagram.querySelector(':scope > .pending-diagram-body')).toBeInTheDocument()
+    }
     expect(within(pendingComposition).getAllByRole('button', { name: 'Add component' })).toHaveLength(candidateDiagrams.length)
     expect(within(pendingComposition).getAllByRole('button', { name: 'Edit title' }).every((action) => action.classList.contains('pending-diagram-action'))).toBe(true)
     const nestedDiagramRow = within(pendingComposition).getByText('Worker internals', { exact: true }).closest('.pending-diagram-row') as HTMLElement
@@ -411,6 +417,7 @@ describe('App', () => {
     const addToNested = within(nestedDiagramRow).getByRole('button', { name: 'Add component' })
     expect(pendingTitleAction).toHaveClass('text-action', 'pending-diagram-action')
     expect(addToNested).toHaveClass('text-action', 'pending-diagram-action')
+    expect(pendingTitleAction.closest('.pending-diagram-header')).toBe(addToNested.closest('.pending-diagram-header'))
     await user.click(addToNested)
     expect(screen.getByRole('heading', { name: 'Add component' })).toBeInTheDocument()
     await user.type(screen.getByLabelText('Title'), 'Unsaved nested component')
@@ -539,7 +546,10 @@ describe('App', () => {
     const user = userEvent.setup()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Add a title to this diagram.')
-    expect(screen.getByText('Untitled diagram').closest('.pending-diagram-row')).toHaveClass('validation-owner')
+    const invalidDiagram = screen.getByText('Untitled diagram').closest('.pending-diagram-row') as HTMLElement
+    expect(invalidDiagram).toHaveClass('validation-owner')
+    expect(within(invalidDiagram.querySelector('.pending-diagram-header') as HTMLElement).getByText('Needs attention')).toBeInTheDocument()
+    expect(invalidDiagram.querySelector('.pending-diagram-body')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Fix diagram title' }))
     expect(screen.getByRole('heading', { name: 'Edit diagram title' })).toBeInTheDocument()
     expect(screen.getByLabelText('Diagram title')).toHaveFocus()

@@ -234,9 +234,29 @@ test('P2.1 Diagram hierarchy remains navigable and writable on the living v2 pro
     await page.getByLabel('Diagram title').fill('Worker internals')
     await page.getByRole('button', { name: 'Keep change' }).click()
     await expect(pendingComposition).toContainText('Worker internals')
-    const workerInternals = pendingComposition.getByText('Worker internals', { exact: true }).locator('..').locator('..')
+    const groupedDiagrams = pendingComposition.locator('.pending-diagram-list > .pending-diagram-row')
+    expect(await groupedDiagrams.count()).toBeGreaterThanOrEqual(2)
+    const groupedLayout = await groupedDiagrams.evaluateAll((sections) => sections.slice(0, 2).map((section) => {
+      const header = section.querySelector<HTMLElement>(':scope > .pending-diagram-header')
+      const body = section.querySelector<HTMLElement>(':scope > .pending-diagram-body')
+      const bounds = section.getBoundingClientRect()
+      return {
+        top: bounds.top,
+        bottom: bounds.bottom,
+        headerBackground: header ? getComputedStyle(header).backgroundColor : '',
+        bodyBackground: body ? getComputedStyle(body).backgroundColor : '',
+      }
+    }))
+    expect(groupedLayout).toHaveLength(2)
+    expect(groupedLayout[0].headerBackground).not.toBe('rgba(0, 0, 0, 0)')
+    expect(groupedLayout[0].bodyBackground).not.toBe('rgba(0, 0, 0, 0)')
+    expect(groupedLayout[0].headerBackground).not.toBe(groupedLayout[0].bodyBackground)
+    expect(groupedLayout[1].top - groupedLayout[0].bottom).toBeGreaterThanOrEqual(10)
+    const workerInternals = groupedDiagrams.filter({ hasText: 'Worker internals' })
     const pendingEditTitle = workerInternals.getByRole('button', { name: 'Edit title' })
     const addNestedComponent = workerInternals.getByRole('button', { name: 'Add component' })
+    await expect(workerInternals.locator(':scope > .pending-diagram-header')).toContainText('Worker internals')
+    await expect(workerInternals.locator(':scope > .pending-diagram-body')).toBeVisible()
     await expect(pendingEditTitle).toHaveClass(/pending-diagram-action/)
     await expect(pendingEditTitle).toHaveCSS('border-bottom-style', 'solid')
     await pendingEditTitle.focus()

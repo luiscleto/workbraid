@@ -1589,36 +1589,60 @@ function ChangesTask({
       {changes.candidate?.diagrams?.length ? (
         <section className="pending-diagram-composition" aria-label="Diagram changes in progress">
           <h3>Diagram composition</h3>
-          {changes.candidate.diagrams.map((diagram) => (
-            <div className="pending-diagram-row" key={diagram.id}>
-              <div><strong>{diagram.title}</strong>{changes.detail_diagrams?.some((addition) => addition.id === diagram.id) && <small> New diagram</small>}</div>
-              {!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title)}>Edit title</button>}
-              {!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}
-              <ul>
-                {diagram.appearances.filter((appearance) => appearance.role === 'home').map((appearance) => {
-                  const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
-                  return <li key={appearance.component_id}>
-                    <span>{component?.title ?? 'Component'}</span>
-                    {!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
-                    {!readOnly && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
-                  </li>
-                })}
-              </ul>
-            </div>
-          ))}
+          <div className="pending-diagram-list">
+            {changes.candidate.diagrams.map((diagram) => (
+              <section className="pending-diagram-row" key={diagram.id}>
+                <header className="pending-diagram-header">
+                  <div className="pending-diagram-title"><strong>{diagram.title}</strong>{changes.detail_diagrams?.some((addition) => addition.id === diagram.id) && <small> New diagram</small>}</div>
+                  <div className="pending-diagram-header-actions">
+                    {!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title)}>Edit title</button>}
+                    {!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}
+                  </div>
+                </header>
+                <div className="pending-diagram-body">
+                  <ul>
+                    {diagram.appearances.filter((appearance) => appearance.role === 'home').map((appearance) => {
+                      const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
+                      return <li key={appearance.component_id}>
+                        <span>{component?.title ?? 'Component'}</span>
+                        {!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
+                        {!readOnly && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
+                      </li>
+                    })}
+                  </ul>
+                </div>
+              </section>
+            ))}
+          </div>
         </section>
       ) : null}
       {!changes.candidate && (changes.detail_diagrams?.length || changes.diagram_titles?.length || changes.home_moves?.length) ? (
         <section className="pending-diagram-composition" aria-label="Diagram changes needing attention">
           <h3>Diagram composition</h3>
-          {[...(changes.detail_diagrams ?? []).map((diagram) => ({ id: diagram.id, title: diagram.title })), ...(changes.diagram_titles ?? []).map((diagram) => ({ id: diagram.diagram_id, title: diagram.title }))].map((diagram) => {
-            const ownsValidation = Boolean(changes.review_blocker && changes.validation_diagram === diagram.id)
-            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}><strong>{diagram.title.trim() || 'Untitled diagram'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}{!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}</div>
-          })}
+          <div className="pending-diagram-list">
+            {[...(changes.detail_diagrams ?? []).map((diagram) => ({ id: diagram.id, title: diagram.title })), ...(changes.diagram_titles ?? []).map((diagram) => ({ id: diagram.diagram_id, title: diagram.title }))].map((diagram) => {
+              const ownsValidation = Boolean(changes.review_blocker && changes.validation_diagram === diagram.id)
+              return (
+                <section className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={diagram.id}>
+                  <header className="pending-diagram-header">
+                    <div className="pending-diagram-title">
+                      <strong>{diagram.title.trim() || 'Untitled diagram'}</strong>
+                      {ownsValidation && <strong className="validation-marker">Needs attention</strong>}
+                    </div>
+                    <div className="pending-diagram-header-actions">
+                      {!readOnly && !acceptanceUnknown && onEditDiagramTitle && <button className="text-action pending-diagram-action" type="button" onClick={() => onEditDiagramTitle(diagram.id, diagram.title, ownsValidation)}>{ownsValidation ? 'Fix title' : 'Edit title'}</button>}
+                      {!readOnly && !acceptanceUnknown && onAddComponent && <button className="text-action pending-diagram-action" type="button" onClick={() => onAddComponent(diagram.id)}>Add component</button>}
+                    </div>
+                  </header>
+                  <div className="pending-diagram-body" />
+                </section>
+              )
+            })}
+          </div>
           {changes.home_moves?.map((move) => {
             const component = changes.components.find((candidate) => candidate.id === move.component_id) ?? changes.candidate?.components.find((candidate) => candidate.id === move.component_id) ?? result.components?.find((candidate) => candidate.id === move.component_id)
             const ownsValidation = Boolean(changes.review_blocker && changes.validation_item === move.component_id && changes.validation_diagram_field === 'home')
-            return <div className={`pending-diagram-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={move.component_id}><strong>{component?.title ?? 'Component home'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(move.component_id, move.diagram_id, ownsValidation)}>{ownsValidation ? 'Fix location' : 'Change where it lives'}</button>}</div>
+            return <div className={`pending-home-move-row${ownsValidation ? ' validation-owner' : ''}`} aria-invalid={ownsValidation || undefined} key={move.component_id}><strong>{component?.title ?? 'Component home'}</strong>{ownsValidation && <strong className="validation-marker">Needs attention</strong>}{!readOnly && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(move.component_id, move.diagram_id, ownsValidation)}>{ownsValidation ? 'Fix location' : 'Change where it lives'}</button>}</div>
           })}
         </section>
       ) : null}

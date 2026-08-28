@@ -1306,6 +1306,21 @@ export function App() {
           <p className="introduction">Open an Architecture project or begin a new one.</p>
         </header>
 
+        <form onSubmit={createProject}>
+          <label htmlFor="project-name">New project</label>
+          <div className="input-row">
+            <input
+              id="project-name"
+              name="project-name"
+              type="text"
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="Example project"
+              autoComplete="off"
+            />
+            <button type="submit" disabled={busy || !projectName.trim()}>{busy ? 'Working…' : 'Create project'}</button>
+          </div>
+        </form>
         {state.kind === 'catalog' && state.projects.length > 0 && (
           <nav className="project-catalog" aria-label="Projects">
             {state.projects.map((project, index) => project.unavailable ? (
@@ -1334,21 +1349,6 @@ export function App() {
           </nav>
         )}
         {state.kind === 'catalog' && state.projects.length === 0 && <p className="catalog-empty">No projects yet.</p>}
-        <form onSubmit={createProject}>
-          <label htmlFor="project-name">New project</label>
-          <div className="input-row">
-            <input
-              id="project-name"
-              name="project-name"
-              type="text"
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder="Example project"
-              autoComplete="off"
-            />
-            <button type="submit" disabled={busy || !projectName.trim()}>{busy ? 'Working…' : 'Create project'}</button>
-          </div>
-        </form>
         {state.kind === 'looking' && <p className="lookup-status">Opening projects…</p>}
         {state.kind === 'not-found' && <section className="result-note error" role="alert"><h2>Project not found</h2><p>No project currently uses <strong>{state.slug}</strong>.</p><button className="inline-action" type="button" onClick={() => { window.history.pushState({}, '', '/'); void loadCatalog() }}>Back to projects</button></section>}
         {state.kind === 'catalog-error' && <section className="result-note error" role="alert"><h2>Projects unavailable</h2><p>{state.message}</p><button className="inline-action" type="button" onClick={() => void loadCatalog()}>Try again</button></section>}

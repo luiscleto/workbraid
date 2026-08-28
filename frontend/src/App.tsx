@@ -1608,9 +1608,11 @@ function ChangesTask({
               {changes.review.comparison.appearances?.map((appearance, index) => {
                 const projection = changes.review?.with_changes.components.find((component) => component.id === appearance.component_id)
                   ?? changes.review?.before.components.find((component) => component.id === appearance.component_id)
-                const diagram = changes.review?.with_changes.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
-                  ?? changes.review?.before.diagrams?.find((candidate) => candidate.id === appearance.diagram_id)
-                const description = appearance.status === 'added' ? 'placed in diagram' : appearance.status === 'removed' ? 'removed from diagram' : 'linked to detail diagram'
+                const preferredDiagrams = appearance.status === 'removed' ? changes.review?.before.diagrams : changes.review?.with_changes.diagrams
+                const fallbackDiagrams = appearance.status === 'removed' ? changes.review?.with_changes.diagrams : changes.review?.before.diagrams
+                const diagram = preferredDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
+                  ?? fallbackDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
+                const description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
                 return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
               })}
             </ul>
@@ -1770,6 +1772,12 @@ function ChangesTask({
       {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
     </section>
   )
+}
+
+function appearanceReviewDescription(role: 'home' | 'reference', status: 'added' | 'removed' | 'detail_changed', diagramTitle: string) {
+  if (status === 'detail_changed') return `detail diagram link changed in ${diagramTitle}`
+  if (role === 'home') return status === 'added' ? `now lives in ${diagramTitle}` : `no longer lives in ${diagramTitle}`
+  return status === 'added' ? `shown in ${diagramTitle}` : `no longer shown in ${diagramTitle}`
 }
 
 function ReviewContext({

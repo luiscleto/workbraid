@@ -333,6 +333,39 @@ describe('slug workspace and reusable references', () => {
 })
 
 describe('candidate review regressions', () => {
+  it('names each changed Diagram and distinguishes home from reusable appearances', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const value = reviewedArchitecture()
+    const review = (value as unknown as { changes: { review: {
+      with_changes: { diagrams: Array<Record<string, unknown>> }
+      comparison: { appearances: Array<Record<string, unknown>> }
+    } } }).changes.review
+    review.with_changes.diagrams = review.with_changes.diagrams.map((diagram) => diagram.id === root
+      ? { ...diagram, appearances: [{ component_id: worker, role: 'home', detail_diagram_id: detail, detail_diagram_title: 'Detail' }, { component_id: external, role: 'home' }] }
+      : { ...diagram, appearances: [{ component_id: worker, role: 'reference' }] })
+    review.comparison.appearances = [
+      { diagram_id: root, component_id: external, role: 'reference', status: 'removed', path: 'diagrams/root.yaml' },
+      { diagram_id: root, component_id: external, role: 'home', status: 'added', path: 'diagrams/root.yaml' },
+      { diagram_id: detail, component_id: external, role: 'home', status: 'removed', path: 'diagrams/detail.yaml' },
+      { diagram_id: detail, component_id: worker, role: 'reference', status: 'added', path: 'diagrams/detail.yaml' },
+      { diagram_id: root, component_id: worker, role: 'home', status: 'detail_changed', path: 'diagrams/root.yaml' },
+    ]
+    vi.stubGlobal('fetch', vi.fn(() => response(value)))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const diagramChanges = await screen.findByRole('region', { name: 'Diagram changes' })
+    expect(within(diagramChanges).getByRole('button', { name: 'External no longer shown in System' })).toBeInTheDocument()
+    const homeAdded = within(diagramChanges).getByRole('button', { name: 'External now lives in System' })
+    expect(homeAdded).toBeInTheDocument()
+    expect(within(diagramChanges).getByRole('button', { name: 'External no longer lives in Detail' })).toBeInTheDocument()
+    expect(within(diagramChanges).getByRole('button', { name: 'Worker updated shown in Detail' })).toBeInTheDocument()
+    expect(within(diagramChanges).getByRole('button', { name: 'Worker updated detail diagram link changed in System' })).toBeInTheDocument()
+
+    await user.click(homeAdded)
+    expect(within(screen.getByRole('region', { name: 'Review context' })).getByRole('heading', { name: 'System' })).toBeInTheDocument()
+  })
+
   it('keeps map, index, documentation, and topology on one selected snapshot and focuses the exact diff', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))

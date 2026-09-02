@@ -170,7 +170,7 @@ function pendingDiagram(page: Page, title: string): Locator {
 
 async function movePendingHome(page: Page, sourceDiagram: string, component: string, destination: string) {
   const row = pendingDiagram(page, sourceDiagram).locator('li').filter({ hasText: component })
-  await row.getByRole('button', { name: 'Change where it lives' }).click()
+  await row.getByRole('button', { name: `Change where ${component} lives`, exact: true }).click()
   await page.locator('form.diagram-editor').getByRole('combobox').selectOption({ label: destination })
   await page.getByRole('button', { name: 'Keep change' }).click()
 }

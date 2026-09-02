@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,6 +67,10 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	global.StringVar(&options.server, "server", defaultServer, "running WorkBraid loopback URL")
 	global.BoolVar(&options.json, "json", false, "emit one machine JSON envelope")
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stdout, cliHelp)
+			return 0
+		}
 		return writeCLIEnvelope(stdout, jsonRequested, agentapi.Failure("invalid_request", "Correct the global flags and try again.", nil))
 	}
 	rest := global.Args()
@@ -142,8 +147,8 @@ func writeCLIEnvelope(writer io.Writer, jsonMode bool, envelope agentapi.Envelop
 func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.Envelope) {
 	if len(args) == 1 {
 		switch args[0] {
-		case "status", "architecture_inspect", "changes_inspect":
-			return strings.ReplaceAll(args[0], "_", "_"), nil, nil
+		case "status":
+			return "status", nil, nil
 		}
 	}
 	if len(args) < 2 {
@@ -512,15 +517,37 @@ Client mode: workbraid [--server <loopback-url>] [--json] <command> [action flag
 MCP mode:    workbraid [--server <loopback-url>] mcp
 Skill:       workbraid --skill
 
-Commands:
+Read and project commands:
   status
-  project list|current|create|open|close
-  architecture inspect|refresh|update
-  changes inspect|review|discard
-  component create|edit|move-home
-  relationship add|edit|remove
-  diagram create-detail|edit-title|show-component|stop-showing-component
+  project list | project current
+  project create --name <name>
+  project open --slug <slug>
+  project close --store-id <uuid>
+  architecture inspect
+  architecture refresh --store-id <uuid> --accepted-revision <sha>
+  changes inspect
 
-Run workbraid --skill for identities, exact preconditions, flags, review/update,
-typed recovery, and a complete JSON workflow.
+Every authoring command requires this exact inspected state:
+  --store-id <uuid> --accepted-revision <sha> --generation <n|none>
+
+Authoring commands:
+  component create <state> --title <text> [--description <text>|--description-file <path|->] [--diagram-id <uuid>]
+  component edit <state> --component-id <uuid> [--title <text>] [--description <text>|--description-file <path|->]
+  component move-home <state> --component-id <uuid> --diagram-id <uuid>
+  relationship add <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->)
+  relationship edit <state> --source-id <uuid> --old-target-id <raw> (--old-label <raw>|--old-label-file <path|->) [--occurrence <n>] --target-id <raw> (--label <raw>|--label-file <path|->)
+  relationship remove <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->) [--occurrence <n>]
+  diagram create-detail <state> --component-id <uuid> --title <text>
+  diagram edit-title <state> --diagram-id <uuid> --title <text>
+  diagram show-component <state> --diagram-id <uuid> --component-id <uuid>
+  diagram stop-showing-component <state> --diagram-id <uuid> --component-id <uuid>
+
+Review and deliberate update:
+  changes review <state with numeric generation>
+  changes discard --store-id <uuid> --generation <n>
+  architecture update --store-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
+
+The slug locates a project; store, Component, and Diagram UUIDs are stable identity.
+Inspect after conflicts. Review returns the only base/tree/generation binding accepted
+by Update. Run workbraid --skill for typed recovery and a complete JSON workflow.
 `

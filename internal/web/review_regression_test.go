@@ -60,13 +60,12 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 		t.Run(action, func(t *testing.T) {
 			state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 			base := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Capture"}))
-			pending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-				ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, ExpectedRevision: base.Revision, DiagramID: base.RootDiagramID,
-				Title: "Gateway", Description: "First generation.\n",
-			}))
+			pending := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(base, componentMutationRequest{
+				DiagramID: base.RootDiagramID, Title: "Gateway", Description: "First generation.\n",
+			})))
 			componentID := pending.Changes.Components[0].ID
 
-			body, err := json.Marshal(architectureActionRequest{ProjectSlug: base.ProjectSlug, StoreID: base.StoreID})
+			body, err := json.Marshal(observedAction(pending))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,15 +79,14 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 			<-writer.writeStarted
 
 			if action == "mutation" {
-				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
-					ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, ExpectedRevision: base.Revision, ComponentID: componentID,
-					Description: "Second generation.\n", DescriptionChanged: true,
-				}))
+				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", observedComponentMutation(pending, componentMutationRequest{
+					ComponentID: componentID, Description: "Second generation.\n", DescriptionChanged: true,
+				})))
 				if invalidated.Changes.Review != nil {
 					t.Fatalf("mutation exposed invalidated review: %+v", invalidated.Changes.Review)
 				}
 			} else {
-				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", architectureActionRequest{ProjectSlug: base.ProjectSlug, StoreID: base.StoreID}))
+				invalidated := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", observedAction(pending)))
 				if invalidated.Changes != nil {
 					t.Fatalf("discard retained changes: %+v", invalidated.Changes)
 				}

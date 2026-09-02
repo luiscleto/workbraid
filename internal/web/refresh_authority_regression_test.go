@@ -48,19 +48,21 @@ func newNativeRefreshFixture(t *testing.T, reviewed bool) nativeRefreshFixture {
 }
 
 func (fixture nativeRefreshFixture) action() architectureActionRequest {
-	return architectureActionRequest{ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID}
+	fixture.state.stateMutex.Lock()
+	response := fixture.state.currentArchitectureResponseLocked()
+	fixture.state.stateMutex.Unlock()
+	return observedAction(response)
 }
 
 func (fixture nativeRefreshFixture) keepAndReview(t *testing.T) architectureResponse {
 	t.Helper()
-	kept := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+	kept := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 		ComponentID: fixture.component, Description: "Pending body.\n", DescriptionChanged: true,
-	}))
+	})))
 	if kept.Changes == nil {
 		t.Fatal("pending change missing")
 	}
-	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/review", fixture.action()))
+	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/review", observedAction(kept)))
 	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
 		t.Fatalf("review missing: %+v", reviewed.Changes)
 	}
@@ -105,9 +107,7 @@ func TestEveryLoadedProjectActionRequiresStoreIdentityAsWellAsSlug(t *testing.T)
 	state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 	first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "First"}))
 	second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Second"}))
-	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", componentMutationRequest{
-		ProjectSlug: second.ProjectSlug, StoreID: second.StoreID, ExpectedRevision: second.Revision, DiagramID: second.RootDiagramID, Title: "Kept",
-	}))
+	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(second, componentMutationRequest{DiagramID: second.RootDiagramID, Title: "Kept"})))
 	stale := architectureActionRequest{ProjectSlug: second.ProjectSlug, StoreID: first.StoreID}
 	requests := []struct {
 		path string
@@ -144,7 +144,7 @@ func TestRefreshSlugConflictDoesNotPublishAmbiguousLocator(t *testing.T) {
 	replaceAcceptedManifest(t, storePath, first.Revision, func(value string) string {
 		return strings.Replace(value, "slug: alpha", "slug: "+second.ProjectSlug, 1)
 	})
-	response := postJSONRequest(t, handler, "/api/architecture/refresh", architectureActionRequest{ProjectSlug: first.ProjectSlug, StoreID: first.StoreID})
+	response := postJSONRequest(t, handler, "/api/architecture/refresh", observedAction(first))
 	result := decodeArchitectureBody(t, response)
 	if response.Code != http.StatusConflict || result.ActionError != errorCatalogConflict || !result.Stale || result.ProjectSlug != first.ProjectSlug || result.Revision != first.Revision {
 		t.Fatalf("conflicting Refresh status=%d result=%+v", response.Code, result)
@@ -218,10 +218,9 @@ func TestStaleReopenCacheCannotOverrideConclusiveRefreshAuthority(t *testing.T) 
 	for _, scenario := range []string{"invalid", "unsupported", "missing", "third", "catalog conflict"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newNativeRefreshFixture(t, false)
-			decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-				ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+			decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 				ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-			}))
+			})))
 			baseSnapshot := *fixture.state.loadedSnapshot
 			cachedRevision := fixture.advanceTitle(t, baseSnapshot, "Cached current")
 			cachedSnapshot, err := fixture.state.architecture.LoadRevision(context.Background(), baseSnapshot, cachedRevision)
@@ -287,10 +286,9 @@ func TestStaleReopenCacheCannotOverrideConclusiveRefreshAuthority(t *testing.T) 
 
 func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
-	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-	}))
+	})))
 	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
 		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
 	})
@@ -301,9 +299,7 @@ func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testin
 	fixture.state.beforeRefreshReobserve = func(string) {
 		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
 	}
-	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{
-		ProjectSlug: "moved-locator", StoreID: fixture.base.StoreID,
-	}))
+	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(reopened)))
 	if refreshed.Revision != fixture.base.Revision || refreshed.ProjectSlug != fixture.base.ProjectSlug || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale {
 		t.Fatalf("return-to-retained result=%+v", refreshed)
 	}
@@ -318,10 +314,9 @@ func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testin
 
 func TestRefreshReturnToRetainedRevisionRejectsAmbiguousRetainedSlug(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
-	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-	}))
+	})))
 	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
 		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
 	})
@@ -339,9 +334,7 @@ func TestRefreshReturnToRetainedRevisionRejectsAmbiguousRetainedSlug(t *testing.
 	fixture.state.beforeRefreshReobserve = func(string) {
 		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
 	}
-	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{
-		ProjectSlug: "moved-locator", StoreID: fixture.base.StoreID,
-	})
+	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(reopened))
 	result := decodeArchitectureBody(t, response)
 	if response.Code != http.StatusConflict || result.ActionError != errorCatalogConflict || !result.Stale || result.ProjectSlug != "moved-locator" {
 		t.Fatalf("ambiguous retained locator was published: status=%d result=%+v", response.Code, result)
@@ -353,10 +346,9 @@ func TestRefreshReturnToRetainedRevisionRejectsAmbiguousRetainedSlug(t *testing.
 
 func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
-	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 		ComponentID: fixture.component, Description: "Old-base pending.\n", DescriptionChanged: true,
-	}))
+	})))
 	newRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
 		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-project", 1)
 	})
@@ -364,7 +356,7 @@ func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing
 	if reopened.ProjectSlug != "moved-project" || reopened.Revision != fixture.base.Revision || !reopened.Stale || reopened.Changes == nil || !reopened.Changes.Stale {
 		t.Fatalf("stale reopen lost route/base distinction: %+v", reopened)
 	}
-	discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", architectureActionRequest{ProjectSlug: "moved-project", StoreID: fixture.base.StoreID}))
+	discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", observedAction(reopened)))
 	if discarded.ProjectSlug != "moved-project" || discarded.Revision != newRevision || discarded.Stale || discarded.Changes != nil {
 		t.Fatalf("discard did not recover validated current snapshot: %+v", discarded)
 	}
@@ -373,10 +365,7 @@ func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing
 func TestSameHomeMoveIsAnExactNoOp(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
 	before := git(t, "--git-dir", fixture.storePath, "ls-tree", "-r", fixture.base.Revision)
-	response := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/move-home", diagramMutationRequest{
-		ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
-		ComponentID: fixture.component, DiagramID: fixture.base.RootDiagramID,
-	}))
+	response := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/move-home", observedDiagramMutation(fixture.base, diagramMutationRequest{ComponentID: fixture.component, DiagramID: fixture.base.RootDiagramID})))
 	if response.Changes != nil {
 		t.Fatalf("same-home move created pending work: %+v", response.Changes)
 	}
@@ -545,7 +534,7 @@ func TestRefreshAdoptsNonLinearRevisionAndSerializesMutation(t *testing.T) {
 		t.Fatalf("advance=%+v", first)
 	}
 	git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, advanced)
-	rewound := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{ProjectSlug: first.ProjectSlug, StoreID: first.StoreID}))
+	rewound := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(first)))
 	if rewound.Revision != fixture.base.Revision || rewound.Stale {
 		t.Fatalf("rewind=%+v", rewound)
 	}
@@ -557,15 +546,14 @@ func TestRefreshAdoptsNonLinearRevisionAndSerializesMutation(t *testing.T) {
 	fixture.state.beforeRefreshReobserve = func(string) { close(loaded); <-release }
 	refreshDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		refreshDone <- postJSONRequest(t, fixture.handler, "/api/architecture/refresh", architectureActionRequest{ProjectSlug: rewound.ProjectSlug, StoreID: rewound.StoreID})
+		refreshDone <- postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(rewound))
 	}()
 	<-loaded
 	mutationDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		mutationDone <- postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-			ProjectSlug: rewound.ProjectSlug, StoreID: rewound.StoreID, ExpectedRevision: rewound.Revision, ComponentID: fixture.component,
+		mutationDone <- postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(rewound, componentMutationRequest{ComponentID: fixture.component,
 			Description: "Late.\n", DescriptionChanged: true,
-		})
+		}))
 	}()
 	select {
 	case <-mutationDone:
@@ -599,10 +587,9 @@ func TestStalePreObservationCreatesNoSuccessorAndInvalidReviewSurvivesReload(t *
 	})
 	t.Run("invalid review reload", func(t *testing.T) {
 		fixture := newNativeRefreshFixture(t, false)
-		kept := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", componentMutationRequest{
-			ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ExpectedRevision: fixture.base.Revision,
+		kept := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
 			ComponentID: fixture.component, Title: "   ", TitleChanged: true,
-		}))
+		})))
 		if kept.Changes == nil || kept.Changes.Valid {
 			t.Fatalf("invalid=%+v", kept.Changes)
 		}

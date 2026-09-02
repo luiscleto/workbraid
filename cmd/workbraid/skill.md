@@ -57,17 +57,24 @@ Here `<state>` means `--store-id <uuid> --accepted-revision <sha> --generation <
 
 ## Recovery by error code
 
+- `invalid_request`: correct missing/malformed flags or schema fields; empty raw Relationship selectors are valid only when their flag is explicitly present.
 - `connection_failed`: start/check the configured server; do not access application data.
 - `incompatible_server`: use matching WorkBraid client/server binaries.
+- `project_not_found`: list the catalog, then use the exact slug or create deliberately.
+- `project_conflict`, `project_unavailable`: do not select or bypass the store; resolve the catalog conflict or invalid accepted Architecture outside this agent workflow.
 - `project_not_open`, `project_mismatch`: run `project current`, list/open deliberately, then inspect.
 - `pending_generation_mismatch`: run `changes inspect` and retry with its exact generation.
 - `architecture_non_current`, `accepted_conflict`: Refresh, inspect accepted and preserved pending state, then decide whether to discard. WorkBraid does not reconcile.
 - `refresh_failed`: authority could not be determined; preserve prior knowledge and retry Refresh explicitly.
+- `target_not_found`: inspect accepted and pending projections for the current stable ID or exact raw selector.
+- `target_not_eligible`: inspect the complete candidate and choose an eligible Diagram/Component action; do not simulate it through files.
 - `validation_blocked`: use the returned stable location and raw pending values to correct the structured row.
 - `review_required`, `review_invalidated`: inspect and run a fresh Review before Update.
 - `acceptance_uncertain`: inspect/Refresh before any retry.
 - `accepted_reload_required`: acceptance definitely succeeded; never retry Update, Refresh or reopen the canonical result.
 - `pending_conflict`: inspect pending work and discard the whole set only when deliberate.
+- `unsupported_action`: the requested semantic action is outside this Architecture version; do not use raw Git/YAML as a substitute.
+- `operation_failed`: inspect current state before retrying; the failure is not a candidate validation result.
 
 ## Small JSON workflow
 

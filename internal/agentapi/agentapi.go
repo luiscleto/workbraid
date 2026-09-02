@@ -191,7 +191,12 @@ func NewClient(serverURL string) (*Client, *Envelope) {
 	}
 	return &Client{
 		baseURL: strings.TrimSuffix(parsed.String(), "/"),
-		http:    &http.Client{Timeout: 15 * time.Second},
+		http: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
 }
 

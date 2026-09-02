@@ -2,13 +2,16 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"workbraid/internal/agentapi"
+	"workbraid/internal/architecture"
 )
 
 func postAgent(t *testing.T, handler http.Handler, path string, value any) *httptest.ResponseRecorder {
@@ -196,6 +199,80 @@ func TestAgentDistinguishesDefiniteAcceptanceWithReloadRequired(t *testing.T) {
 	}
 }
 
+func TestAgentClassifiesOperationalCandidateFailureAndAcceptanceConflicts(t *testing.T) {
+	t.Run("candidate construction is operational failure", func(t *testing.T) {
+		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Operational failure"}))
+		state.candidateConstructionFailure = func() error { return errors.New("git unavailable") }
+		mutation := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
+			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
+			Title:              "Gateway", DiagramID: &created.RootDiagramID,
+		}))
+		if mutation.OK || mutation.Error == nil || mutation.Error.Code != "operation_failed" || mutation.Context.PendingGeneration == nil {
+			t.Fatalf("mutation operational classification = %+v", mutation)
+		}
+		generation := *mutation.Context.PendingGeneration
+		review := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+			Generation:         generation,
+		}))
+		if review.OK || review.Error == nil || review.Error.Code != "operation_failed" {
+			t.Fatalf("review operational classification = %+v", review)
+		}
+	})
+
+	for _, scenario := range []struct {
+		name string
+		want string
+		hook bool
+	}{
+		{name: "known non-current before update", want: "architecture_non_current"},
+		{name: "true final CAS conflict", want: "accepted_conflict", hook: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+			created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Acceptance classification"}))
+			kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
+				Title:              "Gateway", DiagramID: &created.RootDiagramID,
+			}))
+			generation := *kept.Context.PendingGeneration
+			reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				Generation:         generation,
+			}))
+			review := resultMap(t, reviewed)
+			base := *state.loadedSnapshot
+			externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+				DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "External"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			advanceExternal := func() {
+				revision, createErr := state.architecture.CreateSuccessor(context.Background(), base, externalCandidate)
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				if advanceErr := state.architecture.AdvanceAccepted(context.Background(), base, revision); advanceErr != nil {
+					t.Fatal(advanceErr)
+				}
+			}
+			if scenario.hook {
+				state.beforeAcceptedCAS = func(string) { advanceExternal() }
+			} else {
+				advanceExternal()
+			}
+			updated := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
+				StoreID: created.StoreID, BaseRevision: review["base_revision"].(string), CandidateTree: review["candidate_tree"].(string), Generation: generation,
+			}))
+			if updated.OK || updated.Error == nil || updated.Error.Code != scenario.want {
+				t.Fatalf("update classification = %+v, want %q", updated, scenario.want)
+			}
+		})
+	}
+}
+
 func TestAgentRejectsUnexpectedOriginAndWrongGenerationWithoutMutation(t *testing.T) {
 	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Preconditions"}))
@@ -283,6 +360,105 @@ func TestAgentMutationRacingBrowserDiscardHasOneSerializedOutcome(t *testing.T) 
 	if edit.Error == nil || edit.Error.Code != "pending_generation_mismatch" || discardResponse.Code != http.StatusOK || inspected.Context.PendingGeneration != nil || resultMap(t, inspected)["changes"] != nil {
 		t.Fatalf("discard-first outcome mixed: edit=%+v discard=%d inspect=%+v", edit, discardResponse.Code, inspected)
 	}
+}
+
+func TestAgentResultAndContextStayAtomicAcrossReviewAndAcceptanceRaces(t *testing.T) {
+	t.Run("review and mutation", func(t *testing.T) {
+		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Atomic review"}))
+		kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
+			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
+			Title:              "Gateway", DiagramID: &created.RootDiagramID,
+		}))
+		generation := *kept.Context.PendingGeneration
+		componentID := resultMap(t, kept)["component_id"].(string)
+		reached, release := make(chan struct{}), make(chan struct{})
+		state.beforeAgentResultCapture = func() {
+			state.beforeAgentResultCapture = nil
+			close(reached)
+			<-release
+		}
+		reviewDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			reviewDone <- postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				Generation:         generation,
+			})
+		}()
+		<-reached
+		mutationDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			mutationDone <- postAgent(t, handler, "/api/agent/v1/components/edit", agentapi.ComponentEditRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				ComponentID:        componentID, Title: pointerTo("After review"),
+			})
+		}()
+		select {
+		case <-mutationDone:
+			t.Fatal("mutation entered between review result and context capture")
+		case <-time.After(25 * time.Millisecond):
+		}
+		close(release)
+		reviewed := decodeAgentEnvelope(t, <-reviewDone)
+		mutated := decodeAgentEnvelope(t, <-mutationDone)
+		review := resultMap(t, reviewed)
+		if !reviewed.OK || review["generation"] != float64(generation) || reviewed.Context.PendingGeneration == nil || *reviewed.Context.PendingGeneration != generation {
+			t.Fatalf("review result/context mixed: %+v", reviewed)
+		}
+		if !mutated.OK || mutated.Context.PendingGeneration == nil || *mutated.Context.PendingGeneration != generation+1 {
+			t.Fatalf("serialized mutation = %+v", mutated)
+		}
+	})
+
+	t.Run("acceptance and project switch", func(t *testing.T) {
+		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+		first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "First atomic"}))
+		second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Second atomic"}))
+		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
+		kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
+			StatePreconditions: agentapi.StatePreconditions{StoreID: first.StoreID, AcceptedRevision: first.Revision},
+			Title:              "Gateway", DiagramID: &first.RootDiagramID,
+		}))
+		generation := *kept.Context.PendingGeneration
+		reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+			StatePreconditions: agentapi.StatePreconditions{StoreID: first.StoreID, AcceptedRevision: first.Revision, PendingGeneration: &generation},
+			Generation:         generation,
+		}))
+		review := resultMap(t, reviewed)
+		reached, release := make(chan struct{}), make(chan struct{})
+		state.beforeAgentResultCapture = func() {
+			state.beforeAgentResultCapture = nil
+			close(reached)
+			<-release
+		}
+		updateDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			updateDone <- postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
+				StoreID: first.StoreID, BaseRevision: review["base_revision"].(string), CandidateTree: review["candidate_tree"].(string), Generation: generation,
+			})
+		}()
+		<-reached
+		openDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			openDone <- postAgent(t, handler, "/api/agent/v1/projects/open", agentapi.ProjectOpenRequest{Slug: second.ProjectSlug})
+		}()
+		select {
+		case <-openDone:
+			t.Fatal("project switch entered between acceptance result and context capture")
+		case <-time.After(25 * time.Millisecond):
+		}
+		close(release)
+		updated := decodeAgentEnvelope(t, <-updateDone)
+		opened := decodeAgentEnvelope(t, <-openDone)
+		result := resultMap(t, updated)
+		if !updated.OK || updated.Context.Project == nil || updated.Context.Project.StoreID != first.StoreID ||
+			updated.Context.AcceptedRevision == nil || result["accepted_revision"] != *updated.Context.AcceptedRevision || updated.Context.PendingGeneration != nil {
+			t.Fatalf("acceptance result/context mixed: %+v", updated)
+		}
+		if !opened.OK || opened.Context.Project == nil || opened.Context.Project.StoreID != second.StoreID {
+			t.Fatalf("serialized switch = %+v", opened)
+		}
+	})
 }
 
 func TestAgentRepairsAndRemovesEveryInvalidRawRelationshipSelector(t *testing.T) {

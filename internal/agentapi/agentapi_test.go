@@ -62,6 +62,34 @@ func TestClientStopsAtIncompatibleHandshake(t *testing.T) {
 	}
 }
 
+func TestClientRejectsRedirectsBeforeMutationBodyCanLeaveConfiguredLoopback(t *testing.T) {
+	targetCalls := 0
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetCalls++
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/agent/v1/status" {
+			writeEnvelope(response, Envelope{Protocol: Protocol, OK: true})
+			return
+		}
+		http.Redirect(response, request, target.URL+request.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	client, failure := NewClient(source.URL)
+	if failure != nil {
+		t.Fatalf("NewClient: %#v", failure)
+	}
+	result := client.Call(context.Background(), "project_create", ProjectCreateRequest{Name: "Must stay local"})
+	if result.OK || result.Error == nil || result.Error.Code != "incompatible_server" {
+		t.Fatalf("redirect result = %#v", result)
+	}
+	if targetCalls != 0 {
+		t.Fatalf("redirect target received %d requests", targetCalls)
+	}
+}
+
 func writeEnvelope(response http.ResponseWriter, envelope Envelope) {
 	response.Header().Set("Content-Type", "application/json")
 	_, _ = response.Write([]byte(`{"protocol":"` + envelope.Protocol + `","ok":true,"context":{"project":null,"accepted_revision":null,"authority_state":"none","pending_generation":null},"result":{}}`))

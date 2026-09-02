@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,12 +103,45 @@ func TestRealBinaryCLIAndTwoMCPBridgesShareOneServerAuthority(t *testing.T) {
 	first := connectRealMCP(t, ctx, binary, origin)
 	second := connectRealMCP(t, ctx, binary, origin)
 	defer second.Close()
+	tools, err := first.ListTools(ctx, nil)
+	if err != nil || len(tools.Tools) != 22 {
+		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
+	}
+	var realRelationshipEdit *mcp.Tool
+	for _, tool := range tools.Tools {
+		if tool.Name == "relationship_edit" {
+			realRelationshipEdit = tool
+			break
+		}
+	}
+	if realRelationshipEdit == nil || realRelationshipEdit.Description == "" || realRelationshipEdit.OutputSchema == nil {
+		t.Fatalf("real MCP relationship_edit discovery = %+v", realRelationshipEdit)
+	}
+	realEditInput, _ := realRelationshipEdit.InputSchema.(map[string]any)
+	if realEditInput["additionalProperties"] != false || !slices.Contains(schemaStrings(realEditInput["required"]), "old_target_id") || !slices.Contains(schemaStrings(realEditInput["required"]), "occurrence") {
+		t.Fatalf("real MCP relationship_edit schema = %#v", realRelationshipEdit.InputSchema)
+	}
 	createdComponent, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "component_create", Arguments: map[string]any{
 		"store_id": created.Context.Project.StoreID, "accepted_revision": *created.Context.AcceptedRevision, "pending_generation": nil,
 		"title": "Gateway", "description": "Routes requests.\n", "diagram_id": rootID,
 	}})
 	if err != nil || createdComponent.IsError {
 		t.Fatalf("component_create: result=%+v err=%v", createdComponent, err)
+	}
+	gateway := mcpEnvelope(t, createdComponent)
+	gatewayID := gateway.Result.(map[string]any)["component_id"].(string)
+	worker := runRealCLI(t, binary, origin, "component", "create",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", *created.Context.AcceptedRevision, "--generation", "1",
+		"--title", "Worker", "--diagram-id", rootID)
+	workerID := worker.Result.(map[string]any)["component_id"].(string)
+	if worker.Context.PendingGeneration == nil || *worker.Context.PendingGeneration != 2 {
+		t.Fatalf("CLI did not continue MCP generation: %+v", worker)
+	}
+	invalidCLI := runRealCLI(t, binary, origin, "relationship", "add",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", *created.Context.AcceptedRevision, "--generation", "2",
+		"--source-id", gatewayID, "--target-id", "", "--label", "")
+	if invalidCLI.Context.PendingGeneration == nil || *invalidCLI.Context.PendingGeneration != 3 || invalidCLI.Result.(map[string]any)["candidate_valid"] != false {
+		t.Fatalf("CLI raw invalid relationship = %+v", invalidCLI)
 	}
 	changes, err := second.CallTool(ctx, &mcp.CallToolParams{Name: "changes_inspect", Arguments: map[string]any{}})
 	if err != nil || changes.IsError {
@@ -117,8 +152,47 @@ func TestRealBinaryCLIAndTwoMCPBridgesShareOneServerAuthority(t *testing.T) {
 		t.Fatalf("structured changes = %#v", changes.StructuredContent)
 	}
 	contextValue, _ := structured["context"].(map[string]any)
-	if contextValue["pending_generation"] != float64(1) {
+	if contextValue["pending_generation"] != float64(3) {
 		t.Fatalf("second bridge pending context = %#v", contextValue)
+	}
+	changeEnvelope := mcpEnvelope(t, changes)
+	components := changeEnvelope.Result.(map[string]any)["components"].([]any)
+	rows := components[0].(map[string]any)["relationships"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["target_id"] != "" || rows[0].(map[string]any)["label"] != "" {
+		t.Fatalf("CLI raw row lost through MCP inspect: %#v", rows)
+	}
+	repaired, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "relationship_edit", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "accepted_revision": *created.Context.AcceptedRevision, "pending_generation": 3,
+		"source_id": gatewayID, "old_target_id": "", "old_label": "", "occurrence": 1, "target_id": workerID, "label": "calls",
+	}})
+	if err != nil || repaired.IsError || mcpEnvelope(t, repaired).Context.PendingGeneration == nil || *mcpEnvelope(t, repaired).Context.PendingGeneration != 4 {
+		t.Fatalf("MCP exact empty repair: result=%+v err=%v", repaired, err)
+	}
+	malformed, err := second.CallTool(ctx, &mcp.CallToolParams{Name: "relationship_add", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "accepted_revision": *created.Context.AcceptedRevision, "pending_generation": 4,
+		"source_id": gatewayID, "target_id": "not-a-component-id", "label": "   ",
+	}})
+	if err != nil || malformed.IsError || mcpEnvelope(t, malformed).Context.PendingGeneration == nil || *mcpEnvelope(t, malformed).Context.PendingGeneration != 5 {
+		t.Fatalf("MCP malformed raw add: result=%+v err=%v", malformed, err)
+	}
+	removed := runRealCLI(t, binary, origin, "relationship", "remove",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", *created.Context.AcceptedRevision, "--generation", "5",
+		"--source-id", gatewayID, "--target-id", "not-a-component-id", "--label", "   ", "--occurrence", "1")
+	if removed.Context.PendingGeneration == nil || *removed.Context.PendingGeneration != 6 {
+		t.Fatalf("CLI exact malformed removal = %+v", removed)
+	}
+	staleCLI := runRealCLIResult(t, binary, origin, "component", "edit",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", *created.Context.AcceptedRevision, "--generation", "5",
+		"--component-id", gatewayID, "--title", "Stale")
+	if staleCLI.OK || staleCLI.Error == nil || staleCLI.Error.Code != "pending_generation_mismatch" {
+		t.Fatalf("CLI typed stale failure = %+v", staleCLI)
+	}
+	missingMCP, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "relationship_remove", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "accepted_revision": *created.Context.AcceptedRevision, "pending_generation": 6,
+		"source_id": gatewayID, "target_id": "missing", "label": "missing", "occurrence": 1,
+	}})
+	if err != nil || !missingMCP.IsError || mcpErrorCode(missingMCP.StructuredContent) != "target_not_found" {
+		t.Fatalf("MCP typed target failure: result=%+v err=%v", missingMCP, err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first bridge: %v", err)
@@ -171,6 +245,38 @@ func runRealCLI(t *testing.T, binary, origin string, arguments ...string) agenta
 	var envelope agentapi.Envelope
 	if err := json.Unmarshal(output, &envelope); err != nil {
 		t.Fatalf("decode real CLI: %v\n%s", err, output)
+	}
+	return envelope
+}
+
+func runRealCLIResult(t *testing.T, binary, origin string, arguments ...string) agentapi.Envelope {
+	t.Helper()
+	command := exec.Command(binary, append([]string{"--server", origin, "--json"}, arguments...)...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	if err == nil {
+		t.Fatalf("real CLI %v unexpectedly succeeded: %s", arguments, stdout.String())
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || stderr.Len() != 0 {
+		t.Fatalf("real CLI %v: %v, stderr=%s", arguments, err, stderr.String())
+	}
+	return decodeCLIEnvelope(t, &stdout)
+}
+
+func mcpEnvelope(t *testing.T, result *mcp.CallToolResult) agentapi.Envelope {
+	t.Helper()
+	data, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope agentapi.Envelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("decode MCP envelope: %v\n%s", err, data)
+	}
+	if err := envelope.Validate(); err != nil {
+		t.Fatalf("invalid MCP envelope: %v\n%s", err, data)
 	}
 	return envelope
 }
@@ -240,6 +346,33 @@ func TestClientModesRejectServerAuthorityFlags(t *testing.T) {
 	}
 }
 
+func TestCanonicalHelpDocumentsExactActionsAndTopLevelAliasesStayUnavailable(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--help"}, &stdout, &stderr, bytes.NewReader(nil)); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("--help exit=%d stderr=%q", code, stderr.String())
+	}
+	for _, exact := range []string{
+		"workbraid [--server <loopback-url>] mcp",
+		"--store-id <uuid> --accepted-revision <sha> --generation <n|none>",
+		"relationship edit <state> --source-id <uuid> --old-target-id <raw>",
+		"architecture update --store-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>",
+	} {
+		if !strings.Contains(stdout.String(), exact) {
+			t.Fatalf("--help missing %q\n%s", exact, stdout.String())
+		}
+	}
+	for _, obsolete := range []string{"architecture_inspect", "changes_inspect"} {
+		stdout.Reset()
+		if code := run([]string{"--json", obsolete}, &stdout, &stderr, bytes.NewReader(nil)); code == 0 {
+			t.Fatalf("obsolete alias %q succeeded", obsolete)
+		}
+		envelope := decodeCLIEnvelope(t, &stdout)
+		if envelope.Error == nil || envelope.Error.Code != "invalid_request" {
+			t.Fatalf("obsolete alias %q = %+v", obsolete, envelope)
+		}
+	}
+}
+
 func TestCLIUsesRunningLoopbackAuthority(t *testing.T) {
 	server := httptest.NewServer(web.NewHandler("http://127.0.0.1", t.TempDir(), t.TempDir()))
 	defer server.Close()
@@ -295,16 +428,41 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		"relationship_add", "relationship_edit", "relationship_remove", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))
+	var relationshipEdit *mcp.Tool
 	for index, tool := range listed.Tools {
 		gotNames[index] = tool.Name
 		input, ok := tool.InputSchema.(map[string]any)
 		if !ok || input["type"] != "object" || input["additionalProperties"] != false || tool.OutputSchema == nil || tool.Description == "" || tool.Annotations == nil {
 			t.Fatalf("tool %q schema/description/annotations incomplete: input=%#v output=%#v", tool.Name, tool.InputSchema, tool.OutputSchema)
 		}
+		if tool.Name == "relationship_edit" {
+			relationshipEdit = tool
+		}
 	}
 	slices.Sort(gotNames)
 	if !slices.Equal(gotNames, wantNames) {
 		t.Fatalf("tool names = %v, want %v", gotNames, wantNames)
+	}
+	if relationshipEdit == nil {
+		t.Fatal("relationship_edit schema missing")
+	}
+	input := relationshipEdit.InputSchema.(map[string]any)
+	properties, _ := input["properties"].(map[string]any)
+	for _, field := range []string{"store_id", "accepted_revision", "pending_generation", "source_id", "old_target_id", "old_label", "occurrence", "target_id", "label"} {
+		property, _ := properties[field].(map[string]any)
+		if property["description"] == "" {
+			t.Fatalf("relationship_edit property %q lacks exact contract: %#v", field, property)
+		}
+	}
+	required := schemaStrings(input["required"])
+	for _, field := range []string{"store_id", "accepted_revision", "pending_generation", "source_id", "old_target_id", "old_label", "occurrence", "target_id", "label"} {
+		if !slices.Contains(required, field) {
+			t.Fatalf("relationship_edit required fields = %v; missing %q", required, field)
+		}
+	}
+	output, ok := relationshipEdit.OutputSchema.(map[string]any)
+	if !ok || output["type"] != "object" || output["additionalProperties"] != false {
+		t.Fatalf("relationship_edit output schema is not a closed envelope: %#v", relationshipEdit.OutputSchema)
 	}
 	called, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "status", Arguments: map[string]any{}})
 	if err != nil {
@@ -326,5 +484,22 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("MCP server did not stop")
+	}
+}
+
+func schemaStrings(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
 	}
 }

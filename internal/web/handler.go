@@ -47,6 +47,13 @@ type Handler struct {
 	// beforeRefreshCatalogCheck is a narrow test seam immediately before the
 	// other-store slug conflict scan. Production never sets it.
 	beforeRefreshCatalogCheck func()
+	// beforeAgentResultCapture is a focused test seam between a shared locked
+	// operation and its immutable agent result/context capture. Production
+	// never sets it.
+	beforeAgentResultCapture func()
+	// candidateConstructionFailure is a focused test seam for operational
+	// ConstructCandidate failure classification. Production never sets it.
+	candidateConstructionFailure func() error
 }
 
 type loadedProject struct {
@@ -220,20 +227,31 @@ func (h *Handler) createProject(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if h.pending != nil {
-		result := h.currentArchitectureResponseLocked()
-		result.ActionError = errorPendingBlocksSwitch
+	result, code := h.createProjectLocked(request.Context(), payload.Name)
+	h.stateMutex.Unlock()
+	if code == errorPendingBlocksSwitch {
 		writeJSON(response, http.StatusConflict, result)
 		return
 	}
-	snapshot, err := h.architecture.CreateProject(request.Context(), payload.Name)
-	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorProjectCreateFailed})
+	if code != "" {
+		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: code})
 		return
 	}
+	writeJSON(response, http.StatusCreated, result)
+}
+
+func (h *Handler) createProjectLocked(ctx context.Context, name string) (architectureResponse, string) {
+	if h.pending != nil {
+		result := h.currentArchitectureResponseLocked()
+		result.ActionError = errorPendingBlocksSwitch
+		return result, errorPendingBlocksSwitch
+	}
+	snapshot, err := h.architecture.CreateProject(ctx, name)
+	if err != nil {
+		return architectureResponse{}, errorProjectCreateFailed
+	}
 	h.publishSnapshotLocked(snapshot)
-	writeJSON(response, http.StatusCreated, h.currentArchitectureResponseLocked())
+	return h.currentArchitectureResponseLocked(), ""
 }
 
 func (h *Handler) openProject(response http.ResponseWriter, request *http.Request) {
@@ -256,32 +274,45 @@ func (h *Handler) openProject(response http.ResponseWriter, request *http.Reques
 	}
 
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	snapshot, err := h.architecture.OpenProject(request.Context(), payload.ProjectSlug)
-	if errors.Is(err, architecture.ErrProjectNotFound) {
-		writeJSON(response, http.StatusNotFound, errorResponse{Code: errorProjectNotFound})
+	result, code := h.openProjectLocked(request.Context(), payload.ProjectSlug)
+	h.stateMutex.Unlock()
+	if code != "" {
+		status := http.StatusConflict
+		if code == errorProjectNotFound {
+			status = http.StatusNotFound
+		}
+		if result.StoreID != "" {
+			writeJSON(response, status, result)
+		} else {
+			writeJSON(response, status, errorResponse{Code: code})
+		}
 		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (h *Handler) openProjectLocked(ctx context.Context, slug string) (architectureResponse, string) {
+	snapshot, err := h.architecture.OpenProject(ctx, slug)
+	if errors.Is(err, architecture.ErrProjectNotFound) {
+		return architectureResponse{}, errorProjectNotFound
 	}
 	if errors.Is(err, architecture.ErrCatalogConflict) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorCatalogConflict})
-		return
+		return architectureResponse{}, errorCatalogConflict
 	}
 	if err != nil {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorCatalogUnavailable})
-		return
+		return architectureResponse{}, errorCatalogUnavailable
 	}
 	if h.pending != nil && h.loadedProject != nil && h.loadedProject.storeID != snapshot.StoreID() {
 		result := h.currentArchitectureResponseLocked()
 		result.ActionError = errorPendingBlocksSwitch
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorPendingBlocksSwitch
 	}
 	stalePending := h.publishSnapshotLocked(snapshot)
 	result := h.currentArchitectureResponseLocked()
 	if stalePending {
 		result.ActionError = errorArchitectureStale
 	}
-	writeJSON(response, http.StatusOK, result)
+	return result, ""
 }
 
 type architectureResponse struct {
@@ -718,7 +749,7 @@ func (h *Handler) matchesLoadedProjectLocked(projectSlug, storeID string) bool {
 
 func (h *Handler) matchesExpectedPendingGenerationLocked(expected *uint64, observed bool) bool {
 	if !observed {
-		return true
+		return false
 	}
 	if expected == nil {
 		return h.pending == nil
@@ -732,105 +763,100 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 		return
 	}
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+	result, code, status := h.refreshArchitectureLocked(request.Context(), payload)
+	h.stateMutex.Unlock()
+	if code != "" && result.StoreID == "" {
+		writeJSON(response, status, errorResponse{Code: code})
 		return
 	}
-	if payload.ExpectedRevision != "" && (h.loadedSnapshot == nil || payload.ExpectedRevision != h.loadedSnapshot.Revision()) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
-		return
+	writeJSON(response, status, result)
+}
+
+func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload architectureActionRequest) (architectureResponse, string, int) {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
+		return architectureResponse{}, errorArchitectureNotOpen, http.StatusConflict
+	}
+	if payload.ExpectedRevision == "" || h.loadedSnapshot == nil || payload.ExpectedRevision != h.loadedSnapshot.Revision() {
+		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
 	}
 
 	loaded := *h.loadedSnapshot
-	observationContext, cancelObservation := context.WithTimeout(request.Context(), architectureObservationTimeout)
+	observationContext, cancelObservation := context.WithTimeout(ctx, architectureObservationTimeout)
 	observed, present, err := h.architecture.AcceptedRevision(observationContext, loaded)
 	cancelObservation()
 	if err != nil {
-		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-		return
+		return h.refreshResultLocked(errorRefreshFailed, http.StatusServiceUnavailable)
 	}
 	if !present {
 		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshUnavailable)
-		return
+		return h.refreshResultLocked(errorRefreshUnavailable, http.StatusConflict)
 	}
 	if observed == loaded.Revision() && !h.loadedStale {
-		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
-		return
+		return h.currentArchitectureResponseLocked(), "", http.StatusOK
 	}
 
-	loadContext, cancelLoad := context.WithTimeout(request.Context(), architectureTransitionTimeout)
+	loadContext, cancelLoad := context.WithTimeout(ctx, architectureTransitionTimeout)
 	replacement, loadErr := h.architecture.LoadRevision(loadContext, loaded, observed)
 	cancelLoad()
 	if loadErr != nil {
 		h.markKnownNonCurrentLocked()
 		switch {
 		case errors.Is(loadErr, architecture.ErrUnsupported):
-			h.writeRefreshResultLocked(response, http.StatusUnprocessableEntity, errorRefreshUnsupported)
+			return h.refreshResultLocked(errorRefreshUnsupported, http.StatusUnprocessableEntity)
 		case errors.Is(loadErr, architecture.ErrUnavailable):
-			h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshUnavailable)
+			return h.refreshResultLocked(errorRefreshUnavailable, http.StatusConflict)
 		default:
-			h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshInvalid)
+			return h.refreshResultLocked(errorRefreshInvalid, http.StatusConflict)
 		}
-		return
 	}
 	if h.beforeRefreshCatalogCheck != nil {
 		h.beforeRefreshCatalogCheck()
 	}
-	candidateSlugAvailable, candidateSlugErr := h.architecture.CatalogSlugAvailable(request.Context(), replacement.StoreID(), replacement.ProjectSlug())
+	candidateSlugAvailable, candidateSlugErr := h.architecture.CatalogSlugAvailable(ctx, replacement.StoreID(), replacement.ProjectSlug())
 	retainedSlugAvailable, retainedSlugErr := candidateSlugAvailable, candidateSlugErr
 	if loaded.ProjectSlug() != replacement.ProjectSlug() {
-		retainedSlugAvailable, retainedSlugErr = h.architecture.CatalogSlugAvailable(request.Context(), loaded.StoreID(), loaded.ProjectSlug())
+		retainedSlugAvailable, retainedSlugErr = h.architecture.CatalogSlugAvailable(ctx, loaded.StoreID(), loaded.ProjectSlug())
 	}
 	if h.beforeRefreshReobserve != nil {
 		h.beforeRefreshReobserve(observed)
 	}
 
-	finalContext, cancelFinal := context.WithTimeout(request.Context(), architectureObservationTimeout)
+	finalContext, cancelFinal := context.WithTimeout(ctx, architectureObservationTimeout)
 	finalRevision, finalPresent, finalErr := h.architecture.AcceptedRevision(finalContext, loaded)
 	cancelFinal()
 	if finalErr != nil {
-		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-		return
+		return h.refreshResultLocked(errorRefreshFailed, http.StatusServiceUnavailable)
 	}
 	if !finalPresent {
 		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshUnavailable)
-		return
+		return h.refreshResultLocked(errorRefreshUnavailable, http.StatusConflict)
 	}
 	if finalRevision != observed {
 		if finalRevision == loaded.Revision() {
 			// Authority returned to the retained, already validated snapshot.
 			// A pending set already known stale stays stale until discarded.
 			if retainedSlugErr != nil {
-				h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-				return
+				return h.refreshResultLocked(errorRefreshFailed, http.StatusServiceUnavailable)
 			}
 			if !retainedSlugAvailable {
 				h.markKnownNonCurrentLocked()
-				h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
-				return
+				return h.refreshResultLocked(errorCatalogConflict, http.StatusConflict)
 			}
 			h.loadedProject.projectName = loaded.ProjectName()
 			h.loadedProject.projectSlug = loaded.ProjectSlug()
 			h.loadedProject.validatedCurrent = nil
 			h.loadedStale = false
-			writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
-			return
+			return h.currentArchitectureResponseLocked(), "", http.StatusOK
 		}
 		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorRefreshChanged)
-		return
+		return h.refreshResultLocked(errorRefreshChanged, http.StatusConflict)
 	}
 	if candidateSlugErr != nil {
-		h.writeRefreshResultLocked(response, http.StatusServiceUnavailable, errorRefreshFailed)
-		return
+		return h.refreshResultLocked(errorRefreshFailed, http.StatusServiceUnavailable)
 	}
 	if !candidateSlugAvailable {
 		h.markKnownNonCurrentLocked()
-		h.writeRefreshResultLocked(response, http.StatusConflict, errorCatalogConflict)
-		return
+		return h.refreshResultLocked(errorCatalogConflict, http.StatusConflict)
 	}
 	h.loadedSnapshot = &replacement
 	h.loadedProject.projectName = replacement.ProjectName()
@@ -841,13 +867,13 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 	if h.pending != nil && (h.pending.storeID != replacement.StoreID() || h.pending.baseRevision != replacement.Revision()) {
 		h.markPendingStaleLocked()
 	}
-	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+	return h.currentArchitectureResponseLocked(), "", http.StatusOK
 }
 
-func (h *Handler) writeRefreshResultLocked(response http.ResponseWriter, status int, actionError string) {
+func (h *Handler) refreshResultLocked(actionError string, status int) (architectureResponse, string, int) {
 	result := h.currentArchitectureResponseLocked()
 	result.ActionError = actionError
-	writeJSON(response, status, result)
+	return result, actionError, status
 }
 
 func (h *Handler) markKnownNonCurrentLocked() {
@@ -872,14 +898,21 @@ func (h *Handler) discardChanges(response http.ResponseWriter, request *http.Req
 		return
 	}
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+	result, code := h.discardChangesLocked(payload)
+	h.stateMutex.Unlock()
+	if code != "" {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: code})
 		return
 	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (h *Handler) discardChangesLocked(payload architectureActionRequest) (architectureResponse, string) {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
+		return architectureResponse{}, errorArchitectureNotOpen
+	}
 	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
-		return
+		return architectureResponse{}, errorChangesElsewhere
 	}
 	h.pending = nil
 	if h.loadedStale && h.loadedProject.validatedCurrent != nil {
@@ -891,7 +924,7 @@ func (h *Handler) discardChanges(response http.ResponseWriter, request *http.Req
 		h.loadedStale = false
 		h.acceptedDiff = ""
 	}
-	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+	return h.currentArchitectureResponseLocked(), ""
 }
 
 func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Request) {
@@ -900,19 +933,30 @@ func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+	result, code := h.leaveProjectLocked(payload.ProjectSlug, payload.StoreID)
+	h.stateMutex.Unlock()
+	if code != "" {
+		if result.StoreID != "" {
+			writeJSON(response, http.StatusConflict, result)
+		} else {
+			writeJSON(response, http.StatusConflict, errorResponse{Code: code})
+		}
 		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) leaveProjectLocked(projectSlug, storeID string) (architectureResponse, string) {
+	if !h.matchesLoadedProjectLocked(projectSlug, storeID) {
+		return architectureResponse{}, errorArchitectureNotOpen
 	}
 	if h.pending != nil {
 		result := h.currentArchitectureResponseLocked()
 		result.ActionError = errorPendingBlocksSwitch
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorPendingBlocksSwitch
 	}
 	h.clearLoadedProjectLocked()
-	response.WriteHeader(http.StatusNoContent)
+	return architectureResponse{}, ""
 }
 
 type componentMutationRequest struct {
@@ -1095,6 +1139,11 @@ func (h *Handler) keepComponentChangeLocked(ctx context.Context, snapshot archit
 }
 
 func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
+	if h.candidateConstructionFailure != nil {
+		if err := h.candidateConstructionFailure(); err != nil {
+			return architecture.Candidate{}, err
+		}
+	}
 	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
 		NewComponentHomes: pending.newComponentHomes,
 		DetailDiagrams:    pending.detailDiagrams,
@@ -1207,7 +1256,12 @@ const (
 	changeTargetNotFound    = "target_not_found"
 	changeTargetIneligible  = "target_not_eligible"
 	changeValidationBlocked = "validation_blocked"
+	changeOperationFailed   = "operation_failed"
 )
+
+func pendingOperationFailed(pending *pendingChangeSet) bool {
+	return pending != nil && pending.validationCode == "change_unavailable"
+}
 
 func (h *Handler) createDetailDiagramLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, componentID, title string) (*pendingChangeSet, architecture.DetailDiagramChange, string, string) {
 	if pending != nil {
@@ -1232,6 +1286,9 @@ func (h *Handler) createDetailDiagramLocked(ctx context.Context, snapshot archit
 	addition := snapshot.NewDetailDiagramChange(pending.detailDiagrams, title, componentID)
 	pending.detailDiagrams = append(pending.detailDiagrams, addition)
 	h.rebuildPendingLocked(ctx, snapshot, pending)
+	if pendingOperationFailed(pending) {
+		return pending, addition, homeDiagramID, changeOperationFailed
+	}
 	return pending, addition, homeDiagramID, ""
 }
 
@@ -1244,6 +1301,9 @@ func (h *Handler) editDiagramTitleLocked(ctx context.Context, snapshot architect
 		if pending.detailDiagrams[index].ID == diagramID {
 			pending.detailDiagrams[index].Title = title
 			h.rebuildPendingLocked(ctx, snapshot, pending)
+			if pendingOperationFailed(pending) {
+				return pending, changeOperationFailed
+			}
 			return pending, ""
 		}
 	}
@@ -1251,11 +1311,17 @@ func (h *Handler) editDiagramTitleLocked(ctx context.Context, snapshot architect
 		if pending.diagramTitles[index].DiagramID == diagramID {
 			pending.diagramTitles[index].Title = title
 			h.rebuildPendingLocked(ctx, snapshot, pending)
+			if pendingOperationFailed(pending) {
+				return pending, changeOperationFailed
+			}
 			return pending, ""
 		}
 	}
 	pending.diagramTitles = append(pending.diagramTitles, architecture.DiagramTitleChange{DiagramID: diagramID, Title: title})
 	h.rebuildPendingLocked(ctx, snapshot, pending)
+	if pendingOperationFailed(pending) {
+		return pending, changeOperationFailed
+	}
 	return pending, ""
 }
 
@@ -1295,6 +1361,9 @@ func (h *Handler) moveComponentHomeLocked(ctx context.Context, snapshot architec
 		return nil, false, ""
 	}
 	h.rebuildPendingLocked(ctx, snapshot, &proposed)
+	if pendingOperationFailed(&proposed) {
+		return pending, false, changeOperationFailed
+	}
 	if proposed.candidate == nil {
 		return pending, false, changeTargetIneligible
 	}
@@ -1327,6 +1396,9 @@ func (h *Handler) changeReferenceLocked(ctx context.Context, snapshot architectu
 	pending = h.ensurePendingLocked(snapshot, pending)
 	setReferenceChange(pending, diagramID, componentID, present)
 	h.rebuildPendingLocked(ctx, snapshot, pending)
+	if pendingOperationFailed(pending) {
+		return pending, changeOperationFailed
+	}
 	return pending, ""
 }
 
@@ -1342,6 +1414,10 @@ func (h *Handler) createDetailDiagram(response http.ResponseWriter, request *htt
 		return
 	}
 	if _, _, _, operationError := h.createDetailDiagramLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.Title); operationError != "" {
+		if operationError == changeOperationFailed {
+			writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
+			return
+		}
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
 		return
 	}
@@ -1360,6 +1436,10 @@ func (h *Handler) editDiagramTitle(response http.ResponseWriter, request *http.R
 		return
 	}
 	if _, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title); operationError != "" {
+		if operationError == changeOperationFailed {
+			writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
+			return
+		}
 		writeJSON(response, http.StatusNotFound, errorResponse{Code: errorChangeFailed})
 		return
 	}
@@ -1380,6 +1460,10 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 	_, _, operationError := h.moveComponentHomeLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.DiagramID)
 	if operationError == "" {
 		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+		return
+	}
+	if operationError == changeOperationFailed {
+		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
 		return
 	}
 	code := errorHomeMoveUnavailable
@@ -1468,6 +1552,9 @@ func (h *Handler) changeReferenceAppearance(response http.ResponseWriter, reques
 	} else if operationError == changeValidationBlocked {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
 		return
+	} else if operationError == changeOperationFailed {
+		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
+		return
 	}
 	writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
 }
@@ -1493,34 +1580,34 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	h.stateMutex.Lock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+	result, code, status := h.reviewChangesLocked(request.Context(), payload)
+	h.stateMutex.Unlock()
+	if code != "" && result.StoreID == "" {
+		writeJSON(response, status, errorResponse{Code: code})
 		return
+	}
+	writeJSON(response, status, result)
+}
+
+func (h *Handler) reviewChangesLocked(ctx context.Context, payload architectureActionRequest) (architectureResponse, string, int) {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
+		return architectureResponse{}, errorArchitectureNotOpen, http.StatusConflict
 	}
 	if h.loadedStale {
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
-		return
+		return architectureResponse{}, errorArchitectureStale, http.StatusConflict
 	}
 	snapshot := *h.loadedSnapshot
-	if payload.ExpectedRevision != "" && payload.ExpectedRevision != snapshot.Revision() {
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
-		return
+	if payload.ExpectedRevision == "" || payload.ExpectedRevision != snapshot.Revision() {
+		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
 	}
 	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
-		return
+		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
 	}
 	if h.pending == nil || h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision() {
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorReviewFailed})
-		return
+		return architectureResponse{}, errorReviewFailed, http.StatusConflict
 	}
 
-	candidate, err := h.constructCandidate(request.Context(), snapshot, h.pending)
+	candidate, err := h.constructCandidate(ctx, snapshot, h.pending)
 	h.pending.review = nil
 	h.pending.reviewBlocker = ""
 	if err != nil {
@@ -1533,17 +1620,13 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		}
 		result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewFailed
-		h.stateMutex.Unlock()
-		writeJSON(response, status, result)
-		return
+		return result, errorReviewFailed, status
 	}
-	diff, err := h.architecture.CandidateDiff(request.Context(), snapshot, candidate)
+	diff, err := h.architecture.CandidateDiff(ctx, snapshot, candidate)
 	if err != nil {
 		result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewFailed
-		h.stateMutex.Unlock()
-		writeJSON(response, http.StatusInternalServerError, result)
-		return
+		return result, errorReviewFailed, http.StatusInternalServerError
 	}
 	h.pending.candidate = &candidate
 	h.pending.validationCode = ""
@@ -1560,8 +1643,7 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 	// pending generation are protected by the same concrete state lock. JSON
 	// serialization can then proceed without blocking invalidating mutations.
 	result := h.responseForLoadedProjectLocked(snapshot, h.pending, false, h.acceptedDiff)
-	h.stateMutex.Unlock()
-	writeJSON(response, http.StatusOK, result)
+	return result, "", http.StatusOK
 }
 
 func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Request) {
@@ -1570,20 +1652,26 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+	result, code, status, _ := h.acceptChangesLocked(payload)
+	h.stateMutex.Unlock()
+	if code != "" && result.StoreID == "" {
+		writeJSON(response, status, errorResponse{Code: code})
 		return
 	}
+	writeJSON(response, status, result)
+}
+
+func (h *Handler) acceptChangesLocked(payload acceptChangesRequest) (architectureResponse, string, int, bool) {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
+		return architectureResponse{}, errorArchitectureNotOpen, http.StatusConflict, false
+	}
 	if h.loadedStale {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
-		return
+		return architectureResponse{}, errorArchitectureStale, http.StatusConflict, false
 	}
 	snapshot := *h.loadedSnapshot
 	pending := h.pending
 	if pending == nil || pending.stale || pending.review == nil {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorReviewFailed})
-		return
+		return architectureResponse{}, errorReviewFailed, http.StatusConflict, false
 	}
 	review := pending.review
 	if payload.BaseRevision != review.baseRevision || payload.CandidateTree != review.candidateTree || payload.Generation != review.generation {
@@ -1594,8 +1682,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 			// expose it as though this client had inspected it.
 			result.Changes.Review = nil
 		}
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorReviewChanged, http.StatusConflict, false
 	}
 	if pending.storeID != snapshot.StoreID() || pending.baseRevision != snapshot.Revision() ||
 		review.baseRevision != pending.baseRevision || review.generation != pending.generation ||
@@ -1603,8 +1690,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 		pending.review = nil
 		result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 		result.ActionError = errorReviewChanged
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorReviewChanged, http.StatusConflict, false
 	}
 	// Once the human confirms, the local authority transition must reach a
 	// classified boundary even if the browser disconnects before the response.
@@ -1617,23 +1703,20 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 		pending.review = nil
 		result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 		result.ActionError = errorUpdateUncertain
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorUpdateUncertain, http.StatusConflict, false
 	}
 	if observed != review.baseRevision {
 		h.markStale(pending)
 		result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 		result.ActionError = errorArchitectureStale
-		writeJSON(response, http.StatusConflict, result)
-		return
+		return result, errorArchitectureStale, http.StatusConflict, false
 	}
 
 	successor, err := h.architecture.CreateSuccessor(transitionContext, snapshot, review.candidate)
 	if err != nil {
 		result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 		result.ActionError = errorUpdateFailed
-		writeJSON(response, http.StatusInternalServerError, result)
-		return
+		return result, errorUpdateFailed, http.StatusInternalServerError, false
 	}
 	if h.beforeAcceptedCAS != nil {
 		h.beforeAcceptedCAS(successor)
@@ -1651,21 +1734,18 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 			pending.review = nil
 			result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 			result.ActionError = errorUpdateUncertain
-			writeJSON(response, http.StatusInternalServerError, result)
-			return
+			return result, errorUpdateUncertain, http.StatusInternalServerError, false
 		}
 		if observed != successor && observed != review.baseRevision {
 			h.markStale(pending)
 			result := h.responseForLoadedProjectLocked(snapshot, pending, true, h.acceptedDiff)
 			result.ActionError = errorArchitectureStale
-			writeJSON(response, http.StatusConflict, result)
-			return
+			return result, errorArchitectureStale, http.StatusConflict, true
 		}
 		if observed == review.baseRevision {
 			result := h.responseForLoadedProjectLocked(snapshot, pending, false, h.acceptedDiff)
 			result.ActionError = errorUpdateFailed
-			writeJSON(response, http.StatusInternalServerError, result)
-			return
+			return result, errorUpdateFailed, http.StatusInternalServerError, false
 		}
 	}
 	// The authoritative ref names our successor. Consume the pending change
@@ -1686,8 +1766,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 			}
 			result := h.responseForLoadedProjectLocked(*h.loadedSnapshot, nil, h.loadedStale, h.acceptedDiff)
 			result.ActionError = errorUpdatedReload
-			writeJSON(response, http.StatusInternalServerError, result)
-			return
+			return result, errorUpdatedReload, http.StatusInternalServerError, false
 		}
 	}
 	h.loadedSnapshot = &acceptedSnapshot
@@ -1695,7 +1774,7 @@ func (h *Handler) acceptChanges(response http.ResponseWriter, request *http.Requ
 	h.loadedProject.projectSlug = acceptedSnapshot.ProjectSlug()
 	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
-	writeJSON(response, http.StatusOK, responseForSnapshot(acceptedSnapshot, nil, false, h.acceptedDiff))
+	return responseForSnapshot(acceptedSnapshot, nil, false, h.acceptedDiff), "", http.StatusOK, false
 }
 
 func (h *Handler) markStale(pending *pendingChangeSet) {

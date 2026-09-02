@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"mime"
@@ -137,7 +136,11 @@ func (h *Handler) agentContextLocked() agentapi.Context {
 }
 
 func (h *Handler) writeAgentSuccessLocked(response http.ResponseWriter, status int, result any) {
-	writeJSON(response, status, agentapi.Envelope{Protocol: agentapi.Protocol, OK: true, Context: h.agentContextLocked(), Result: result})
+	writeJSON(response, status, h.agentSuccessEnvelopeLocked(result))
+}
+
+func (h *Handler) agentSuccessEnvelopeLocked(result any) agentapi.Envelope {
+	return agentapi.Envelope{Protocol: agentapi.Protocol, OK: true, Context: h.agentContextLocked(), Result: result}
 }
 
 func (h *Handler) writeAgentSuccess(response http.ResponseWriter, status int, result any) {
@@ -147,13 +150,17 @@ func (h *Handler) writeAgentSuccess(response http.ResponseWriter, status int, re
 }
 
 func (h *Handler) writeAgentErrorLocked(response http.ResponseWriter, status int, code, message string, details map[string]any) {
+	writeJSON(response, status, h.agentErrorEnvelopeLocked(code, message, details))
+}
+
+func (h *Handler) agentErrorEnvelopeLocked(code, message string, details map[string]any) agentapi.Envelope {
 	if details == nil {
 		details = map[string]any{}
 	}
-	writeJSON(response, status, agentapi.Envelope{
+	return agentapi.Envelope{
 		Protocol: agentapi.Protocol, OK: false, Context: h.agentContextLocked(),
 		Error: &agentapi.Error{Code: code, Message: message, Details: details},
-	})
+	}
 }
 
 func (h *Handler) writeAgentError(response http.ResponseWriter, status int, code, message string, details map[string]any) {
@@ -394,54 +401,6 @@ func agentMutationResult(pending *pendingChangeSet, values map[string]any) map[s
 	return values
 }
 
-// Kept for bounded response capture when reusing the existing exact
-// Refresh/review/acceptance transitions. It is not an HTTP endpoint or an
-// operation registry.
-type localResponseCapture struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-}
-
-func (capture *localResponseCapture) Header() http.Header {
-	if capture.header == nil {
-		capture.header = make(http.Header)
-	}
-	return capture.header
-}
-
-func (capture *localResponseCapture) WriteHeader(status int) { capture.status = status }
-
-func (capture *localResponseCapture) Write(data []byte) (int, error) {
-	if capture.status == 0 {
-		capture.status = http.StatusOK
-	}
-	return capture.body.Write(data)
-}
-
-func localJSONRequest(ctx context.Context, path string, value any, origin string) *http.Request {
-	data, _ := json.Marshal(value)
-	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(data))
-	request.Header.Set("Origin", origin)
-	request.Header.Set("Content-Type", "application/json")
-	return request
-}
-
-func decodeCapturedArchitecture(capture *localResponseCapture) (architectureResponse, string, error) {
-	if capture.status == 0 {
-		capture.status = http.StatusOK
-	}
-	var result architectureResponse
-	if err := json.Unmarshal(capture.body.Bytes(), &result); err == nil && (result.StoreID != "" || result.ActionError != "" || capture.status == http.StatusNoContent) {
-		return result, result.ActionError, nil
-	}
-	var failure errorResponse
-	if err := json.Unmarshal(capture.body.Bytes(), &failure); err != nil {
-		return architectureResponse{}, "", err
-	}
-	return architectureResponse{}, failure.Code, nil
-}
-
 func requireNonEmpty(values ...string) bool {
 	for _, value := range values {
 		if value == "" {
@@ -467,11 +426,6 @@ func exactOccurrence(values []architecture.AuthoringRelationship, target, label 
 	return -1
 }
 
-func unexpectedAgentFailure(err error) *agentapi.Error {
-	_ = err
-	return &agentapi.Error{Code: "operation_failed", Message: agentMessage("operation_failed"), Details: map[string]any{}}
-}
-
 func (h *Handler) agentProjectCreate(response http.ResponseWriter, request *http.Request) {
 	payload, ok := decodeAgentRequest[agentapi.ProjectCreateRequest](h, response, request)
 	if !ok {
@@ -481,21 +435,25 @@ func (h *Handler) agentProjectCreate(response http.ResponseWriter, request *http
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Project name is required.", map[string]any{"field": "name"})
 		return
 	}
-	capture := &localResponseCapture{}
-	h.createProject(capture, localJSONRequest(request.Context(), "/api/projects/create", map[string]any{"name": payload.Name}, h.expectedOrigin))
-	result, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
+	h.stateMutex.Lock()
+	result, code := h.createProjectLocked(request.Context(), payload.Name)
+	h.runBeforeAgentResultCaptureLocked()
+	status := http.StatusCreated
+	var envelope agentapi.Envelope
+	if code != "" {
+		status = http.StatusInternalServerError
+		if code == errorPendingBlocksSwitch {
+			status = http.StatusConflict
+		}
+		envelope = h.mappedAgentErrorEnvelopeLocked(code)
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{
+			"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
+			"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
+		})
 	}
-	if capture.status >= 400 {
-		h.writeMappedAgentError(response, capture.status, code)
-		return
-	}
-	h.writeAgentSuccess(response, http.StatusCreated, map[string]any{
-		"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
-		"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
-	})
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
 func (h *Handler) agentProjectOpen(response http.ResponseWriter, request *http.Request) {
@@ -507,30 +465,25 @@ func (h *Handler) agentProjectOpen(response http.ResponseWriter, request *http.R
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Project slug is required.", map[string]any{"field": "slug"})
 		return
 	}
-	capture := &localResponseCapture{}
-	h.openProject(capture, localJSONRequest(request.Context(), "/api/projects/open", openProjectRequest{ProjectSlug: payload.Slug}, h.expectedOrigin))
-	result, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
-	}
-	if capture.status >= 400 {
-		h.writeMappedAgentError(response, capture.status, code)
-		return
-	}
-	h.writeAgentSuccess(response, http.StatusOK, map[string]any{
-		"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
-		"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
-	})
-}
-
-func (h *Handler) currentProjectLocator() (string, string) {
 	h.stateMutex.Lock()
-	defer h.stateMutex.Unlock()
-	if h.loadedProject == nil {
-		return "", ""
+	result, code := h.openProjectLocked(request.Context(), payload.Slug)
+	h.runBeforeAgentResultCaptureLocked()
+	status := http.StatusOK
+	var envelope agentapi.Envelope
+	if code != "" {
+		status = http.StatusConflict
+		if code == errorProjectNotFound {
+			status = http.StatusNotFound
+		}
+		envelope = h.mappedAgentErrorEnvelopeLocked(code)
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{
+			"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
+			"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
+		})
 	}
-	return h.loadedProject.projectSlug, h.loadedProject.storeID
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
 func (h *Handler) agentProjectClose(response http.ResponseWriter, request *http.Request) {
@@ -542,22 +495,26 @@ func (h *Handler) agentProjectClose(response http.ResponseWriter, request *http.
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID is required.", map[string]any{"field": "store_id"})
 		return
 	}
-	slug, _ := h.currentProjectLocator()
-	capture := &localResponseCapture{}
-	h.leaveProject(capture, localJSONRequest(request.Context(), "/api/projects/leave", architectureActionRequest{ProjectSlug: slug, StoreID: payload.StoreID}, h.expectedOrigin))
-	_, code, err := decodeCapturedArchitecture(capture)
-	if capture.status == http.StatusNoContent {
-		h.writeAgentSuccess(response, http.StatusOK, map[string]any{"closed_store_id": payload.StoreID})
-		return
+	h.stateMutex.Lock()
+	slug := ""
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
 	}
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
+	_, code := h.leaveProjectLocked(slug, payload.StoreID)
+	h.runBeforeAgentResultCaptureLocked()
+	status := http.StatusOK
+	var envelope agentapi.Envelope
+	if code != "" {
+		status = http.StatusConflict
+		envelope = h.mappedAgentErrorEnvelopeLocked(code)
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{"closed_store_id": payload.StoreID})
 	}
-	h.writeMappedAgentError(response, capture.status, code)
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
-func (h *Handler) writeMappedAgentError(response http.ResponseWriter, status int, code string) {
+func (h *Handler) mappedAgentErrorLocked(code string) *agentapi.Error {
 	mapped := "operation_failed"
 	details := map[string]any{}
 	switch code {
@@ -568,8 +525,7 @@ func (h *Handler) writeMappedAgentError(response http.ResponseWriter, status int
 	case errorCatalogUnavailable, errorArchitectureUnavailable, errorArchitectureInvalid, errorArchitectureUnsupported:
 		mapped = "project_unavailable"
 	case errorArchitectureNotOpen:
-		_, storeID := h.currentProjectLocator()
-		if storeID == "" {
+		if h.loadedProject == nil {
 			mapped = "project_not_open"
 		} else {
 			mapped = "project_mismatch"
@@ -599,7 +555,12 @@ func (h *Handler) writeMappedAgentError(response http.ResponseWriter, status int
 	case errorChangeFailed:
 		mapped = "target_not_eligible"
 	}
-	h.writeAgentError(response, status, mapped, agentMessage(mapped), details)
+	return &agentapi.Error{Code: mapped, Message: agentMessage(mapped), Details: details}
+}
+
+func (h *Handler) mappedAgentErrorEnvelopeLocked(code string) agentapi.Envelope {
+	mapped := h.mappedAgentErrorLocked(code)
+	return h.agentErrorEnvelopeLocked(mapped.Code, mapped.Message, mapped.Details)
 }
 
 func (h *Handler) agentArchitectureRefresh(response http.ResponseWriter, request *http.Request) {
@@ -611,25 +572,27 @@ func (h *Handler) agentArchitectureRefresh(response http.ResponseWriter, request
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID and accepted revision are required.", nil)
 		return
 	}
-	slug, _ := h.currentProjectLocator()
-	capture := &localResponseCapture{}
-	h.refreshArchitecture(capture, localJSONRequest(request.Context(), "/api/architecture/refresh", architectureActionRequest{
+	h.stateMutex.Lock()
+	slug := ""
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
+	}
+	result, code, status := h.refreshArchitectureLocked(request.Context(), architectureActionRequest{
 		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedRevision: payload.AcceptedRevision,
-	}, h.expectedOrigin))
-	result, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
+	})
+	h.runBeforeAgentResultCaptureLocked()
+	var envelope agentapi.Envelope
+	if code != "" {
+		envelope = h.mappedAgentErrorEnvelopeLocked(code)
+	} else {
+		classification := "unchanged"
+		if result.Revision != payload.AcceptedRevision {
+			classification = "adopted"
+		}
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{"classification": classification, "accepted_revision": result.Revision, "slug": result.ProjectSlug})
 	}
-	if capture.status >= 400 {
-		h.writeMappedAgentError(response, capture.status, code)
-		return
-	}
-	classification := "unchanged"
-	if result.Revision != payload.AcceptedRevision {
-		classification = "adopted"
-	}
-	h.writeAgentSuccess(response, http.StatusOK, map[string]any{"classification": classification, "accepted_revision": result.Revision, "slug": result.ProjectSlug})
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
 func (h *Handler) agentChangesReview(response http.ResponseWriter, request *http.Request) {
@@ -641,34 +604,38 @@ func (h *Handler) agentChangesReview(response http.ResponseWriter, request *http
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Review requires the exact inspected pending generation.", nil)
 		return
 	}
-	slug, _ := h.currentProjectLocator()
-	capture := &localResponseCapture{}
-	h.reviewChanges(capture, localJSONRequest(request.Context(), "/api/architecture/review", architectureActionRequest{
+	h.stateMutex.Lock()
+	slug := ""
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
+	}
+	result, code, status := h.reviewChangesLocked(request.Context(), architectureActionRequest{
 		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedRevision: payload.AcceptedRevision, ExpectedGeneration: payload.PendingGeneration,
 		PendingGenerationObserved: true,
-	}, h.expectedOrigin))
-	result, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
-	}
-	if capture.status >= 400 || result.Changes == nil || result.Changes.Review == nil {
-		if result.Changes != nil && result.Changes.ValidationCode != "" {
-			h.writeAgentError(response, http.StatusUnprocessableEntity, "validation_blocked", agentMessage("validation_blocked"), map[string]any{
+	})
+	h.runBeforeAgentResultCaptureLocked()
+	var envelope agentapi.Envelope
+	if code != "" || result.Changes == nil || result.Changes.Review == nil {
+		if result.Changes != nil && result.Changes.ValidationCode != "" && result.Changes.ValidationCode != "change_unavailable" {
+			envelope = h.agentErrorEnvelopeLocked("validation_blocked", agentMessage("validation_blocked"), map[string]any{
 				"code": result.Changes.ValidationCode, "component_id": result.Changes.ValidationItem,
 				"relationship_position": result.Changes.ValidationRelationshipPosition, "relationship_field": result.Changes.ValidationRelationshipField,
 				"diagram_id": result.Changes.ValidationDiagram, "diagram_field": result.Changes.ValidationDiagramField,
 			})
-			return
+			status = http.StatusUnprocessableEntity
+		} else if status == http.StatusInternalServerError {
+			envelope = h.agentErrorEnvelopeLocked("operation_failed", agentMessage("operation_failed"), nil)
+		} else if code == errorReviewFailed {
+			envelope = h.agentErrorEnvelopeLocked("review_required", agentMessage("review_required"), nil)
+			status = http.StatusConflict
+		} else {
+			envelope = h.mappedAgentErrorEnvelopeLocked(code)
 		}
-		if code == errorReviewFailed {
-			h.writeAgentError(response, http.StatusConflict, "review_required", agentMessage("review_required"), nil)
-			return
-		}
-		h.writeMappedAgentError(response, capture.status, code)
-		return
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(result.Changes.Review)
 	}
-	h.writeAgentSuccess(response, http.StatusOK, result.Changes.Review)
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
 func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *http.Request) {
@@ -676,22 +643,26 @@ func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *htt
 	if !ok {
 		return
 	}
-	slug, _ := h.currentProjectLocator()
 	generation := payload.Generation
-	capture := &localResponseCapture{}
-	h.discardChanges(capture, localJSONRequest(request.Context(), "/api/architecture/discard", architectureActionRequest{
+	h.stateMutex.Lock()
+	slug := ""
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
+	}
+	_, code := h.discardChangesLocked(architectureActionRequest{
 		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedGeneration: &generation, PendingGenerationObserved: true,
-	}, h.expectedOrigin))
-	_, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
+	})
+	h.runBeforeAgentResultCaptureLocked()
+	status := http.StatusOK
+	var envelope agentapi.Envelope
+	if code != "" {
+		status = http.StatusConflict
+		envelope = h.mappedAgentErrorEnvelopeLocked(code)
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{"discarded_generation": payload.Generation})
 	}
-	if capture.status >= 400 {
-		h.writeMappedAgentError(response, capture.status, code)
-		return
-	}
-	h.writeAgentSuccess(response, http.StatusOK, map[string]any{"discarded_generation": payload.Generation})
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
 }
 
 func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request *http.Request) {
@@ -703,32 +674,38 @@ func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request 
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID and exact review binding are required.", nil)
 		return
 	}
-	slug, _ := h.currentProjectLocator()
-	capture := &localResponseCapture{}
-	h.acceptChanges(capture, localJSONRequest(request.Context(), "/api/architecture/accept", acceptChangesRequest{
+	h.stateMutex.Lock()
+	slug := ""
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
+	}
+	result, code, status, casConflict := h.acceptChangesLocked(acceptChangesRequest{
 		ProjectSlug: slug, StoreID: payload.StoreID, BaseRevision: payload.BaseRevision, CandidateTree: payload.CandidateTree, Generation: payload.Generation,
-	}, h.expectedOrigin))
-	result, code, err := decodeCapturedArchitecture(capture)
-	if err != nil {
-		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
-		return
-	}
-	if capture.status >= 400 {
-		if code == errorArchitectureStale {
-			h.writeAgentError(response, capture.status, "accepted_conflict", agentMessage("accepted_conflict"), nil)
-			return
-		}
-		if code == errorReviewFailed {
-			h.writeAgentError(response, capture.status, "review_required", agentMessage("review_required"), nil)
-			return
-		}
-		h.writeMappedAgentError(response, capture.status, code)
-		return
-	}
-	h.writeAgentSuccess(response, http.StatusOK, map[string]any{
-		"base_revision": payload.BaseRevision, "candidate_tree": payload.CandidateTree, "generation": payload.Generation,
-		"accepted_revision": result.Revision, "publication": "published", "parent_diff": result.ParentDiff,
 	})
+	h.runBeforeAgentResultCaptureLocked()
+	var envelope agentapi.Envelope
+	if code != "" {
+		if code == errorArchitectureStale && casConflict {
+			envelope = h.agentErrorEnvelopeLocked("accepted_conflict", agentMessage("accepted_conflict"), nil)
+		} else if code == errorReviewFailed {
+			envelope = h.agentErrorEnvelopeLocked("review_required", agentMessage("review_required"), nil)
+		} else {
+			envelope = h.mappedAgentErrorEnvelopeLocked(code)
+		}
+	} else {
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{
+			"base_revision": payload.BaseRevision, "candidate_tree": payload.CandidateTree, "generation": payload.Generation,
+			"accepted_revision": result.Revision, "publication": "published", "parent_diff": result.ParentDiff,
+		})
+	}
+	h.stateMutex.Unlock()
+	writeJSON(response, status, envelope)
+}
+
+func (h *Handler) runBeforeAgentResultCaptureLocked() {
+	if h.beforeAgentResultCapture != nil {
+		h.beforeAgentResultCapture()
+	}
 }
 
 func (h *Handler) agentComponentCreate(response http.ResponseWriter, request *http.Request) {
@@ -761,6 +738,10 @@ func (h *Handler) agentComponentCreate(response http.ResponseWriter, request *ht
 	change.RelationshipsChanged = true
 	pending.newComponentHomes = append(pending.newComponentHomes, architecture.NewComponentHome{ComponentID: change.ID, DiagramID: homeDiagramID})
 	pending = h.keepComponentChangeLocked(request.Context(), snapshot, pending, change, -1)
+	if pendingOperationFailed(pending) {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": change.ID, "home_diagram_id": homeDiagramID}))
 }
 
@@ -797,6 +778,10 @@ func (h *Handler) agentComponentEdit(response http.ResponseWriter, request *http
 		changedFields = append(changedFields, "description")
 	}
 	pending = h.keepComponentChangeLocked(request.Context(), snapshot, pending, change, index)
+	if pendingOperationFailed(pending) {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "changed_fields": changedFields}))
 }
 
@@ -834,6 +819,10 @@ func (h *Handler) agentRelationshipAdd(response http.ResponseWriter, request *ht
 	}
 	change.Relationships = append(change.Relationships, architecture.AuthoringRelationship{TargetID: payload.TargetID, Label: payload.Label})
 	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	if pendingOperationFailed(pending) {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"source_id": payload.SourceID, "target_id": payload.TargetID, "label": payload.Label,
 	}))
@@ -865,6 +854,10 @@ func (h *Handler) agentRelationshipEdit(response http.ResponseWriter, request *h
 	old := change.Relationships[selected]
 	change.Relationships[selected] = architecture.AuthoringRelationship{TargetID: payload.TargetID, Label: payload.Label}
 	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	if pendingOperationFailed(pending) {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"source_id": payload.SourceID,
 		"removed":   map[string]any{"target_id": old.TargetID, "label": old.Label, "occurrence": payload.Occurrence},
@@ -897,6 +890,10 @@ func (h *Handler) agentRelationshipRemove(response http.ResponseWriter, request 
 	}
 	change.Relationships = append(change.Relationships[:selected], change.Relationships[selected+1:]...)
 	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	if pendingOperationFailed(pending) {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"source_id": payload.SourceID, "removed": map[string]any{"target_id": payload.TargetID, "label": payload.Label, "occurrence": payload.Occurrence},
 	}))
@@ -923,6 +920,8 @@ func (h *Handler) agentDiagramCreateDetail(response http.ResponseWriter, request
 		status := http.StatusConflict
 		if operationError == changeTargetNotFound {
 			status = http.StatusNotFound
+		} else if operationError == changeOperationFailed {
+			status = http.StatusInternalServerError
 		}
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), map[string]any{"component_id": payload.ComponentID})
 		return
@@ -950,7 +949,11 @@ func (h *Handler) agentDiagramEditTitle(response http.ResponseWriter, request *h
 	}
 	pending, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title)
 	if operationError != "" {
-		h.writeAgentErrorLocked(response, http.StatusNotFound, operationError, agentMessage(operationError), map[string]any{"diagram_id": payload.DiagramID})
+		status := http.StatusNotFound
+		if operationError == changeOperationFailed {
+			status = http.StatusInternalServerError
+		}
+		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), map[string]any{"diagram_id": payload.DiagramID})
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"diagram_id": payload.DiagramID, "title": payload.Title}))
@@ -977,6 +980,8 @@ func (h *Handler) agentComponentMoveHome(response http.ResponseWriter, request *
 		status := http.StatusConflict
 		if operationError == changeTargetNotFound {
 			status = http.StatusNotFound
+		} else if operationError == changeOperationFailed {
+			status = http.StatusInternalServerError
 		}
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), nil)
 		return
@@ -1025,6 +1030,8 @@ func (h *Handler) agentChangeReference(response http.ResponseWriter, request *ht
 		status := http.StatusConflict
 		if operationError == changeTargetNotFound {
 			status = http.StatusNotFound
+		} else if operationError == changeOperationFailed {
+			status = http.StatusInternalServerError
 		}
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), nil)
 		return

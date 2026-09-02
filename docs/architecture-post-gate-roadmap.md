@@ -31,7 +31,7 @@ Improve the then-existing Architecture review workflow without introducing Diagr
 
 The normal workspace map remains accepted-only. Persisted pending state, normal-map pending overlays, semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
 
-## Phase 2 — First-class Architecture Diagrams and nested navigation
+## Phase 2 — First-class Architecture Diagrams and nested navigation — complete
 
 Introduce canonical format-v2 Architecture Diagrams while preserving Components and Relationships as the semantic Architecture facts.
 
@@ -50,6 +50,22 @@ Approved domain direction:
 - candidate-aware Diagram review extends the existing exact base/candidate snapshots, unified diff, binding, confirmation, and accepted-ref CAS path.
 
 The smallest useful product slice includes slug-native catalog/create/open/reload, direct-v2 initialization and normal Component/Relationship authoring, root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
+
+Phase 2 is complete at completion record `8cd9ce145980fbc57377e729975940b9e2f0b8b6`.
+
+## Architecture Agent Access 1 — next stage before Phase 3
+
+Add local agent interfaces over the completed Architecture product before investing in rich diagram presentation:
+
+- a first-class scriptable CLI in the WorkBraid binary;
+- one embedded `workbraid --skill` Markdown guide for an agent with no repository context;
+- typed MCP tools through a stateless stdio bridge to the running WorkBraid process;
+- complete semantic read/authoring parity with the browser's non-presentational Architecture actions;
+- the existing exact pending, review binding, diff, stale, confirmation, CAS, and publication authority shared by browser, CLI, and MCP;
+- stable machine results and typed error classifications; and
+- independent black-box weak-agent CLI and MCP usability gates followed by a small human UI checkpoint.
+
+This is an interface layer over Architecture, not another vertical or authority. It adds no raw Git/YAML agent path, per-agent pending state, remote exposure, multi-user collaboration, autonomous agent runtime, or generic command/tool framework. `docs/architecture-agent-access-v0.md` contains the approved contract.
 
 ## Phase 3 — Durable rich diagram editing
 

@@ -190,15 +190,15 @@ func agentMessage(code string) string {
 	case "pending_generation_mismatch":
 		return "Pending work changed. Inspect changes again before editing."
 	case "target_not_found":
-		return "The requested Component or Diagram no longer exists in the current candidate."
+		return "That Component or Diagram is not in the current Architecture, accepted or pending."
 	case "target_not_eligible":
-		return "That target is not eligible for this Architecture change."
+		return "That Component or Diagram is not an allowed target for this change."
 	case "validation_blocked":
 		return "Changes need correction before they can be reviewed."
 	case "review_required":
 		return "Review the complete current changes before updating Architecture."
 	case "review_invalidated":
-		return "The reviewed change binding is no longer current. Inspect and review again."
+		return "This Review is no longer valid. Inspect changes, then Review again."
 	case "accepted_conflict":
 		return "Accepted Architecture changed before update. Refresh and inspect the preserved pending work."
 	case "acceptance_uncertain":

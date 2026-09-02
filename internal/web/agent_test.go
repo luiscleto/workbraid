@@ -56,6 +56,19 @@ func resultMap(t *testing.T, envelope agentapi.Envelope) map[string]any {
 	return value
 }
 
+func TestAgentPublicRecoveryMessagesUseArchitectureLanguage(t *testing.T) {
+	want := map[string]string{
+		"target_not_found":    "That Component or Diagram is not in the current Architecture, accepted or pending.",
+		"target_not_eligible": "That Component or Diagram is not an allowed target for this change.",
+		"review_invalidated":  "This Review is no longer valid. Inspect changes, then Review again.",
+	}
+	for code, message := range want {
+		if got := agentMessage(code); got != message {
+			t.Fatalf("agentMessage(%q) = %q, want %q", code, got, message)
+		}
+	}
+}
+
 func TestAgentAndBrowserSharePendingAuthorityAndRawRelationshipRepair(t *testing.T) {
 	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Agent authority"}))

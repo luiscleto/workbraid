@@ -2,7 +2,7 @@
 
 WorkBraid keeps accepted Architecture as documented Components, Relationships, and nested Diagrams. One running WorkBraid server is the only authority for the current project, accepted revision, pending changes, review, and update. CLI and MCP commands are loopback clients of that process. Never edit WorkBraid's private Git stores or canonical YAML directly.
 
-Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` supplies the server URL when `--server` is absent. Global flags always precede the command. Start with `status`; a connection error means the authoritative server must be started or checked, never that the CLI should open a store itself.
+Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` supplies the server URL when `--server` is absent. Global flags always precede the command. The CLI does not start WorkBraid. Start with `status`; on `connection_failed`, the operator must start the WorkBraid server separately or correct its configured URL. Never open a store directly as a substitute.
 
 ## Identity and safe state
 
@@ -11,6 +11,7 @@ Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` 
 - `architecture inspect` returns the accepted revision, exact Markdown, Diagram tree, homes, reusable references, Relationships, and boundary context.
 - `changes inspect` returns the one pending base, generation, raw authored rows, validation, candidate when valid, and current review identity.
 - Every authoring command requires `--store-id`, `--accepted-revision`, and `--generation`. Use `--generation none` only when inspection reported no pending set. After every mutation, use the returned generation or inspect again.
+- Copy `store_id`, `accepted_revision` or `revision`, `pending_generation`, and every created Component or Diagram ID from each JSON result into later commands. Never invent IDs.
 
 ## Commands
 
@@ -66,17 +67,20 @@ Here `<state>` means `--store-id <uuid> --accepted-revision <sha> --generation <
 - `pending_generation_mismatch`: run `changes inspect` and retry with its exact generation.
 - `architecture_non_current`, `accepted_conflict`: Refresh, inspect accepted and preserved pending state, then decide whether to discard. WorkBraid does not reconcile.
 - `refresh_failed`: authority could not be determined; preserve prior knowledge and retry Refresh explicitly.
-- `target_not_found`: inspect accepted and pending projections for the current stable ID or exact raw selector.
-- `target_not_eligible`: inspect the complete candidate and choose an eligible Diagram/Component action; do not simulate it through files.
+- `target_not_found`: inspect accepted and pending Architecture for the current stable ID or exact raw selector.
+- `target_not_eligible`: inspect the current Architecture and choose an allowed Component or Diagram target.
 - `validation_blocked`: use the returned stable location and raw pending values to correct the structured row.
-- `review_required`, `review_invalidated`: inspect and run a fresh Review before Update.
+- `review_required`: inspect changes and run Review before Update.
+- `review_invalidated`: this Review is no longer valid; inspect changes, then Review again.
 - `acceptance_uncertain`: inspect/Refresh before any retry.
-- `accepted_reload_required`: acceptance definitely succeeded; never retry Update, Refresh or reopen the canonical result.
+- `accepted_reload_required`: Architecture was already accepted; do not run Update again; Refresh or reopen to load the accepted result.
 - `pending_conflict`: inspect pending work and discard the whole set only when deliberate.
 - `unsupported_action`: the requested semantic action is outside this Architecture version; do not use raw Git/YAML as a substitute.
-- `operation_failed`: inspect current state before retrying; the failure is not a candidate validation result.
+- `operation_failed`: inspect current state before retrying.
 
 ## Small JSON workflow
+
+Each line below uses values copied from the preceding JSON results: project identity and revision, the latest pending generation, created Component and Diagram IDs, and the exact Review fields. Do not invent placeholder values in a real run.
 
 ```text
 workbraid --json project create --name "Agent example"

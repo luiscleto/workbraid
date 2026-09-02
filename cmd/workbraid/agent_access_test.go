@@ -420,6 +420,20 @@ func TestSkillIsStandaloneDeterministicMarkdown(t *testing.T) {
 			t.Fatalf("skill does not document %q", command)
 		}
 	}
+	for _, guidance := range []string{
+		"The CLI does not start WorkBraid.",
+		"Copy `store_id`, `accepted_revision` or `revision`, `pending_generation`, and every created Component or Diagram ID",
+		"Architecture was already accepted; do not run Update again; Refresh or reopen to load the accepted result.",
+	} {
+		if !strings.Contains(first.String(), guidance) {
+			t.Fatalf("skill missing public guidance %q", guidance)
+		}
+	}
+	for _, internal := range []string{"never retry Update, Refresh", "failure is not a candidate validation result", "--listen", "--data-dir"} {
+		if strings.Contains(first.String(), internal) {
+			t.Fatalf("skill retains internal or incorrect guidance %q", internal)
+		}
+	}
 }
 
 func TestClientModesRejectServerAuthorityFlags(t *testing.T) {
@@ -440,6 +454,10 @@ func TestCanonicalHelpDocumentsExactActionsAndTopLevelAliasesStayUnavailable(t *
 	}
 	for _, exact := range []string{
 		"workbraid [--server <loopback-url>] mcp",
+		"Client commands always print one JSON envelope; --json makes it compact.",
+		"--server or WORKBRAID_SERVER selects the running WorkBraid URL.",
+		"The default is http://127.0.0.1:8080.",
+		"Connect, choose a project, and inspect:",
 		"project list | project current",
 		"--store-id <uuid> --accepted-revision <sha> --generation <n|none>",
 		"relationship edit <state> --source-id <uuid> --old-target-id <raw>",
@@ -498,7 +516,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	if failure != nil {
 		t.Fatalf("new loopback client: %+v", failure)
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "workbraid", Version: "test"}, nil)
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "workbraid", Version: "test"}, &mcp.ServerOptions{Instructions: mcpInstructions})
 	registerMCPTools(mcpServer, loopbackClient)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -513,6 +531,12 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	defer session.Close()
 	if got := session.InitializeResult().ProtocolVersion; got != "2026-07-28" {
 		t.Fatalf("negotiated protocol = %q", got)
+	}
+	instructions := session.InitializeResult().Instructions
+	for _, exact := range []string{"one current Architecture project", "one pending change set", "Inspect exact IDs", "base_revision", "candidate_tree", "generation"} {
+		if !strings.Contains(instructions, exact) {
+			t.Fatalf("MCP instructions missing %q: %q", exact, instructions)
+		}
 	}
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -535,6 +559,11 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		if tool.Name == "relationship_edit" {
 			relationshipEdit = tool
 		}
+		for _, internal := range []string{"private-store-derived", "accepted authority state", "complete current candidate", "candidate validation", "derived boundary", "automatic rebuild", "binding"} {
+			if strings.Contains(strings.ToLower(tool.Description), internal) {
+				t.Fatalf("tool %q retains internal wording %q: %q", tool.Name, internal, tool.Description)
+			}
+		}
 	}
 	slices.Sort(gotNames)
 	if !slices.Equal(gotNames, wantNames) {
@@ -542,6 +571,22 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	if relationshipEdit == nil {
 		t.Fatal("relationship_edit schema missing")
+	}
+	var updateDescription, reviewDescription string
+	for _, tool := range listed.Tools {
+		switch tool.Name {
+		case "architecture_update":
+			updateDescription = tool.Description
+		case "changes_review":
+			reviewDescription = tool.Description
+		}
+	}
+	for _, description := range []string{updateDescription, reviewDescription} {
+		for _, field := range []string{"base_revision", "candidate_tree", "generation"} {
+			if !strings.Contains(description, field) {
+				t.Fatalf("Review/Update description missing %s: %q", field, description)
+			}
+		}
 	}
 	input := relationshipEdit.InputSchema.(map[string]any)
 	properties, _ := input["properties"].(map[string]any)

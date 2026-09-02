@@ -517,7 +517,11 @@ Client mode: workbraid [--server <loopback-url>] [--json] <command> [action flag
 MCP mode:    workbraid [--server <loopback-url>] mcp
 Skill:       workbraid --skill
 
-Read and project commands:
+Client commands always print one JSON envelope; --json makes it compact.
+--server or WORKBRAID_SERVER selects the running WorkBraid URL.
+The default is http://127.0.0.1:8080.
+
+Connect, choose a project, and inspect:
   status
   project list | project current
   project create --name <name>

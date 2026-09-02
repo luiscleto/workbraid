@@ -1,6 +1,6 @@
 # Post-Gate Architecture Phase 2.4 execution packet
 
-Status: Approved
+Status: Complete — human Phase 2 gate **PASS**
 
 Target: P2.4 — Slug-native projects, reusable references, and final Phase 2 gate
 
@@ -333,3 +333,44 @@ P2.4 must not introduce:
 - Diagram kinds, UML, isometric/3D, Planning, Agent Control, another vertical, authentication, remote access, multi-user behavior, or mobile-specific UX.
 
 P2.4 stops after fresh independent review, exact integration, ordinary checks, the restart-backed Phase 2 gate, a separate completion record, and explicit human **PASS**. Phase 3 remains unplanned and unstarted.
+
+## Execution result
+
+Status: Complete — human Phase 2 gate **PASS** on 2026-09-02
+
+- Exact completed-P2.3 prerequisite: `17a5bdb06e31054371a5fa2aebabeaa1af52888f`.
+- Alpha-stage Phase 2 baseline/final-continuation commit: `de3394cee8ec5fe277a71761ae884244a682f3ee`.
+- Approved packet-inclusive worker base: `22940454f163338b9b17bd173f588b50904df47e`.
+- Initial combined Part A/Part B implementation and authority corrections reached `e34ab0a9b55c5aa7fb21058d5ac7dc49dce8bec6`.
+- Final integrated implementation after human-gate catalog, review-label, home-move, and living-scenario corrections: `39ca3f7035dc93f63dd32078506b6752ee271ec5`.
+- The implementation replaced source-folder association with the private-store-derived slug catalog, direct native-v2 bootstrap, and `/projects/<slug>` restoration. It removed source-root selection/reassociation, `source_hint`, v1/setup behavior, SQLite, and their running dependencies rather than retaining an alpha compatibility path.
+- Reusable Component appearances extend the same one pending Architecture base/generation, one complete-candidate builder/validator, one immutable review binding, exact diff, confirmation, stale/CAS, and publication authority. No appearance identity, Diagram draft, second candidate/review path, command log, generic catalog, or graph/membership framework was introduced.
+- The final home-move correction consciously supersedes the P2.3 interaction choice that allowed an anchor to target deeper descendants and rely on later correction. Server-owned eligibility now excludes the current home and the complete subtree owned by the Component's detail link. The backend rechecks that exact candidate-relative choice under the existing lock, constructs one complete final proposal on isolated pending state, and publishes it only when valid. Rejected choices preserve the live pending candidate, generation, review binding, and net reference state exactly.
+- The approved A-home/B-reference → home B → home C normalization remains exact: B does not resurrect, while a later explicit **Show component here** deliberately restores one B reference. Valid coupled multi-move/reparenting candidates remain supported because only the complete final proposal is validated.
+
+### Independent review and automated evidence
+
+- Exactly one implementation worker produced the full range `22940454f163338b9b17bd173f588b50904df47e..39ca3f7035dc93f63dd32078506b6752ee271ec5`. Every material correction returned to that same worker.
+- One fresh independent reviewer assessed Part A and Part B separately and the combined range. Review caught and rejected catalog/Refresh authority races and an intermediate-candidate home-move implementation; bounded corrections received fresh rereview. Final verdict: **PASS** with no findings for the complete range through `39ca3f7035dc93f63dd32078506b6752ee271ec5`.
+- Reviewer scrutiny confirmed store-UUID action binding, deterministic catalog conflicts, authoritative external-slug Refresh behavior, exact route replacement, one reference/candidate/CAS authority, candidate-relative references, non-resurrection, Diagram/source fidelity, no false Relationship deltas, snapshot-unified review, valid final multi-move composition, subtree-pruned move eligibility, rejected-request isolation, and collision-only authoring context.
+- Final clean-tree checks: **PASS** for `git diff --check`, `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`, `go mod verify`, 34 ordinary frontend tests, and the production frontend build. The existing production chunk-size warning remains non-blocking.
+- The bounded `npm run test:p2.4` production-browser scenario passed 1/1 in 4.6 seconds. Its one stale accessible-name locator was updated to the new exact **Change where _Component_ lives** action without changing topology, order, timeout, harness, or assertions; that one-line living-scenario correction received separate fresh review.
+- Tests ran through ordinary documented commands with one browser worker. No raw Vitest invocation, manual render/unmount loop, abnormal memory growth, or swap use occurred. All gate/test WorkBraid, npm, Node, Vitest, Playwright, and Chromium processes were stopped before completion.
+
+### Final Phase 2 human-gate evidence
+
+- Fresh runtime root: `/tmp/workbraid-p24-human.dV7DBE`; application-data directory: `/tmp/workbraid-p24-human.dV7DBE/app-data`. The built browser UI was served by the real loopback Go process over real private Git stores. No source repository or SQLite fixture participated.
+- From an empty catalog, the human created `Phase Two Gate` through the name-only UI. Canonical store UUID: `143d1aac-44c9-4663-94e6-ebb938dac66b`; initial slug/route: `phase-two-gate` / `/projects/phase-two-gate`; parentless bootstrap: `9463f7d8f5da0e0ff542e227ddcf3c34618fbfef`; bootstrap tree: `66ac88cd0f2664eef0d6289a8b2cdae64f8a7bd8`; root Diagram UUID: `962738f1-4285-47b7-b317-81dbe9d34278`. The root title was independently initialized to `Phase Two Gate`, appearances were empty, and the only canonical files were mode `100644`.
+- Route reload and catalog reopening resolved the same exact store/revision. Creating the same display name again produced distinct slug `phase-two-gate-2`, store UUID `3f8b0452-61a2-42f4-919f-5633ca3353fc`, and parentless bootstrap `2bfc9b4df1b33c604d9be16af75286051c3e8e73`; catalog selection remained unambiguous.
+- One coherent first candidate created Gateway, Worker, Records, Notes, and Archive; two differently labelled parallel Gateway→Worker facts plus Worker→Records; nested `Runtime` and `Storage` Diagrams; candidate-relative homes; a boundary→canonical Worker reference; and an unconnected Notes reference. The accepted workspace remained the empty bootstrap until review.
+- First human review binding: base `9463f7d8f5da0e0ff542e227ddcf3c34618fbfef`, candidate tree `c3fdf802ece90005e28f73b7deeeae7e11662805`, generation `13`. **With changes** / **Before changes**, candidate-only fallback, Diagram/reference composition, real Relationship deltas, exact Diagram-labelled review entries, contextual focus, and the complete unified diff passed. Deliberate acceptance produced revision `8592b4f7e8555b2980186a39bc69ebb8952d2251`, parent `9463f7d8f5da0e0ff542e227ddcf3c34618fbfef`, and tree `c3fdf802ece90005e28f73b7deeeae7e11662805`.
+- The gate exposed a real home-move defect: a deeper descendant was offered, stored as an invalid move, produced an empty Fix destination list, and then blocked an unrelated move. Feature work stopped. The descendant-permitted executable expectation and invalid-home repair cache/UI were removed; candidate-relative subtree pruning and validate-before-publication replaced them. The corrected UI identifies the Component and current Diagram, hides the action when no destination exists, and shows only backend-approved choices.
+- On the corrected build, Worker moved Runtime → root → Storage in one pending set. The accepted root reference did not resurrect after the second move. A later explicit Show restored exactly one root reference; stopping it returned the exact two Gateway→Worker occurrences to one **Lives in Storage** boundary. Removing the unconnected Notes reference made Notes disappear from Storage while its root home remained exact.
+- Second human review binding: base `8592b4f7e8555b2980186a39bc69ebb8952d2251`, candidate tree `a29facced0ee7c2af1f5aee6ac40bf071567cc8c`, generation `5`. Composition changes used exact Diagram names and produced no false Component-content or Relationship-fact deltas. Deliberate acceptance produced revision `30a449b81dfb7474ecde424d08842fa080d8693f`, parent `8592b4f7e8555b2980186a39bc69ebb8952d2251`, and tree `a29facced0ee7c2af1f5aee6ac40bf071567cc8c`.
+- A controlled external authoritative successor changed only the manifest slug to `phase-two-gate-refreshed`: revision `e8829e2dd7e302888c34009891db77107f3090b7`, parent `30a449b81dfb7474ecde424d08842fa080d8693f`, tree `7c651855ae1ac30f99dbfd1896b8a3549a53d93b`. It remained invisible until explicit **Refresh**; Refresh atomically adopted all projections and replaced the browser route with `/projects/phase-two-gate-refreshed`. The old route became normal not-found, while the catalog resolved the new slug to the same store UUID.
+- After a complete process stop, a genuinely fresh process reopened `/projects/phase-two-gate-refreshed` and reconstructed exact revision `e8829e2dd7e302888c34009891db77107f3090b7`, root → Runtime → Storage hierarchy, Diagram/Component identities, documentation, homes, Relationships, boundaries, navigation, and catalog solely from canonical Git. Worker remained solely home in Storage; Notes remained solely home in root; root derived one Worker boundary carrying both exact Gateway relationships.
+- Final private-store inspection found sole authority `refs/heads/accepted`, only UUID-named private Git stores, canonical file modes `100644`, and no corrupt Git objects. Unreachable candidate trees remained ordinary non-canonical Git objects. No SQLite/database file, source-root association, v1/setup state, external catalog registry, or non-Git Architecture projection existed.
+- Human-requested catalog alignment, creation-first ordering, exact Diagram names in composition review, and Component/current-home move wording were bounded implementation corrections, covered proportionately, and independently rereviewed. Search/filter scaling and the conceptual wording/integration of explicit reusable appearances remain non-gating future product candidates.
+- Human gate result: **PASS**.
+
+Phase 2 is complete. Stop here; Phase 3 remains unplanned and unstarted.

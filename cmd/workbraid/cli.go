@@ -158,7 +158,7 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 	group, action, actionArgs := args[0], args[1], args[2:]
 	operation := group + "_" + strings.ReplaceAll(action, "-", "_")
 	if group == "project" && action == "list" {
-		return noArgumentCommand(operation, actionArgs)
+		return noArgumentCommand("projects_list", actionArgs)
 	}
 	if group == "project" && action == "current" {
 		return noArgumentCommand(operation, actionArgs)

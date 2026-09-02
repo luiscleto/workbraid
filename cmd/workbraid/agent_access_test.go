@@ -91,6 +91,11 @@ func TestRealBinaryCLIAndTwoMCPBridgesShareOneServerAuthority(t *testing.T) {
 	if !created.OK || created.Context.Project == nil || created.Context.AcceptedRevision == nil {
 		t.Fatalf("created = %+v", created)
 	}
+	listedByCLI := runRealCLI(t, binary, origin, "project", "list")
+	listedProjects := listedByCLI.Result.(map[string]any)["projects"].([]any)
+	if len(listedProjects) != 1 || listedProjects[0].(map[string]any)["slug"] != created.Context.Project.Slug || listedProjects[0].(map[string]any)["store_id"] != created.Context.Project.StoreID {
+		t.Fatalf("advertised real project list = %+v", listedByCLI)
+	}
 	inspected := runRealCLI(t, binary, origin, "architecture", "inspect")
 	projection, ok := inspected.Result.(map[string]any)
 	if !ok {
@@ -410,7 +415,7 @@ func TestSkillIsStandaloneDeterministicMarkdown(t *testing.T) {
 	if errors.Len() != 0 || first.String() != second.String() || !bytes.HasPrefix(first.Bytes(), []byte("# WorkBraid Architecture agent guide\n")) {
 		t.Fatalf("skill output is not clean/deterministic Markdown: stderr=%q", errors.String())
 	}
-	for _, command := range []string{"project create", "architecture inspect", "changes review", "architecture update", "relationship edit", "diagram stop-showing-component", "workbraid [--server <loopback-url>] mcp"} {
+	for _, command := range []string{"project list", "project create", "architecture inspect", "changes review", "architecture update", "relationship edit", "diagram stop-showing-component", "workbraid [--server <loopback-url>] mcp"} {
 		if !bytes.Contains(first.Bytes(), []byte(command)) {
 			t.Fatalf("skill does not document %q", command)
 		}
@@ -435,6 +440,7 @@ func TestCanonicalHelpDocumentsExactActionsAndTopLevelAliasesStayUnavailable(t *
 	}
 	for _, exact := range []string{
 		"workbraid [--server <loopback-url>] mcp",
+		"project list | project current",
 		"--store-id <uuid> --accepted-revision <sha> --generation <n|none>",
 		"relationship edit <state> --source-id <uuid> --old-target-id <raw>",
 		"architecture update --store-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>",
@@ -465,6 +471,15 @@ func TestCLIUsesRunningLoopbackAuthority(t *testing.T) {
 	created := decodeCLIEnvelope(t, &stdout)
 	if !created.OK || created.Context.Project == nil || created.Context.Project.Name != "CLI project" {
 		t.Fatalf("created = %+v", created)
+	}
+	stdout.Reset()
+	if code := run([]string{"--server", server.URL, "--json", "project", "list"}, &stdout, &stderr, bytes.NewReader(nil)); code != 0 {
+		t.Fatalf("project list exit = %d, stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	listed := decodeCLIEnvelope(t, &stdout)
+	projects := listed.Result.(map[string]any)["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["slug"] != created.Context.Project.Slug {
+		t.Fatalf("project list = %+v", listed)
 	}
 	stdout.Reset()
 	if code := run([]string{"--server", server.URL, "--json", "architecture", "inspect"}, &stdout, &stderr, bytes.NewReader(nil)); code != 0 {

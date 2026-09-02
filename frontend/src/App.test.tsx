@@ -58,7 +58,7 @@ function architecture(overrides: Record<string, unknown> = {}) {
       breadcrumbs: [{ id: root, title: 'System' }, { id: detail, title: 'Detail' }],
       appearances: [{ component_id: external, role: 'home' }], boundaries: [], relationships: [],
     }],
-    home_move_destinations: [{ component_id: worker, diagram_ids: [] }, { component_id: external, diagram_ids: [root] }],
+    home_move_destinations: [{ component_id: worker, current_home_id: root, diagram_ids: [] }, { component_id: external, current_home_id: detail, diagram_ids: [root] }],
     reference_choices: [{ diagram_id: root, component_id: external, title: 'External', home_diagram: 'Detail' }],
     ...overrides,
   }
@@ -317,18 +317,41 @@ describe('slug workspace and reusable references', () => {
     expect(window.location.pathname).toBe('/projects/example-project')
   })
 
-  it('does not offer the current home as a move destination', async () => {
+  it('uses server-owned current-home wording and offers only approved move destinations', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     vi.stubGlobal('fetch', vi.fn(() => response(architecture())))
     const user = userEvent.setup()
     render(<App />)
     const navigation = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    expect(screen.queryByRole('button', { name: 'Change where Worker lives' })).not.toBeInTheDocument()
     await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
     await user.click(within(navigation).getByRole('button', { name: 'External' }))
-    await user.click(screen.getByRole('button', { name: 'Change where it lives' }))
+    await user.click(screen.getByRole('button', { name: 'Change where External lives' }))
+    expect(screen.getByRole('heading', { name: 'Change where External lives' })).toBeInTheDocument()
+    expect(screen.getByText('Currently lives in Detail.')).toBeInTheDocument()
     const picker = screen.getByLabelText('Diagram')
     expect(within(picker).queryByRole('option', { name: 'Detail' })).not.toBeInTheDocument()
     expect(within(picker).getByRole('option', { name: 'System' })).toBeInTheDocument()
+  })
+
+  it('keeps the move editor intact when a server-approved destination becomes unavailable', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => response({ code: 'home_move_unavailable' }, 409))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    const navigation = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
+    await user.click(within(navigation).getByRole('button', { name: 'External' }))
+    await user.click(screen.getByRole('button', { name: 'Change where External lives' }))
+    await user.selectOptions(screen.getByLabelText('Diagram'), root)
+    await user.click(screen.getByRole('button', { name: 'Keep change' }))
+
+    expect(requestBody(fetchMock, 1)).toMatchObject({ component_id: external, diagram_id: root })
+    expect(await screen.findByRole('alert')).toHaveTextContent('That destination is no longer available. Choose another diagram.')
+    expect(screen.getByRole('heading', { name: 'Change where External lives' })).toBeInTheDocument()
   })
 })
 

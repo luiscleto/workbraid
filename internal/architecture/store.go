@@ -504,19 +504,24 @@ func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) 
 }
 
 // ComponentHomeDestinationDiagramIDs returns the concrete Diagram destinations
-// available for moving one Component home. The Component's own detail Diagram
-// is excluded because its parent-owned link travels with the home; deeper
-// descendants remain candidates for complete-candidate validation.
+// available for moving one Component home. The current home and the complete
+// subtree carried by its parent-owned detail link are not eligible.
 func (snapshot Snapshot) ComponentHomeDestinationDiagramIDs(componentID string) []string {
 	homeID, detailID, ok := snapshot.ComponentHome(componentID)
 	if !ok {
 		return nil
 	}
+	diagrams := make(map[uuid.UUID]diagram, len(snapshot.diagrams))
+	for _, current := range snapshot.diagrams {
+		diagrams[current.id] = current
+	}
+	detailUUID, _ := uuid.Parse(detailID)
 	destinations := make([]string, 0, len(snapshot.diagrams))
 	for _, current := range snapshot.diagrams {
-		if current.id.String() != detailID && current.id.String() != homeID {
-			destinations = append(destinations, current.id.String())
+		if current.id.String() == homeID || (detailUUID != uuid.Nil && diagramDescendsFrom(current.id, detailUUID, diagrams)) {
+			continue
 		}
+		destinations = append(destinations, current.id.String())
 	}
 	return destinations
 }

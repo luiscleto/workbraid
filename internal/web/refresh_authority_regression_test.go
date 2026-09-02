@@ -383,14 +383,22 @@ func TestSameHomeMoveIsAnExactNoOp(t *testing.T) {
 	if got := git(t, "--git-dir", fixture.storePath, "ls-tree", "-r", fixture.base.Revision); got != before {
 		t.Fatalf("same-home move changed canonical tree\nbefore=%s\nafter=%s", before, got)
 	}
+	found := false
 	for _, choice := range response.HomeMoveDestinations {
 		if choice.ComponentID == fixture.component {
+			found = true
+			if choice.CurrentHomeID != fixture.base.RootDiagramID {
+				t.Fatalf("current home=%q want %q", choice.CurrentHomeID, fixture.base.RootDiagramID)
+			}
 			for _, diagramID := range choice.DiagramIDs {
 				if diagramID == fixture.base.RootDiagramID {
 					t.Fatalf("current home remained a destination: %+v", choice)
 				}
 			}
 		}
+	}
+	if !found {
+		t.Fatal("component move options missing")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -221,6 +222,121 @@ func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testin
 	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
 	if accepted.Revision == opened.Revision || roleSnapshot(accepted, c.ID, moving.ID) != "home" || roleSnapshot(accepted, b.ID, moving.ID) != "" {
 		t.Fatalf("accepted = %+v", accepted)
+	}
+}
+
+func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *testing.T) {
+	state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Move eligibility"}))
+	manager := state.architecture
+	base := *state.loadedSnapshot
+	gateway := manager.NewComponentChange(base, nil, "Gateway", "Gateway body.\n")
+	worker := manager.NewComponentChange(base, []architecture.ComponentChange{gateway}, "Worker", "Worker body.\n")
+	otherAnchor := manager.NewComponentChange(base, []architecture.ComponentChange{gateway, worker}, "Other", "Other body.\n")
+	runtime := base.NewDetailDiagramChange(nil, "Runtime", gateway.ID)
+	other := base.NewDetailDiagramChange([]architecture.DetailDiagramChange{runtime}, "Other diagram", otherAnchor.ID)
+	initial, err := manager.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{gateway, worker, otherAnchor}, architecture.CandidateComposition{
+		NewComponentHomes: []architecture.NewComponentHome{
+			{ComponentID: gateway.ID, DiagramID: base.RootDiagramID()},
+			{ComponentID: worker.ID, DiagramID: base.RootDiagramID()},
+			{ComponentID: otherAnchor.ID, DiagramID: base.RootDiagramID()},
+		},
+		DetailDiagrams: []architecture.DetailDiagramChange{runtime, other},
+		HomeMoves:      []architecture.ComponentHomeMove{{ComponentID: worker.ID, DiagramID: runtime.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = acceptArchitectureCandidate(t, manager, base, initial)
+	storage := base.NewDetailDiagramChange(nil, "Storage", worker.ID)
+	nested, err := manager.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{DetailDiagrams: []architecture.DetailDiagramChange{storage}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = acceptArchitectureCandidate(t, manager, base, nested)
+	opened := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
+
+	var gatewayOptions componentHomeDestinationsResponse
+	for _, options := range opened.HomeMoveDestinations {
+		if options.ComponentID == gateway.ID {
+			gatewayOptions = options
+			break
+		}
+	}
+	if gatewayOptions.CurrentHomeID != opened.RootDiagramID || slices.Contains(gatewayOptions.DiagramIDs, opened.RootDiagramID) || slices.Contains(gatewayOptions.DiagramIDs, runtime.ID) || slices.Contains(gatewayOptions.DiagramIDs, storage.ID) || !slices.Contains(gatewayOptions.DiagramIDs, other.ID) {
+		t.Fatalf("gateway move options = %+v", gatewayOptions)
+	}
+	initialRejected := postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: gateway.ID, DiagramID: storage.ID,
+	})
+	if initialRejected.Code != http.StatusConflict || !strings.Contains(initialRejected.Body.String(), errorHomeMoveUnavailable) {
+		t.Fatalf("initial ineligible move status=%d body=%s", initialRejected.Code, initialRejected.Body.String())
+	}
+	state.stateMutex.Lock()
+	if state.pending != nil {
+		t.Fatalf("rejected move created hidden pending state: %+v", state.pending)
+	}
+	state.stateMutex.Unlock()
+
+	decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: gateway.ID, Description: "Pending gateway.\n", DescriptionChanged: true,
+	}))
+	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID}))
+	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
+		t.Fatalf("review missing: %+v", reviewed.Changes)
+	}
+	state.stateMutex.Lock()
+	pendingBefore := state.pending
+	generationBefore := pendingBefore.generation
+	reviewBefore := pendingBefore.review
+	treeBefore := pendingBefore.candidate.Tree()
+	movesBefore := append([]architecture.ComponentHomeMove(nil), pendingBefore.homeMoves...)
+	referencesBefore := append([]architecture.ReferenceAppearanceChange(nil), pendingBefore.references...)
+	state.stateMutex.Unlock()
+
+	rejected := postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: gateway.ID, DiagramID: storage.ID,
+	})
+	if rejected.Code != http.StatusConflict || !strings.Contains(rejected.Body.String(), errorHomeMoveUnavailable) {
+		t.Fatalf("ineligible move status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	state.stateMutex.Lock()
+	if state.pending != pendingBefore || state.pending.generation != generationBefore || state.pending.review != reviewBefore || state.pending.candidate.Tree() != treeBefore || !slices.Equal(state.pending.homeMoves, movesBefore) || !slices.Equal(state.pending.references, referencesBefore) {
+		t.Fatalf("rejected move mutated pending: before=%+v after=%+v", pendingBefore, state.pending)
+	}
+	state.stateMutex.Unlock()
+
+	moved := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: worker.ID, DiagramID: opened.RootDiagramID,
+	}))
+	if moved.Changes == nil || moved.Changes.Candidate == nil || moved.Changes.Review != nil || role(moved.Changes.Candidate, opened.RootDiagramID, worker.ID) != "home" {
+		t.Fatalf("valid move after rejection failed: %+v", moved.Changes)
+	}
+	state.stateMutex.Lock()
+	if state.pending.generation != generationBefore+1 || state.pending.review != nil {
+		t.Fatalf("successful move generation/review = %d/%+v", state.pending.generation, state.pending.review)
+	}
+	state.stateMutex.Unlock()
+	var gatewayAfterReparent componentHomeDestinationsResponse
+	for _, options := range moved.HomeMoveDestinations {
+		if options.ComponentID == gateway.ID {
+			gatewayAfterReparent = options
+			break
+		}
+	}
+	if !slices.Contains(gatewayAfterReparent.DiagramIDs, storage.ID) {
+		t.Fatalf("Storage did not become eligible after its anchor moved out first: %+v", gatewayAfterReparent)
+	}
+	reparented := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: gateway.ID, DiagramID: storage.ID,
+	}))
+	if reparented.Changes == nil || reparented.Changes.Candidate == nil || role(reparented.Changes.Candidate, storage.ID, gateway.ID) != "home" {
+		t.Fatalf("ordered subtree reparent failed: %+v", reparented.Changes)
 	}
 }
 

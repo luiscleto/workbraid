@@ -621,11 +621,13 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 	}
 	anchor := manager.NewComponentChange(base, nil, "Anchor", "Anchor body\n")
 	worker := manager.NewComponentChange(base, []ComponentChange{anchor}, "Worker", "Worker body\n")
+	otherAnchor := manager.NewComponentChange(base, []ComponentChange{anchor, worker}, "Other anchor", "Other body\n")
 	first := base.NewDetailDiagramChange(nil, "System A", anchor.ID)
-	composition := rootHomes(base, anchor, worker)
-	composition.DetailDiagrams = []DetailDiagramChange{first}
+	other := base.NewDetailDiagramChange([]DetailDiagramChange{first}, "Other system", otherAnchor.ID)
+	composition := rootHomes(base, anchor, worker, otherAnchor)
+	composition.DetailDiagrams = []DetailDiagramChange{first, other}
 	composition.HomeMoves = []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: first.ID}}
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{anchor, worker}, composition)
+	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{anchor, worker, otherAnchor}, composition)
 	if err != nil {
 		t.Fatalf("construct first detail: %v", err)
 	}
@@ -645,8 +647,11 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 	if slices.Contains(destinations, first.ID) {
 		t.Fatalf("anchor's directly owned detail remained a move destination: %v", destinations)
 	}
-	if !slices.Contains(destinations, second.ID) {
-		t.Fatalf("deeper descendant was removed from move destinations: %v", destinations)
+	if slices.Contains(destinations, second.ID) {
+		t.Fatalf("anchor's deeper descendant remained a move destination: %v", destinations)
+	}
+	if !slices.Contains(destinations, other.ID) {
+		t.Fatalf("unrelated Diagram was removed from move destinations: %v", destinations)
 	}
 	rootID := nested.Snapshot().RootDiagramID()
 	if _, err := manager.ConstructCandidate(context.Background(), nested.Snapshot(), nil, CandidateComposition{HomeMoves: []ComponentHomeMove{

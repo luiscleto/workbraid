@@ -23,7 +23,7 @@ type ArchitectureResult = {
   components: AuthoringComponent[]
   root_diagram_id?: string
   diagrams?: DiagramProjection[]
-  home_move_destinations?: { component_id: string; diagram_ids: string[] }[]
+  home_move_destinations?: { component_id: string; current_home_id: string; diagram_ids: string[] }[]
   reference_choices?: { diagram_id: string; component_id: string; title: string; context?: string; home_diagram: string }[]
   changes?: ChangesInProgress
   stale?: boolean
@@ -165,7 +165,7 @@ type ComponentEditor = {
 type DiagramEditor =
   | { kind: 'detail'; componentID: string; title: string; initialTitle: string; invalid?: boolean }
   | { kind: 'title'; diagramID: string; title: string; initialTitle: string; invalid?: boolean }
-  | { kind: 'move'; componentID: string; diagramID: string; initialDiagramID: string; invalid?: boolean }
+  | { kind: 'move'; componentID: string; componentTitle: string; diagramID: string; currentDiagramTitle: string }
 
 type WorkspaceTask = 'documentation' | 'changes' | 'empty'
 
@@ -243,6 +243,10 @@ function relationshipTargetsFor(result: ArchitectureResult): RelationshipTarget[
 function relationshipTargetLabel(target: RelationshipTarget) {
   const title = target.title.trim() || 'Untitled component'
   return [title, target.context, target.new ? 'New component' : ''].filter(Boolean).join(' — ')
+}
+
+function diagramAuthoringOptionLabel(diagram: DiagramAuthoringOption) {
+  return `${diagram.title}${diagram.context ? ` — ${diagram.context}` : ''}`
 }
 
 function relationshipIssueComponentName(changes: ChangesInProgress, component: PendingComponent) {
@@ -357,7 +361,7 @@ export function App() {
     !sameRelationships(relationshipValues(editor.relationships), editor.initialRelationships)
   )
   const diagramEditorDirty = diagramEditor !== null && (diagramEditor.kind === 'move'
-    ? diagramEditor.diagramID !== diagramEditor.initialDiagramID
+    ? diagramEditor.diagramID !== ''
     : diagramEditor.title !== diagramEditor.initialTitle)
   const editorDirtyRef = useRef(editorDirty)
   editorDirtyRef.current = editorDirty || diagramEditorDirty
@@ -630,8 +634,8 @@ export function App() {
       })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
-        setAuthoringError('code' in payload && payload.code === 'diagram_own_detail'
-          ? "Choose a different diagram. A component can't live in its own detail diagram."
+        setAuthoringError('code' in payload && payload.code === 'home_move_unavailable'
+          ? 'That destination is no longer available. Choose another diagram.'
           : "WorkBraid couldn't keep that diagram change. Check the selection and try again.")
         return
       }
@@ -896,6 +900,17 @@ export function App() {
         ?.find((destinations) => destinations.component_id === diagramEditor.componentID)
         ?.diagram_ids.includes(diagram.id))
       : compositionDiagrams
+    const beginHomeMove = (componentID: string) => {
+      const destinations = result.home_move_destinations?.find((candidate) => candidate.component_id === componentID)
+      if (!destinations?.diagram_ids.length) return
+      const component = compositionProjection.components.find((candidate) => candidate.id === componentID)
+      const currentDiagram = compositionDiagrams.find((diagram) => diagram.id === destinations.current_home_id)
+      if (!component || !currentDiagram) return
+      setDiagramEditor({
+        kind: 'move', componentID, componentTitle: component.title.trim() || 'Untitled component', diagramID: '',
+        currentDiagramTitle: diagramAuthoringOptionLabel(currentDiagram),
+      })
+    }
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.format_version === 2
       ? activeDiagramComponents ?? []
@@ -1231,7 +1246,7 @@ export function App() {
                 onAddComponent={result.format_version === 2 ? (diagramID) => addComponent(diagramID) : undefined}
                 onCreateDetail={result.format_version === 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
                 onEditDiagramTitle={result.format_version === 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
-                onMoveHome={result.format_version === 2 ? (componentID, diagramID, invalid) => setDiagramEditor({ kind: 'move', componentID, diagramID: invalid ? diagramID : '', initialDiagramID: diagramID, invalid }) : undefined}
+                onMoveHome={result.format_version === 2 ? beginHomeMove : undefined}
                 onShowComponent={(diagramID, componentID) => changeReference(result, diagramID, componentID, true)}
                 onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
@@ -1259,7 +1274,7 @@ export function App() {
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
                             <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
                           )}
-                          {selectedAppearance.role === 'home' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'move', componentID: selected.id, diagramID: '', initialDiagramID: activeDiagram.id })}>Change where it lives</button>}
+                          {selectedAppearance.role === 'home' && result.home_move_destinations?.find((destinations) => destinations.component_id === selected.id)?.diagram_ids.length ? <button className="text-action diagram-composition-link" type="button" onClick={() => beginHomeMove(selected.id)}>Change where {selected.title.trim() || 'Untitled component'} lives</button> : null}
                           {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => changeReference(result, activeDiagram.id, selected.id, false)}>Stop showing here</button>}
                         </div>
                       </div>
@@ -1489,14 +1504,17 @@ function DiagramEditorForm({
 }) {
   return (
     <form className="component-form diagram-editor" onSubmit={onSubmit}>
-      <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>{editor.kind === 'detail' ? 'Create detail diagram' : editor.kind === 'title' ? 'Edit diagram title' : 'Change where it lives'}</h2></div>
+      <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>{editor.kind === 'detail' ? 'Create detail diagram' : editor.kind === 'title' ? 'Edit diagram title' : `Change where ${editor.componentTitle} lives`}</h2></div>
       {editor.kind === 'move' ? (
-        <label>Diagram
-          <select autoFocus aria-invalid={editor.invalid || undefined} value={editor.diagramID} onChange={(event) => setEditor({ ...editor, diagramID: event.target.value })}>
-            <option value={editor.initialDiagramID}>Choose a diagram</option>
-            {diagrams.filter((diagram) => diagram.id !== editor.initialDiagramID).map((diagram) => <option key={diagram.id} value={diagram.id}>{diagram.title}{diagram.context ? ` — ${diagram.context}` : ''}</option>)}
-          </select>
-        </label>
+        <>
+          <p>Currently lives in {editor.currentDiagramTitle}.</p>
+          <label>Diagram
+            <select autoFocus value={editor.diagramID} onChange={(event) => setEditor({ ...editor, diagramID: event.target.value })}>
+              <option value="">Choose a diagram</option>
+              {diagrams.map((diagram) => <option key={diagram.id} value={diagram.id}>{diagramAuthoringOptionLabel(diagram)}</option>)}
+            </select>
+          </label>
+        </>
       ) : (
         <label>Diagram title
           <textarea
@@ -1511,7 +1529,7 @@ function DiagramEditorForm({
       {error && <p className="authoring-error" role="alert">{error}</p>}
       <div className="button-group">
         <button className="secondary-action" type="button" onClick={onCancel}>Cancel</button>
-        <button className="inline-action" type="submit" disabled={editor.kind === 'move' && editor.diagramID === editor.initialDiagramID}>Keep change</button>
+        <button className="inline-action" type="submit" disabled={editor.kind === 'move' && !editor.diagramID}>Keep change</button>
       </div>
     </form>
   )
@@ -1561,7 +1579,7 @@ function ChangesTask({
   onAddComponent?: (diagramID: string) => void
   onCreateDetail?: (componentID: string) => void
   onEditDiagramTitle?: (diagramID: string, title: string, invalid?: boolean) => void
-  onMoveHome?: (componentID: string, currentDiagramID: string, invalid?: boolean) => void
+  onMoveHome?: (componentID: string) => void
   onShowComponent?: (diagramID: string, componentID: string) => void
   onStopShowing?: (diagramID: string, componentID: string) => void
   onReview: () => void
@@ -1578,10 +1596,6 @@ function ChangesTask({
     : undefined
   const relationshipIssueName = relationshipIssueComponent ? relationshipIssueComponentName(changes, relationshipIssueComponent) : ''
   const diagramCompositionNeedsAttention = Boolean(!changes.candidate && changes.validation_diagram_field && changes.validation_code)
-  const affectedHomeComponent = changes.validation_diagram_field === 'home'
-    ? changes.components.find((component) => component.id === changes.validation_item)
-      ?? result.components.find((component) => component.id === changes.validation_item)
-    : undefined
   const affectedDiagramTitle = changes.validation_diagram_field === 'title'
     ? changes.detail_diagrams?.find((diagram) => diagram.id === changes.validation_diagram)?.title
       ?? changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)?.title
@@ -1685,7 +1699,7 @@ function ChangesTask({
                       const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
                       return <li key={appearance.component_id}>
                         <span>{component?.title ?? 'Component'}{appearance.role === 'reference' && <small className="appearance-note"> Included here</small>}</span>
-                        {!readOnly && appearance.role === 'home' && onMoveHome && <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id, diagram.id)}>Change where it lives</button>}
+                        {!readOnly && appearance.role === 'home' && onMoveHome && result.home_move_destinations?.find((destinations) => destinations.component_id === appearance.component_id)?.diagram_ids.length ? <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id)}>Change where {component?.title.trim() || 'Untitled component'} lives</button> : null}
                         {!readOnly && appearance.role === 'home' && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
                         {!readOnly && appearance.role === 'reference' && onStopShowing && <button className="text-action" type="button" onClick={() => onStopShowing(diagram.id, appearance.component_id)}>Stop showing here</button>}
                       </li>
@@ -1713,16 +1727,10 @@ function ChangesTask({
         <section className="pending-diagram-attention validation-owner" aria-label="Diagram composition needs attention" aria-invalid="true">
           <h3>Diagram composition needs attention</h3>
           <div role="alert">
-            <p><strong>{changes.validation_diagram_field === 'home' ? affectedHomeComponent?.title ?? 'Component location' : affectedDiagramTitle?.trim() || 'Untitled diagram'}</strong> <span className="validation-marker">Needs attention</span></p>
+            <p><strong>{affectedDiagramTitle?.trim() || 'Untitled diagram'}</strong> <span className="validation-marker">Needs attention</span></p>
             <p>{messageForReviewBlocker(changes.validation_code)}</p>
             {!readOnly && !acceptanceUnknown && changes.validation_diagram_field === 'title' && changes.validation_diagram && onEditDiagramTitle && (
               <button className="inline-action" type="button" onClick={() => onEditDiagramTitle(changes.validation_diagram!, affectedDiagramTitle ?? '', true)}>Fix diagram title</button>
-            )}
-            {!readOnly && !acceptanceUnknown && changes.validation_diagram_field === 'home' && changes.validation_item && onMoveHome && (
-              <button className="inline-action" type="button" onClick={() => {
-                const move = changes.home_moves?.find((candidate) => candidate.component_id === changes.validation_item)
-                onMoveHome(changes.validation_item!, move?.diagram_id ?? '', true)
-              }}>Fix component location</button>
             )}
           </div>
           <p className="pending-preserved-note">All other changes in progress are still kept.</p>
@@ -1746,12 +1754,6 @@ function ChangesTask({
                   const candidateDiagram = changes.candidate?.diagrams?.find((diagram) => diagram.id === changes.validation_diagram)
                   onEditDiagramTitle(changes.validation_diagram!, pendingDiagram?.title ?? pendingTitle?.title ?? candidateDiagram?.title ?? '', true)
                 }}>Fix diagram title</button>
-              )}
-              {!readOnly && changes.validation_diagram_field === 'home' && changes.validation_item && onMoveHome && (
-                <button className="inline-action" type="button" onClick={() => {
-                  const move = changes.home_moves?.find((candidate) => candidate.component_id === changes.validation_item)
-                  onMoveHome(changes.validation_item!, move?.diagram_id ?? '', true)
-                }}>Fix component location</button>
               )}
             </>
           )}

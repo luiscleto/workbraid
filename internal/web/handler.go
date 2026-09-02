@@ -1280,13 +1280,8 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 	proposed.references = referenceChangesWithoutPair(proposed.references, payload.DiagramID, payload.ComponentID)
 	setReferenceChange(&proposed, currentAuthorityHome, payload.ComponentID, false)
 	proposed.homeMoves = homeMovesWithoutComponent(proposed.homeMoves, payload.ComponentID)
-	withoutMove, err := h.constructCandidate(request.Context(), snapshot, &proposed)
-	if err != nil {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorHomeMoveUnavailable})
-		return
-	}
-	currentHome, _, _ := withoutMove.Snapshot().ComponentHome(payload.ComponentID)
-	if currentHome != payload.DiagramID {
+	initialHome := initialComponentHome(snapshot, &proposed, payload.ComponentID)
+	if initialHome != payload.DiagramID {
 		proposed.homeMoves = append(proposed.homeMoves, architecture.ComponentHomeMove{ComponentID: payload.ComponentID, DiagramID: payload.DiagramID})
 	}
 	if pendingChangeSetEmpty(&proposed) {
@@ -1301,6 +1296,18 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 	}
 	h.pending = &proposed
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+}
+
+func initialComponentHome(snapshot architecture.Snapshot, pending *pendingChangeSet, componentID string) string {
+	if homeID, _, ok := snapshot.ComponentHome(componentID); ok {
+		return homeID
+	}
+	for _, home := range pending.newComponentHomes {
+		if home.ComponentID == componentID {
+			return home.DiagramID
+		}
+	}
+	return ""
 }
 
 func containsString(values []string, target string) bool {

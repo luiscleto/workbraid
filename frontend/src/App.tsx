@@ -249,6 +249,14 @@ function diagramAuthoringOptionLabel(diagram: DiagramAuthoringOption) {
   return `${diagram.title}${diagram.context ? ` — ${diagram.context}` : ''}`
 }
 
+function componentAuthoringLabel(components: AuthoringComponent[], componentID: string) {
+  const component = components.find((candidate) => candidate.id === componentID)
+  if (!component) return 'Component'
+  const title = component.title.trim() || 'Untitled component'
+  const collides = components.some((candidate) => candidate.id !== componentID && candidate.title === component.title)
+  return collides ? `${title} — ${component.filename || component.id.slice(0, 8)}` : title
+}
+
 function relationshipIssueComponentName(changes: ChangesInProgress, component: PendingComponent) {
   const target = changes.relationship_targets?.find((candidate) => candidate.id === component.id)
   const title = (target?.title ?? component.title).trim() || 'Untitled component'
@@ -907,7 +915,7 @@ export function App() {
       const currentDiagram = compositionDiagrams.find((diagram) => diagram.id === destinations.current_home_id)
       if (!component || !currentDiagram) return
       setDiagramEditor({
-        kind: 'move', componentID, componentTitle: component.title.trim() || 'Untitled component', diagramID: '',
+        kind: 'move', componentID, componentTitle: componentAuthoringLabel(compositionProjection.components, componentID), diagramID: '',
         currentDiagramTitle: diagramAuthoringOptionLabel(currentDiagram),
       })
     }
@@ -1274,7 +1282,7 @@ export function App() {
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
                             <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
                           )}
-                          {selectedAppearance.role === 'home' && result.home_move_destinations?.find((destinations) => destinations.component_id === selected.id)?.diagram_ids.length ? <button className="text-action diagram-composition-link" type="button" onClick={() => beginHomeMove(selected.id)}>Change where {selected.title.trim() || 'Untitled component'} lives</button> : null}
+                          {selectedAppearance.role === 'home' && result.home_move_destinations?.find((destinations) => destinations.component_id === selected.id)?.diagram_ids.length ? <button className="text-action diagram-composition-link" type="button" onClick={() => beginHomeMove(selected.id)}>Change where {componentAuthoringLabel(compositionProjection.components, selected.id)} lives</button> : null}
                           {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => changeReference(result, activeDiagram.id, selected.id, false)}>Stop showing here</button>}
                         </div>
                       </div>
@@ -1600,6 +1608,7 @@ function ChangesTask({
     ? changes.detail_diagrams?.find((diagram) => diagram.id === changes.validation_diagram)?.title
       ?? changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)?.title
     : undefined
+  const compositionComponents = changes.candidate?.components ?? result.components
   const discardAction = !acceptanceUnknown
     ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Discard changes</button>
     : null
@@ -1699,7 +1708,7 @@ function ChangesTask({
                       const component = changes.candidate?.components.find((candidate) => candidate.id === appearance.component_id)
                       return <li key={appearance.component_id}>
                         <span>{component?.title ?? 'Component'}{appearance.role === 'reference' && <small className="appearance-note"> Included here</small>}</span>
-                        {!readOnly && appearance.role === 'home' && onMoveHome && result.home_move_destinations?.find((destinations) => destinations.component_id === appearance.component_id)?.diagram_ids.length ? <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id)}>Change where {component?.title.trim() || 'Untitled component'} lives</button> : null}
+                        {!readOnly && appearance.role === 'home' && onMoveHome && result.home_move_destinations?.find((destinations) => destinations.component_id === appearance.component_id)?.diagram_ids.length ? <button className="text-action" type="button" onClick={() => onMoveHome(appearance.component_id)}>Change where {componentAuthoringLabel(compositionComponents, appearance.component_id)} lives</button> : null}
                         {!readOnly && appearance.role === 'home' && !appearance.detail_diagram_id && onCreateDetail && <button className="text-action" type="button" onClick={() => onCreateDetail(appearance.component_id)}>Create detail diagram</button>}
                         {!readOnly && appearance.role === 'reference' && onStopShowing && <button className="text-action" type="button" onClick={() => onStopShowing(diagram.id, appearance.component_id)}>Stop showing here</button>}
                       </li>

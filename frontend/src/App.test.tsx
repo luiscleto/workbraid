@@ -334,6 +334,29 @@ describe('slug workspace and reusable references', () => {
     expect(within(picker).getByRole('option', { name: 'System' })).toBeInTheDocument()
   })
 
+  it('disambiguates a move task only when component titles collide', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const duplicateID = '55555555-5555-4555-8555-555555555555'
+    const result = architecture()
+    vi.stubGlobal('fetch', vi.fn(() => response({
+      ...result,
+      component_count: 3,
+      component_titles: ['Worker', 'External', 'External'],
+      components: [
+        ...result.components,
+        { id: duplicateID, title: 'External', description: 'Another one.\n', filename: 'external-copy.md', relationships: [] },
+      ],
+    })))
+    const user = userEvent.setup()
+    render(<App />)
+    const navigation = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
+    await user.click(within(navigation).getByRole('button', { name: 'External' }))
+    await user.click(screen.getByRole('button', { name: 'Change where External — external.md lives' }))
+    expect(screen.getByRole('heading', { name: 'Change where External — external.md lives' })).toBeInTheDocument()
+    expect(screen.getByText('Currently lives in Detail.')).toBeInTheDocument()
+  })
+
   it('keeps the move editor intact when a server-approved destination becomes unavailable', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const fetchMock = vi.fn()

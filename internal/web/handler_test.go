@@ -338,6 +338,29 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 	if reparented.Changes == nil || reparented.Changes.Candidate == nil || role(reparented.Changes.Candidate, storage.ID, gateway.ID) != "home" {
 		t.Fatalf("ordered subtree reparent failed: %+v", reparented.Changes)
 	}
+	if _, err := manager.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+		HomeMoves: []architecture.ComponentHomeMove{{ComponentID: gateway.ID, DiagramID: storage.ID}},
+	}); !errors.Is(err, architecture.ErrDiagramCycle) {
+		t.Fatalf("remove-only intermediate error = %v, want Diagram cycle", err)
+	}
+	replaced := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/move-home", diagramMutationRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ExpectedRevision: opened.Revision,
+		ComponentID: worker.ID, DiagramID: other.ID,
+	}))
+	if replaced.Changes == nil || replaced.Changes.Candidate == nil || role(replaced.Changes.Candidate, other.ID, worker.ID) != "home" || role(replaced.Changes.Candidate, storage.ID, gateway.ID) != "home" {
+		t.Fatalf("complete replacement move failed: %+v", replaced.Changes)
+	}
+	reviewedReplacement := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", architectureActionRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID}))
+	if reviewedReplacement.Changes == nil || reviewedReplacement.Changes.Review == nil {
+		t.Fatalf("replacement review missing: %+v", reviewedReplacement.Changes)
+	}
+	acceptedReplacement := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID,
+		BaseRevision: reviewedReplacement.Changes.Review.BaseRevision, CandidateTree: reviewedReplacement.Changes.Review.CandidateTree, Generation: reviewedReplacement.Changes.Review.Generation,
+	}))
+	if roleSnapshot(acceptedReplacement, other.ID, worker.ID) != "home" || roleSnapshot(acceptedReplacement, storage.ID, gateway.ID) != "home" {
+		t.Fatalf("accepted replacement = %+v", acceptedReplacement)
+	}
 }
 
 func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *testing.T) {

@@ -212,6 +212,34 @@ func TestAgentClassifiesOperationalCandidateFailureAndAcceptanceConflicts(t *tes
 			t.Fatalf("mutation operational classification = %+v", mutation)
 		}
 		generation := *mutation.Context.PendingGeneration
+		state.stateMutex.Lock()
+		componentID := state.pending.changes[0].ID
+		state.stateMutex.Unlock()
+		for _, next := range []struct {
+			name string
+			path string
+			body any
+		}{
+			{name: "move home", path: "/api/agent/v1/components/move-home", body: agentapi.ComponentMoveHomeRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				ComponentID:        componentID, DiagramID: created.RootDiagramID,
+			}},
+			{name: "show component", path: "/api/agent/v1/diagrams/show-component", body: agentapi.DiagramComponentRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				ComponentID:        componentID, DiagramID: created.RootDiagramID,
+			}},
+			{name: "stop showing component", path: "/api/agent/v1/diagrams/stop-showing-component", body: agentapi.DiagramComponentRequest{
+				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
+				ComponentID:        componentID, DiagramID: created.RootDiagramID,
+			}},
+		} {
+			t.Run(next.name, func(t *testing.T) {
+				result := decodeAgentEnvelope(t, postAgent(t, handler, next.path, next.body))
+				if result.OK || result.Error == nil || result.Error.Code != "operation_failed" {
+					t.Fatalf("existing operational pending classification = %+v", result)
+				}
+			})
+		}
 		review := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
 			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
 			Generation:         generation,
@@ -299,6 +327,38 @@ func TestAgentRejectsUnexpectedOriginAndWrongGenerationWithoutMutation(t *testin
 	defer state.stateMutex.Unlock()
 	if state.pending != nil {
 		t.Fatalf("wrong generation created pending state: %+v", state.pending)
+	}
+}
+
+func TestAgentRefreshAndReviewDistinguishWrongRevisionFromWrongGeneration(t *testing.T) {
+	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Distinct preconditions"}))
+	kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
+		Title:              "Gateway", DiagramID: &created.RootDiagramID,
+	}))
+	generation := *kept.Context.PendingGeneration
+	wrongRevision := "0000000000000000000000000000000000000000"
+	refreshed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/refresh", agentapi.ArchitectureRefreshRequest{
+		StoreID: created.StoreID, AcceptedRevision: wrongRevision,
+	}))
+	if refreshed.OK || refreshed.Error == nil || refreshed.Error.Code != "architecture_non_current" {
+		t.Fatalf("wrong-revision Refresh = %+v", refreshed)
+	}
+	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: wrongRevision, PendingGeneration: &generation},
+		Generation:         generation,
+	}))
+	if reviewed.OK || reviewed.Error == nil || reviewed.Error.Code != "architecture_non_current" {
+		t.Fatalf("wrong-revision Review = %+v", reviewed)
+	}
+	wrongGeneration := generation + 1
+	generationMismatch := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
+		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &wrongGeneration},
+		Generation:         wrongGeneration,
+	}))
+	if generationMismatch.OK || generationMismatch.Error == nil || generationMismatch.Error.Code != "pending_generation_mismatch" {
+		t.Fatalf("wrong-generation Review = %+v", generationMismatch)
 	}
 }
 

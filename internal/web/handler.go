@@ -776,8 +776,11 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		return architectureResponse{}, errorArchitectureNotOpen, http.StatusConflict
 	}
-	if payload.ExpectedRevision == "" || h.loadedSnapshot == nil || payload.ExpectedRevision != h.loadedSnapshot.Revision() {
+	if payload.ExpectedRevision == "" || h.loadedSnapshot == nil {
 		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
+	}
+	if payload.ExpectedRevision != h.loadedSnapshot.Revision() {
+		return architectureResponse{}, errorArchitectureStale, http.StatusConflict
 	}
 
 	loaded := *h.loadedSnapshot
@@ -1329,6 +1332,9 @@ func (h *Handler) moveComponentHomeLocked(ctx context.Context, snapshot architec
 	authority := snapshot
 	if pending != nil {
 		if pending.candidate == nil {
+			if pendingOperationFailed(pending) {
+				return pending, false, changeOperationFailed
+			}
 			return pending, false, changeValidationBlocked
 		}
 		authority = pending.candidate.Snapshot()
@@ -1375,6 +1381,9 @@ func (h *Handler) changeReferenceLocked(ctx context.Context, snapshot architectu
 	authority := snapshot
 	if pending != nil {
 		if pending.candidate == nil && !pendingChangeSetEmpty(pending) {
+			if pendingOperationFailed(pending) {
+				return pending, changeOperationFailed
+			}
 			return pending, changeValidationBlocked
 		}
 		if pending.candidate != nil {
@@ -1597,8 +1606,11 @@ func (h *Handler) reviewChangesLocked(ctx context.Context, payload architectureA
 		return architectureResponse{}, errorArchitectureStale, http.StatusConflict
 	}
 	snapshot := *h.loadedSnapshot
-	if payload.ExpectedRevision == "" || payload.ExpectedRevision != snapshot.Revision() {
+	if payload.ExpectedRevision == "" {
 		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
+	}
+	if payload.ExpectedRevision != snapshot.Revision() {
+		return architectureResponse{}, errorArchitectureStale, http.StatusConflict
 	}
 	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
 		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict

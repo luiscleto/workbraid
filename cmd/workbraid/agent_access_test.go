@@ -194,6 +194,88 @@ func TestRealBinaryCLIAndTwoMCPBridgesShareOneServerAuthority(t *testing.T) {
 	if err != nil || !missingMCP.IsError || mcpErrorCode(missingMCP.StructuredContent) != "target_not_found" {
 		t.Fatalf("MCP typed target failure: result=%+v err=%v", missingMCP, err)
 	}
+
+	// First deliberate acceptance crosses from MCP Review to CLI Update.
+	mcpReviewed, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "changes_review", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "accepted_revision": *created.Context.AcceptedRevision,
+		"pending_generation": 6, "generation": 6,
+	}})
+	if err != nil || mcpReviewed.IsError {
+		t.Fatalf("MCP Review before CLI Update: result=%+v err=%v", mcpReviewed, err)
+	}
+	firstReview := mcpEnvelope(t, mcpReviewed).Result.(map[string]any)
+	if firstReview["base_revision"] != *created.Context.AcceptedRevision || firstReview["candidate_tree"] == "" || firstReview["generation"] != float64(6) {
+		t.Fatalf("MCP review binding = %#v", firstReview)
+	}
+	firstUpdated := runRealCLI(t, binary, origin, "architecture", "update",
+		"--store-id", created.Context.Project.StoreID, "--base-revision", firstReview["base_revision"].(string),
+		"--candidate-tree", firstReview["candidate_tree"].(string), "--generation", "6")
+	if !firstUpdated.OK || firstUpdated.Context.AcceptedRevision == nil {
+		t.Fatalf("CLI Update from MCP Review = %+v", firstUpdated)
+	}
+	firstAccepted := *firstUpdated.Context.AcceptedRevision
+	firstUpdateResult := firstUpdated.Result.(map[string]any)
+	if firstUpdated.Context.PendingGeneration != nil || firstAccepted == *created.Context.AcceptedRevision ||
+		firstUpdateResult["base_revision"] != firstReview["base_revision"] || firstUpdateResult["candidate_tree"] != firstReview["candidate_tree"] ||
+		firstUpdateResult["generation"] != firstReview["generation"] || firstUpdateResult["accepted_revision"] != firstAccepted {
+		t.Fatalf("CLI Update did not consume exact MCP binding: %+v", firstUpdated)
+	}
+	consumed, err := second.CallTool(ctx, &mcp.CallToolParams{Name: "changes_inspect", Arguments: map[string]any{}})
+	if err != nil || consumed.IsError {
+		t.Fatalf("inspect after first acceptance: result=%+v err=%v", consumed, err)
+	}
+	consumedEnvelope := mcpEnvelope(t, consumed)
+	if consumedEnvelope.Context.PendingGeneration != nil || consumedEnvelope.Context.AcceptedRevision == nil || *consumedEnvelope.Context.AcceptedRevision != firstAccepted || consumedEnvelope.Result.(map[string]any)["changes"] != nil {
+		t.Fatalf("first acceptance was not authoritative/consumed: %+v", consumedEnvelope)
+	}
+
+	// Second cycle crosses from CLI Review to MCP Update. A newer review makes
+	// the old exact binding observably invalid before the final acceptance.
+	firstPending := runRealCLI(t, binary, origin, "component", "edit",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", firstAccepted, "--generation", "none",
+		"--component-id", gatewayID, "--title", "Gateway two")
+	if firstPending.Context.PendingGeneration == nil || *firstPending.Context.PendingGeneration != 1 {
+		t.Fatalf("second-cycle pending edit: %+v", firstPending)
+	}
+	oldCLIReview := runRealCLI(t, binary, origin, "changes", "review",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", firstAccepted, "--generation", "1")
+	oldBinding := oldCLIReview.Result.(map[string]any)
+	if oldBinding["base_revision"] != firstAccepted || oldBinding["candidate_tree"] == "" || oldBinding["generation"] != float64(1) {
+		t.Fatalf("first CLI review binding = %#v", oldBinding)
+	}
+	newerPending := runRealCLI(t, binary, origin, "component", "edit",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", firstAccepted, "--generation", "1",
+		"--component-id", gatewayID, "--title", "Gateway three")
+	if newerPending.Context.PendingGeneration == nil || *newerPending.Context.PendingGeneration != 2 {
+		t.Fatalf("review-invalidating edit: %+v", newerPending)
+	}
+	freshCLIReview := runRealCLI(t, binary, origin, "changes", "review",
+		"--store-id", created.Context.Project.StoreID, "--accepted-revision", firstAccepted, "--generation", "2")
+	freshBinding := freshCLIReview.Result.(map[string]any)
+	if freshBinding["base_revision"] != firstAccepted || freshBinding["candidate_tree"] == "" || freshBinding["generation"] != float64(2) {
+		t.Fatalf("fresh CLI review binding = %#v", freshBinding)
+	}
+	invalidated, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "architecture_update", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "base_revision": oldBinding["base_revision"],
+		"candidate_tree": oldBinding["candidate_tree"], "generation": oldBinding["generation"],
+	}})
+	if err != nil || !invalidated.IsError || mcpErrorCode(invalidated.StructuredContent) != "review_invalidated" {
+		t.Fatalf("invalidated binding failure: result=%+v err=%v", invalidated, err)
+	}
+	secondUpdated, err := first.CallTool(ctx, &mcp.CallToolParams{Name: "architecture_update", Arguments: map[string]any{
+		"store_id": created.Context.Project.StoreID, "base_revision": freshBinding["base_revision"],
+		"candidate_tree": freshBinding["candidate_tree"], "generation": freshBinding["generation"],
+	}})
+	if err != nil || secondUpdated.IsError {
+		t.Fatalf("MCP Update from CLI Review: result=%+v err=%v", secondUpdated, err)
+	}
+	secondEnvelope := mcpEnvelope(t, secondUpdated)
+	secondResult := secondEnvelope.Result.(map[string]any)
+	if secondEnvelope.Context.PendingGeneration != nil || secondEnvelope.Context.AcceptedRevision == nil || *secondEnvelope.Context.AcceptedRevision == firstAccepted ||
+		secondResult["base_revision"] != freshBinding["base_revision"] || secondResult["candidate_tree"] != freshBinding["candidate_tree"] ||
+		secondResult["generation"] != freshBinding["generation"] || secondResult["accepted_revision"] != *secondEnvelope.Context.AcceptedRevision {
+		t.Fatalf("MCP Update did not consume exact CLI binding: %+v", secondEnvelope)
+	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first bridge: %v", err)
 	}

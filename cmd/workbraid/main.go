@@ -1,36 +1,14 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"log"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
-
-	"workbraid/internal/web"
 )
 
 func main() {
-	listenAddress := flag.String("listen", "127.0.0.1:8080", "loopback address for the local WorkBraid server")
-	dataDirectory := flag.String("data-dir", defaultDataDirectory(), "WorkBraid application-data directory")
-	uiDirectory := flag.String("ui-dir", "frontend/dist", "directory containing the built browser UI")
-	flag.Parse()
-
-	expectedOrigin, err := originForLoopbackAddress(*listenAddress)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := os.MkdirAll(*dataDirectory, 0o700); err != nil {
-		log.Fatalf("create application-data directory: %v", err)
-	}
-
-	handler := web.NewHandler(expectedOrigin, *uiDirectory, *dataDirectory)
-	log.Printf("WorkBraid is available at %s", expectedOrigin)
-	if err := http.ListenAndServe(*listenAddress, handler); err != nil {
-		log.Fatal(err)
-	}
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Stdin))
 }
 
 func defaultDataDirectory() string {

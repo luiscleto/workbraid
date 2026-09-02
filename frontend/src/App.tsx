@@ -81,6 +81,8 @@ type AuthoringComponent = {
 type PendingComponent = AuthoringComponent & { new: boolean }
 
 type ChangesInProgress = {
+  base_revision?: string
+  generation?: number
   components: PendingComponent[]
   relationship_targets?: RelationshipTarget[]
   valid: boolean
@@ -579,6 +581,8 @@ export function App() {
         project_slug: result.project_slug,
         store_id: result.store_id,
         expected_revision: result.revision,
+        pending_generation_observed: true,
+        expected_pending_generation: result.changes?.generation ?? null,
         ...(editor.id ? { component_id: editor.id } : {}),
         ...(editor.kind === 'add' || editor.titleChanged ? { title: editor.title } : {}),
         ...(editor.kind === 'add' || editor.descriptionChanged ? { description: editor.descriptionPrefix + editor.description } : {}),
@@ -603,7 +607,13 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/review', { project_slug: result.project_slug, store_id: result.store_id })
+      const response = await postJSON('/api/architecture/review', {
+        project_slug: result.project_slug,
+        store_id: result.store_id,
+        expected_revision: result.revision,
+        pending_generation_observed: true,
+        expected_pending_generation: result.changes?.generation ?? null,
+      })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if ('state' in payload) {
         setAcceptanceUnknown(false)
@@ -636,6 +646,8 @@ export function App() {
         project_slug: result.project_slug,
         store_id: result.store_id,
         expected_revision: result.revision,
+        pending_generation_observed: true,
+        expected_pending_generation: result.changes?.generation ?? null,
         ...(diagramEditor.kind === 'detail' ? { component_id: diagramEditor.componentID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'title' ? { diagram_id: diagramEditor.diagramID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'move' ? { component_id: diagramEditor.componentID, diagram_id: diagramEditor.diagramID } : {}),
@@ -664,6 +676,8 @@ export function App() {
         project_slug: result.project_slug,
         store_id: result.store_id,
         expected_revision: result.revision,
+        pending_generation_observed: true,
+        expected_pending_generation: result.changes?.generation ?? null,
         diagram_id: diagramID,
         component_id: componentID,
       })
@@ -843,7 +857,12 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/discard', { project_slug: result.project_slug, store_id: result.store_id })
+      const response = await postJSON('/api/architecture/discard', {
+        project_slug: result.project_slug,
+        store_id: result.store_id,
+        pending_generation_observed: true,
+        expected_pending_generation: result.changes?.generation ?? null,
+      })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
         setArchitectureNotice("WorkBraid couldn't discard these changes. Try again.")
@@ -862,7 +881,11 @@ export function App() {
     setArchitectureBusy(true)
     setArchitectureNotice('')
     try {
-      const response = await postJSON('/api/architecture/refresh', { project_slug: result.project_slug, store_id: result.store_id })
+      const response = await postJSON('/api/architecture/refresh', {
+        project_slug: result.project_slug,
+        store_id: result.store_id,
+        expected_revision: result.revision,
+      })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if (!('state' in payload)) {
         setArchitectureNotice(messageForArchitectureAction('code' in payload ? payload.code : undefined))

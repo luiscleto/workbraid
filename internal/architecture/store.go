@@ -394,8 +394,8 @@ type ReferenceAppearanceChange struct {
 // NewComponentHome associates one newly generated Component with its required
 // home Diagram. It is composition, not a synthetic Component edit.
 type NewComponentHome struct {
-	ComponentID string
-	DiagramID   string
+	ComponentID string `json:"component_id"`
+	DiagramID   string `json:"diagram_id"`
 }
 
 // DetailDiagramChange is one pending detail Diagram creation. Identity and

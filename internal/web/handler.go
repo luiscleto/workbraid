@@ -114,6 +114,7 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/discard", handler.discardChanges)
 	mux.HandleFunc("POST /api/architecture/refresh", handler.refreshArchitecture)
 	mux.HandleFunc("POST /api/projects/leave", handler.leaveProject)
+	handler.registerAgentRoutes(mux)
 	mux.Handle("/", handler.staticFiles())
 	return handler, mux
 }
@@ -123,8 +124,11 @@ type openProjectRequest struct {
 }
 
 type architectureActionRequest struct {
-	ProjectSlug string `json:"project_slug"`
-	StoreID     string `json:"store_id"`
+	ProjectSlug               string  `json:"project_slug"`
+	StoreID                   string  `json:"store_id"`
+	ExpectedRevision          string  `json:"expected_revision,omitempty"`
+	ExpectedGeneration        *uint64 `json:"expected_pending_generation,omitempty"`
+	PendingGenerationObserved bool    `json:"pending_generation_observed,omitempty"`
 }
 
 type acceptChangesRequest struct {
@@ -330,6 +334,8 @@ type relationshipTargetResponse struct {
 }
 
 type changesResponse struct {
+	BaseRevision                   string                                   `json:"base_revision"`
+	Generation                     uint64                                   `json:"generation"`
 	Components                     []pendingComponentResponse               `json:"components"`
 	RelationshipTargets            []relationshipTargetResponse             `json:"relationship_targets"`
 	Valid                          bool                                     `json:"valid"`
@@ -428,6 +434,8 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 			}
 		}
 		result.Changes = &changesResponse{
+			BaseRevision:                   pending.baseRevision,
+			Generation:                     pending.generation,
 			Components:                     changes,
 			RelationshipTargets:            relationshipTargets(pendingAccepted, pending.changes),
 			Valid:                          pending.candidate != nil,
@@ -708,6 +716,16 @@ func (h *Handler) matchesLoadedProjectLocked(projectSlug, storeID string) bool {
 		storeID == h.loadedProject.storeID && projectSlug == h.loadedProject.projectSlug
 }
 
+func (h *Handler) matchesExpectedPendingGenerationLocked(expected *uint64, observed bool) bool {
+	if !observed {
+		return true
+	}
+	if expected == nil {
+		return h.pending == nil
+	}
+	return h.pending != nil && h.pending.generation == *expected
+}
+
 func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *http.Request) {
 	payload, ok := h.decodeArchitectureAction(response, request)
 	if !ok {
@@ -717,6 +735,10 @@ func (h *Handler) refreshArchitecture(response http.ResponseWriter, request *htt
 	defer h.stateMutex.Unlock()
 	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
+		return
+	}
+	if payload.ExpectedRevision != "" && (h.loadedSnapshot == nil || payload.ExpectedRevision != h.loadedSnapshot.Revision()) {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return
 	}
 
@@ -855,6 +877,10 @@ func (h *Handler) discardChanges(response http.ResponseWriter, request *http.Req
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureNotOpen})
 		return
 	}
+	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
 	h.pending = nil
 	if h.loadedStale && h.loadedProject.validatedCurrent != nil {
 		current := *h.loadedProject.validatedCurrent
@@ -890,17 +916,19 @@ func (h *Handler) leaveProject(response http.ResponseWriter, request *http.Reque
 }
 
 type componentMutationRequest struct {
-	ProjectSlug          string                 `json:"project_slug"`
-	StoreID              string                 `json:"store_id"`
-	ExpectedRevision     string                 `json:"expected_revision,omitempty"`
-	ComponentID          string                 `json:"component_id,omitempty"`
-	Title                string                 `json:"title,omitempty"`
-	Description          string                 `json:"description,omitempty"`
-	TitleChanged         bool                   `json:"title_changed,omitempty"`
-	DescriptionChanged   bool                   `json:"description_changed,omitempty"`
-	Relationships        []relationshipResponse `json:"relationships,omitempty"`
-	RelationshipsChanged bool                   `json:"relationships_changed,omitempty"`
-	DiagramID            string                 `json:"diagram_id,omitempty"`
+	ProjectSlug               string                 `json:"project_slug"`
+	StoreID                   string                 `json:"store_id"`
+	ExpectedRevision          string                 `json:"expected_revision,omitempty"`
+	ExpectedGeneration        *uint64                `json:"expected_pending_generation,omitempty"`
+	PendingGenerationObserved bool                   `json:"pending_generation_observed,omitempty"`
+	ComponentID               string                 `json:"component_id,omitempty"`
+	Title                     string                 `json:"title,omitempty"`
+	Description               string                 `json:"description,omitempty"`
+	TitleChanged              bool                   `json:"title_changed,omitempty"`
+	DescriptionChanged        bool                   `json:"description_changed,omitempty"`
+	Relationships             []relationshipResponse `json:"relationships,omitempty"`
+	RelationshipsChanged      bool                   `json:"relationships_changed,omitempty"`
+	DiagramID                 string                 `json:"diagram_id,omitempty"`
 }
 
 func (h *Handler) addComponent(response http.ResponseWriter, request *http.Request) {
@@ -971,6 +999,10 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return
 	}
+	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
 	if h.pending == nil {
 		h.pending = &pendingChangeSet{storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot}
 	}
@@ -996,20 +1028,11 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 			ComponentID: change.ID, DiagramID: homeDiagramID,
 		})
 	} else {
-		for index := range h.pending.changes {
-			if h.pending.changes[index].ID == payload.ComponentID {
-				change = h.pending.changes[index]
-				changeIndex = index
-				break
-			}
-		}
-		if changeIndex < 0 {
-			var found bool
-			change, found = snapshot.ChangeForAcceptedComponent(payload.ComponentID)
-			if !found {
-				writeJSON(response, http.StatusNotFound, errorResponse{Code: errorComponentNotFound})
-				return
-			}
+		var found bool
+		change, changeIndex, found = componentChangeLocked(snapshot, h.pending, payload.ComponentID)
+		if !found {
+			writeJSON(response, http.StatusNotFound, errorResponse{Code: errorComponentNotFound})
+			return
 		}
 		if payload.TitleChanged {
 			change.Title = payload.Title
@@ -1024,35 +1047,51 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 			change.RelationshipsChanged = true
 		}
 	}
-	if changeIndex >= 0 {
-		h.pending.changes[changeIndex] = change
-	} else {
-		h.pending.changes = append(h.pending.changes, change)
-	}
-	h.pending.generation++
-	h.pending.reviewBlocker = ""
-
-	candidate, err := h.constructCandidate(request.Context(), snapshot, h.pending)
-	h.pending.candidate = nil
-	h.pending.validationCode = ""
-	h.pending.validationItem = ""
-	h.pending.validationRelationshipPosition = 0
-	h.pending.validationRelationshipField = ""
-	h.pending.validationDiagram = ""
-	h.pending.validationDiagramField = ""
-	if err != nil {
-		h.recordCandidateValidation(h.pending, err)
-		if h.pending.validationItem == "" {
-			h.pending.validationItem = change.ID
-		}
-		if h.pending.validationCode == "change_unavailable" {
-			writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
-			return
-		}
-	} else {
-		h.pending.candidate = &candidate
+	h.pending = h.keepComponentChangeLocked(request.Context(), snapshot, h.pending, change, changeIndex)
+	if h.pending.validationCode == "change_unavailable" {
+		writeJSON(response, http.StatusInternalServerError, errorResponse{Code: errorChangeFailed})
+		return
 	}
 	writeJSON(response, http.StatusOK, h.responseForLoadedProjectLocked(snapshot, h.pending, h.loadedStale, h.acceptedDiff))
+}
+
+func (h *Handler) ensurePendingLocked(snapshot architecture.Snapshot, pending *pendingChangeSet) *pendingChangeSet {
+	if pending != nil {
+		return pending
+	}
+	pending = &pendingChangeSet{storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot}
+	h.pending = pending
+	return pending
+}
+
+func componentChangeLocked(snapshot architecture.Snapshot, pending *pendingChangeSet, componentID string) (architecture.ComponentChange, int, bool) {
+	if pending != nil {
+		for index, change := range pending.changes {
+			if change.ID == componentID {
+				return change, index, true
+			}
+		}
+	}
+	change, found := snapshot.ChangeForAcceptedComponent(componentID)
+	return change, -1, found
+}
+
+func applyComponentChangeLocked(pending *pendingChangeSet, change architecture.ComponentChange, index int) {
+	if index >= 0 {
+		pending.changes[index] = change
+		return
+	}
+	pending.changes = append(pending.changes, change)
+}
+
+func (h *Handler) keepComponentChangeLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, change architecture.ComponentChange, index int) *pendingChangeSet {
+	pending = h.ensurePendingLocked(snapshot, pending)
+	applyComponentChangeLocked(pending, change, index)
+	h.rebuildPendingLocked(ctx, snapshot, pending)
+	if pending.candidate == nil && pending.validationItem == "" {
+		pending.validationItem = change.ID
+	}
+	return pending
 }
 
 func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
@@ -1066,12 +1105,14 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 }
 
 type diagramMutationRequest struct {
-	ProjectSlug      string `json:"project_slug"`
-	StoreID          string `json:"store_id"`
-	ExpectedRevision string `json:"expected_revision"`
-	DiagramID        string `json:"diagram_id,omitempty"`
-	ComponentID      string `json:"component_id,omitempty"`
-	Title            string `json:"title,omitempty"`
+	ProjectSlug               string  `json:"project_slug"`
+	StoreID                   string  `json:"store_id"`
+	ExpectedRevision          string  `json:"expected_revision"`
+	ExpectedGeneration        *uint64 `json:"expected_pending_generation,omitempty"`
+	PendingGenerationObserved bool    `json:"pending_generation_observed,omitempty"`
+	DiagramID                 string  `json:"diagram_id,omitempty"`
+	ComponentID               string  `json:"component_id,omitempty"`
+	Title                     string  `json:"title,omitempty"`
 }
 
 func (h *Handler) decodeDiagramMutation(response http.ResponseWriter, request *http.Request) (diagramMutationRequest, bool) {
@@ -1124,6 +1165,10 @@ func (h *Handler) writableV2StateLocked(response http.ResponseWriter, payload di
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return architecture.Snapshot{}, nil, false
 	}
+	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return architecture.Snapshot{}, nil, false
+	}
 	return snapshot, h.pending, true
 }
 
@@ -1158,6 +1203,133 @@ func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architectur
 	pending.candidate = &candidate
 }
 
+const (
+	changeTargetNotFound    = "target_not_found"
+	changeTargetIneligible  = "target_not_eligible"
+	changeValidationBlocked = "validation_blocked"
+)
+
+func (h *Handler) createDetailDiagramLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, componentID, title string) (*pendingChangeSet, architecture.DetailDiagramChange, string, string) {
+	if pending != nil {
+		for _, addition := range pending.detailDiagrams {
+			if addition.AnchorComponentID == componentID {
+				return pending, architecture.DetailDiagramChange{}, "", changeTargetIneligible
+			}
+		}
+	}
+	current := snapshot
+	if pending != nil && pending.candidate != nil {
+		current = pending.candidate.Snapshot()
+	}
+	homeDiagramID, detailID, home := current.ComponentHome(componentID)
+	if !home {
+		return pending, architecture.DetailDiagramChange{}, "", changeTargetNotFound
+	}
+	if detailID != "" {
+		return pending, architecture.DetailDiagramChange{}, "", changeTargetIneligible
+	}
+	pending = h.ensurePendingLocked(snapshot, pending)
+	addition := snapshot.NewDetailDiagramChange(pending.detailDiagrams, title, componentID)
+	pending.detailDiagrams = append(pending.detailDiagrams, addition)
+	h.rebuildPendingLocked(ctx, snapshot, pending)
+	return pending, addition, homeDiagramID, ""
+}
+
+func (h *Handler) editDiagramTitleLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, diagramID, title string) (*pendingChangeSet, string) {
+	if !pendingHasDiagram(snapshot, pending, diagramID) {
+		return pending, changeTargetNotFound
+	}
+	pending = h.ensurePendingLocked(snapshot, pending)
+	for index := range pending.detailDiagrams {
+		if pending.detailDiagrams[index].ID == diagramID {
+			pending.detailDiagrams[index].Title = title
+			h.rebuildPendingLocked(ctx, snapshot, pending)
+			return pending, ""
+		}
+	}
+	for index := range pending.diagramTitles {
+		if pending.diagramTitles[index].DiagramID == diagramID {
+			pending.diagramTitles[index].Title = title
+			h.rebuildPendingLocked(ctx, snapshot, pending)
+			return pending, ""
+		}
+	}
+	pending.diagramTitles = append(pending.diagramTitles, architecture.DiagramTitleChange{DiagramID: diagramID, Title: title})
+	h.rebuildPendingLocked(ctx, snapshot, pending)
+	return pending, ""
+}
+
+func (h *Handler) moveComponentHomeLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, componentID, diagramID string) (*pendingChangeSet, bool, string) {
+	authority := snapshot
+	if pending != nil {
+		if pending.candidate == nil {
+			return pending, false, changeValidationBlocked
+		}
+		authority = pending.candidate.Snapshot()
+	}
+	if !authority.HasComponent(componentID) || !authority.HasDiagram(diagramID) {
+		return pending, false, changeTargetNotFound
+	}
+	currentHome, _, hasHome := authority.ComponentHome(componentID)
+	if !hasHome {
+		return pending, false, changeTargetIneligible
+	}
+	if currentHome == diagramID {
+		return pending, true, ""
+	}
+	if !containsString(authority.ComponentHomeDestinationDiagramIDs(componentID), diagramID) {
+		return pending, false, changeTargetIneligible
+	}
+	proposed := pendingChangeSet{storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot}
+	if pending != nil {
+		proposed = *pending
+	}
+	proposed.references = referenceChangesWithoutPair(proposed.references, diagramID, componentID)
+	setReferenceChange(&proposed, currentHome, componentID, false)
+	proposed.homeMoves = homeMovesWithoutComponent(proposed.homeMoves, componentID)
+	if initialComponentHome(snapshot, &proposed, componentID) != diagramID {
+		proposed.homeMoves = append(proposed.homeMoves, architecture.ComponentHomeMove{ComponentID: componentID, DiagramID: diagramID})
+	}
+	if pendingChangeSetEmpty(&proposed) {
+		h.pending = nil
+		return nil, false, ""
+	}
+	h.rebuildPendingLocked(ctx, snapshot, &proposed)
+	if proposed.candidate == nil {
+		return pending, false, changeTargetIneligible
+	}
+	h.pending = &proposed
+	return h.pending, false, ""
+}
+
+func (h *Handler) changeReferenceLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, diagramID, componentID string, present bool) (*pendingChangeSet, string) {
+	authority := snapshot
+	if pending != nil {
+		if pending.candidate == nil && !pendingChangeSetEmpty(pending) {
+			return pending, changeValidationBlocked
+		}
+		if pending.candidate != nil {
+			authority = pending.candidate.Snapshot()
+		}
+	}
+	role, appears := authority.ComponentAppearanceRole(diagramID, componentID)
+	homeID, _, hasHome := authority.ComponentHome(componentID)
+	if !authority.HasDiagram(diagramID) || !authority.HasComponent(componentID) || !hasHome {
+		return pending, changeTargetNotFound
+	}
+	eligible := !appears && homeID != diagramID
+	if !present {
+		eligible = appears && role == "reference"
+	}
+	if !eligible {
+		return pending, changeTargetIneligible
+	}
+	pending = h.ensurePendingLocked(snapshot, pending)
+	setReferenceChange(pending, diagramID, componentID, present)
+	h.rebuildPendingLocked(ctx, snapshot, pending)
+	return pending, ""
+}
+
 func (h *Handler) createDetailDiagram(response http.ResponseWriter, request *http.Request) {
 	payload, ok := h.decodeDiagramMutation(response, request)
 	if !ok {
@@ -1165,31 +1337,14 @@ func (h *Handler) createDetailDiagram(response http.ResponseWriter, request *htt
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	snapshot, pending, ok := h.writableV2StateLocked(response, payload)
 	if !ok {
 		return
 	}
-	for _, addition := range pending.detailDiagrams {
-		if addition.AnchorComponentID == payload.ComponentID {
-			writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
-			return
-		}
-	}
-	current := snapshot
-	if pending.candidate != nil {
-		current = pending.candidate.Snapshot()
-	}
-	_, detailID, home := current.ComponentHome(payload.ComponentID)
-	if !home || detailID != "" {
-		if len(pending.changes) == 0 && len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 {
-			h.pending = nil
-		}
+	if _, _, _, operationError := h.createDetailDiagramLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.Title); operationError != "" {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
 		return
 	}
-	addition := snapshot.NewDetailDiagramChange(pending.detailDiagrams, payload.Title, payload.ComponentID)
-	pending.detailDiagrams = append(pending.detailDiagrams, addition)
-	h.rebuildPendingLocked(request.Context(), snapshot, pending)
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 }
 
@@ -1200,37 +1355,14 @@ func (h *Handler) editDiagramTitle(response http.ResponseWriter, request *http.R
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	snapshot, pending, ok := h.writableV2StateLocked(response, payload)
 	if !ok {
 		return
 	}
-	if !pendingHasDiagram(snapshot, pending, payload.DiagramID) {
-		if pendingChangeSetEmpty(pending) {
-			h.pending = nil
-		}
+	if _, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title); operationError != "" {
 		writeJSON(response, http.StatusNotFound, errorResponse{Code: errorChangeFailed})
 		return
 	}
-	for index := range pending.detailDiagrams {
-		if pending.detailDiagrams[index].ID == payload.DiagramID {
-			pending.detailDiagrams[index].Title = payload.Title
-			h.rebuildPendingLocked(request.Context(), snapshot, pending)
-			writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
-			return
-		}
-	}
-	updated := false
-	for index := range pending.diagramTitles {
-		if pending.diagramTitles[index].DiagramID == payload.DiagramID {
-			pending.diagramTitles[index].Title = payload.Title
-			updated = true
-			break
-		}
-	}
-	if !updated {
-		pending.diagramTitles = append(pending.diagramTitles, architecture.DiagramTitleChange{DiagramID: payload.DiagramID, Title: payload.Title})
-	}
-	h.rebuildPendingLocked(request.Context(), snapshot, pending)
 	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 }
 
@@ -1245,57 +1377,16 @@ func (h *Handler) moveComponentHome(response http.ResponseWriter, request *http.
 	if !ok {
 		return
 	}
-	authority := snapshot
-	if pending != nil {
-		if pending.candidate == nil {
-			writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
-			return
-		}
-		authority = pending.candidate.Snapshot()
-	}
-	if !authority.HasComponent(payload.ComponentID) || !authority.HasDiagram(payload.DiagramID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorHomeMoveUnavailable})
-		return
-	}
-	currentAuthorityHome, _, hasHome := authority.ComponentHome(payload.ComponentID)
-	if !hasHome {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorHomeMoveUnavailable})
-		return
-	}
-	if currentAuthorityHome == payload.DiagramID {
+	_, _, operationError := h.moveComponentHomeLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.DiagramID)
+	if operationError == "" {
 		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
 		return
 	}
-	if !containsString(authority.ComponentHomeDestinationDiagramIDs(payload.ComponentID), payload.DiagramID) {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorHomeMoveUnavailable})
-		return
+	code := errorHomeMoveUnavailable
+	if operationError == changeValidationBlocked {
+		code = errorChangesUnavailable
 	}
-	proposed := pendingChangeSet{storeID: snapshot.StoreID(), baseRevision: snapshot.Revision(), baseSnapshot: snapshot}
-	if pending != nil {
-		proposed = *pending
-	}
-	// A home consumes any reference intent at its destination. Leaving the
-	// current home records an explicit absence so a base reference that was
-	// temporarily converted to home cannot reappear during reconstruction.
-	proposed.references = referenceChangesWithoutPair(proposed.references, payload.DiagramID, payload.ComponentID)
-	setReferenceChange(&proposed, currentAuthorityHome, payload.ComponentID, false)
-	proposed.homeMoves = homeMovesWithoutComponent(proposed.homeMoves, payload.ComponentID)
-	initialHome := initialComponentHome(snapshot, &proposed, payload.ComponentID)
-	if initialHome != payload.DiagramID {
-		proposed.homeMoves = append(proposed.homeMoves, architecture.ComponentHomeMove{ComponentID: payload.ComponentID, DiagramID: payload.DiagramID})
-	}
-	if pendingChangeSetEmpty(&proposed) {
-		h.pending = nil
-		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
-		return
-	}
-	h.rebuildPendingLocked(request.Context(), snapshot, &proposed)
-	if proposed.candidate == nil {
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorHomeMoveUnavailable})
-		return
-	}
-	h.pending = &proposed
-	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+	writeJSON(response, http.StatusConflict, errorResponse{Code: code})
 }
 
 func initialComponentHome(snapshot architecture.Snapshot, pending *pendingChangeSet, componentID string) string {
@@ -1367,36 +1458,18 @@ func (h *Handler) changeReferenceAppearance(response http.ResponseWriter, reques
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	hadPending := h.pending != nil
-	snapshot, pending, ok := h.writableV2PendingLocked(response, payload)
+	snapshot, pending, ok := h.writableV2StateLocked(response, payload)
 	if !ok {
 		return
 	}
-	authority := snapshot
-	if pending.candidate != nil {
-		authority = pending.candidate.Snapshot()
-	} else if !pendingChangeSetEmpty(pending) {
+	if _, operationError := h.changeReferenceLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.ComponentID, present); operationError == "" {
+		writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+		return
+	} else if operationError == changeValidationBlocked {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
 		return
 	}
-	role, appears := authority.ComponentAppearanceRole(payload.DiagramID, payload.ComponentID)
-	homeID, _, hasHome := authority.ComponentHome(payload.ComponentID)
-	valid := authority.HasDiagram(payload.DiagramID) && authority.HasComponent(payload.ComponentID) && hasHome
-	if present {
-		valid = valid && !appears && homeID != payload.DiagramID
-	} else {
-		valid = valid && appears && role == "reference"
-	}
-	if !valid {
-		if !hadPending && pendingChangeSetEmpty(pending) {
-			h.pending = nil
-		}
-		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
-		return
-	}
-	setReferenceChange(pending, payload.DiagramID, payload.ComponentID, present)
-	h.rebuildPendingLocked(request.Context(), snapshot, pending)
-	writeJSON(response, http.StatusOK, h.currentArchitectureResponseLocked())
+	writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangeFailed})
 }
 
 func authoringRelationships(values []relationshipResponse) []architecture.AuthoringRelationship {
@@ -1431,6 +1504,16 @@ func (h *Handler) reviewChanges(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	snapshot := *h.loadedSnapshot
+	if payload.ExpectedRevision != "" && payload.ExpectedRevision != snapshot.Revision() {
+		h.stateMutex.Unlock()
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
+	if !h.matchesExpectedPendingGenerationLocked(payload.ExpectedGeneration, payload.PendingGenerationObserved) {
+		h.stateMutex.Unlock()
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
 	if h.pending == nil || h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision() {
 		h.stateMutex.Unlock()
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorReviewFailed})

@@ -1,0 +1,1035 @@
+package web
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"mime"
+	"net/http"
+	"strings"
+
+	"workbraid/internal/agentapi"
+	"workbraid/internal/architecture"
+)
+
+type agentArchitectureProjection struct {
+	Project       agentapi.ProjectContext    `json:"project"`
+	Revision      string                     `json:"revision"`
+	RootDiagramID string                     `json:"root_diagram_id"`
+	Components    []agentComponentProjection `json:"components"`
+	Diagrams      []agentDiagramProjection   `json:"diagrams"`
+}
+
+type agentComponentProjection struct {
+	componentResponse
+	HomeDiagramID       string   `json:"home_diagram_id"`
+	ReferenceDiagramIDs []string `json:"reference_diagram_ids"`
+}
+
+type agentDiagramProjection struct {
+	diagramResponse
+	ChildDiagramIDs []string `json:"child_diagram_ids"`
+}
+
+type agentValidationProjection struct {
+	Code                 string `json:"code,omitempty"`
+	ComponentID          string `json:"component_id,omitempty"`
+	RelationshipPosition int    `json:"relationship_position,omitempty"`
+	RelationshipField    string `json:"relationship_field,omitempty"`
+	DiagramID            string `json:"diagram_id,omitempty"`
+	DiagramField         string `json:"diagram_field,omitempty"`
+}
+
+type agentPendingProjection struct {
+	BaseRevision   string                                   `json:"base_revision"`
+	Generation     uint64                                   `json:"generation"`
+	Components     []pendingComponentResponse               `json:"components"`
+	NewHomes       []architecture.NewComponentHome          `json:"new_component_homes,omitempty"`
+	DetailDiagrams []architecture.DetailDiagramChange       `json:"detail_diagrams,omitempty"`
+	DiagramTitles  []architecture.DiagramTitleChange        `json:"diagram_titles,omitempty"`
+	HomeMoves      []architecture.ComponentHomeMove         `json:"home_moves,omitempty"`
+	References     []architecture.ReferenceAppearanceChange `json:"references,omitempty"`
+	Candidate      *agentArchitectureProjection             `json:"candidate"`
+	Validation     *agentValidationProjection               `json:"validation"`
+	Stale          bool                                     `json:"stale"`
+	Review         *agentReviewIdentity                     `json:"review"`
+}
+
+type agentReviewIdentity struct {
+	BaseRevision  string `json:"base_revision"`
+	CandidateTree string `json:"candidate_tree"`
+	Generation    uint64 `json:"generation"`
+}
+
+func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/agent/v1/status", h.agentStatus)
+	mux.HandleFunc("GET /api/agent/v1/projects/list", h.agentProjectsList)
+	mux.HandleFunc("GET /api/agent/v1/projects/current", h.agentProjectCurrent)
+	mux.HandleFunc("POST /api/agent/v1/projects/create", h.agentProjectCreate)
+	mux.HandleFunc("POST /api/agent/v1/projects/open", h.agentProjectOpen)
+	mux.HandleFunc("POST /api/agent/v1/projects/close", h.agentProjectClose)
+	mux.HandleFunc("GET /api/agent/v1/architecture/inspect", h.agentArchitectureInspect)
+	mux.HandleFunc("POST /api/agent/v1/architecture/refresh", h.agentArchitectureRefresh)
+	mux.HandleFunc("POST /api/agent/v1/architecture/update", h.agentArchitectureUpdate)
+	mux.HandleFunc("GET /api/agent/v1/changes/inspect", h.agentChangesInspect)
+	mux.HandleFunc("POST /api/agent/v1/changes/review", h.agentChangesReview)
+	mux.HandleFunc("POST /api/agent/v1/changes/discard", h.agentChangesDiscard)
+	mux.HandleFunc("POST /api/agent/v1/components/create", h.agentComponentCreate)
+	mux.HandleFunc("POST /api/agent/v1/components/edit", h.agentComponentEdit)
+	mux.HandleFunc("POST /api/agent/v1/components/move-home", h.agentComponentMoveHome)
+	mux.HandleFunc("POST /api/agent/v1/relationships/add", h.agentRelationshipAdd)
+	mux.HandleFunc("POST /api/agent/v1/relationships/edit", h.agentRelationshipEdit)
+	mux.HandleFunc("POST /api/agent/v1/relationships/remove", h.agentRelationshipRemove)
+	mux.HandleFunc("POST /api/agent/v1/diagrams/create-detail", h.agentDiagramCreateDetail)
+	mux.HandleFunc("POST /api/agent/v1/diagrams/edit-title", h.agentDiagramEditTitle)
+	mux.HandleFunc("POST /api/agent/v1/diagrams/show-component", h.agentDiagramShowComponent)
+	mux.HandleFunc("POST /api/agent/v1/diagrams/stop-showing-component", h.agentDiagramStopShowingComponent)
+}
+
+func (h *Handler) agentRequestAllowed(response http.ResponseWriter, request *http.Request, body bool) bool {
+	if origin := request.Header.Get("Origin"); origin != "" && origin != h.expectedOrigin {
+		h.writeAgentError(response, http.StatusForbidden, "invalid_request", "This local request has an unexpected browser origin.", nil)
+		return false
+	}
+	if body {
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			h.writeAgentError(response, http.StatusUnsupportedMediaType, "invalid_request", "Send this request as application/json.", nil)
+			return false
+		}
+	}
+	return true
+}
+
+func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request *http.Request) (T, bool) {
+	var zero T
+	if !h.agentRequestAllowed(response, request, true) {
+		return zero, false
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBody)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var value T
+	if err := decoder.Decode(&value); err != nil || ensureJSONEnd(decoder) != nil {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
+		return zero, false
+	}
+	return value, true
+}
+
+func (h *Handler) agentContextLocked() agentapi.Context {
+	context := agentapi.Context{AuthorityState: "none"}
+	if h.loadedSnapshot == nil || h.loadedProject == nil {
+		return context
+	}
+	revision := h.loadedSnapshot.Revision()
+	context.Project = &agentapi.ProjectContext{StoreID: h.loadedProject.storeID, Name: h.loadedProject.projectName, Slug: h.loadedProject.projectSlug}
+	context.AcceptedRevision = &revision
+	context.AuthorityState = "current"
+	if h.loadedStale {
+		context.AuthorityState = "non_current"
+	}
+	if h.pending != nil {
+		generation := h.pending.generation
+		context.PendingGeneration = &generation
+	}
+	return context
+}
+
+func (h *Handler) writeAgentSuccessLocked(response http.ResponseWriter, status int, result any) {
+	writeJSON(response, status, agentapi.Envelope{Protocol: agentapi.Protocol, OK: true, Context: h.agentContextLocked(), Result: result})
+}
+
+func (h *Handler) writeAgentSuccess(response http.ResponseWriter, status int, result any) {
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	h.writeAgentSuccessLocked(response, status, result)
+}
+
+func (h *Handler) writeAgentErrorLocked(response http.ResponseWriter, status int, code, message string, details map[string]any) {
+	if details == nil {
+		details = map[string]any{}
+	}
+	writeJSON(response, status, agentapi.Envelope{
+		Protocol: agentapi.Protocol, OK: false, Context: h.agentContextLocked(),
+		Error: &agentapi.Error{Code: code, Message: message, Details: details},
+	})
+}
+
+func (h *Handler) writeAgentError(response http.ResponseWriter, status int, code, message string, details map[string]any) {
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	h.writeAgentErrorLocked(response, status, code, message, details)
+}
+
+func agentMessage(code string) string {
+	switch code {
+	case "project_not_found":
+		return "That project is not in the WorkBraid catalog. List projects or create it deliberately."
+	case "project_conflict":
+		return "More than one project claims that slug. Resolve the catalog conflict before opening it."
+	case "project_unavailable":
+		return "That project cannot be loaded as valid Architecture."
+	case "project_not_open":
+		return "No project is currently open. Open or create one first."
+	case "project_mismatch":
+		return "Another project is open. Inspect the current project before continuing."
+	case "architecture_non_current":
+		return "The loaded Architecture is not current. Refresh before editing."
+	case "refresh_failed":
+		return "WorkBraid could not determine current accepted Architecture. Retry Refresh explicitly."
+	case "pending_conflict":
+		return "Changes in progress block this action. Inspect or discard them deliberately."
+	case "pending_generation_mismatch":
+		return "Pending work changed. Inspect changes again before editing."
+	case "target_not_found":
+		return "The requested Component or Diagram no longer exists in the current candidate."
+	case "target_not_eligible":
+		return "That target is not eligible for this Architecture change."
+	case "validation_blocked":
+		return "Changes need correction before they can be reviewed."
+	case "review_required":
+		return "Review the complete current changes before updating Architecture."
+	case "review_invalidated":
+		return "The reviewed change binding is no longer current. Inspect and review again."
+	case "accepted_conflict":
+		return "Accepted Architecture changed before update. Refresh and inspect the preserved pending work."
+	case "acceptance_uncertain":
+		return "WorkBraid could not determine whether acceptance succeeded. Inspect or Refresh before retrying."
+	case "accepted_reload_required":
+		return "Architecture was accepted, but this process could not reload it. Do not accept again; Refresh or reopen."
+	case "unsupported_action":
+		return "That action is outside the current Architecture product."
+	case "operation_failed":
+		return "The operation failed. Inspect current state before retrying."
+	default:
+		return "Correct the request and try again."
+	}
+}
+
+func (h *Handler) agentStatus(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"protocol": agentapi.Protocol})
+}
+
+func (h *Handler) agentProjectsList(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	projects, err := h.architecture.Catalog(request.Context())
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	values := make([]catalogProjectResponse, len(projects))
+	for index, project := range projects {
+		values[index] = catalogProjectResponse{Name: project.Name, Slug: project.Slug, Revision: project.Revision, StoreID: project.StoreID, Unavailable: project.Unavailable, Conflict: project.Conflict}
+	}
+	h.writeAgentSuccess(response, http.StatusOK, map[string]any{"projects": values})
+}
+
+func (h *Handler) agentProjectCurrent(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	var project *agentapi.ProjectContext
+	if h.loadedProject != nil {
+		project = &agentapi.ProjectContext{StoreID: h.loadedProject.storeID, Name: h.loadedProject.projectName, Slug: h.loadedProject.projectSlug}
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"project": project})
+}
+
+func (h *Handler) agentArchitectureInspect(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedSnapshot == nil || h.loadedProject == nil {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "project_not_open", agentMessage("project_not_open"), nil)
+		return
+	}
+	projection := h.agentArchitectureProjectionLocked(*h.loadedSnapshot)
+	h.writeAgentSuccessLocked(response, http.StatusOK, projection)
+}
+
+func (h *Handler) agentChangesInspect(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedSnapshot == nil || h.loadedProject == nil {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "project_not_open", agentMessage("project_not_open"), nil)
+		return
+	}
+	if h.pending == nil {
+		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"changes": nil})
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, h.agentPendingProjectionLocked(h.pending))
+}
+
+func (h *Handler) agentArchitectureProjectionLocked(snapshot architecture.Snapshot) agentArchitectureProjection {
+	projected := projectSnapshot(snapshot, "")
+	components := make([]agentComponentProjection, len(projected.Components))
+	for index, component := range projected.Components {
+		home, _, _ := snapshot.ComponentHome(component.ID)
+		var references []string
+		for _, diagram := range projected.Diagrams {
+			for _, appearance := range diagram.Appearances {
+				if appearance.ComponentID == component.ID && appearance.Role == "reference" {
+					references = append(references, diagram.ID)
+				}
+			}
+		}
+		components[index] = agentComponentProjection{componentResponse: component, HomeDiagramID: home, ReferenceDiagramIDs: references}
+	}
+	children := make(map[string][]string, len(projected.Diagrams))
+	for _, diagram := range projected.Diagrams {
+		if diagram.ParentDiagramID != "" {
+			children[diagram.ParentDiagramID] = append(children[diagram.ParentDiagramID], diagram.ID)
+		}
+	}
+	diagrams := make([]agentDiagramProjection, len(projected.Diagrams))
+	for index, diagram := range projected.Diagrams {
+		diagrams[index] = agentDiagramProjection{diagramResponse: diagram, ChildDiagramIDs: children[diagram.ID]}
+	}
+	return agentArchitectureProjection{
+		Project:  agentapi.ProjectContext{StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: h.loadedProject.projectSlug},
+		Revision: snapshot.Revision(), RootDiagramID: snapshot.RootDiagramID(), Components: components, Diagrams: diagrams,
+	}
+}
+
+func (h *Handler) agentPendingProjectionLocked(pending *pendingChangeSet) agentPendingProjection {
+	components := make([]pendingComponentResponse, len(pending.changes))
+	for index, change := range pending.changes {
+		relationships := make([]relationshipResponse, len(change.Relationships))
+		for relationshipIndex, relationship := range change.Relationships {
+			relationships[relationshipIndex] = relationshipResponse{TargetID: relationship.TargetID, Label: relationship.Label}
+		}
+		components[index] = pendingComponentResponse{ID: change.ID, Title: change.Title, Description: change.Description, New: change.New, Relationships: relationships}
+	}
+	value := agentPendingProjection{
+		BaseRevision: pending.baseRevision, Generation: pending.generation, Components: components,
+		NewHomes:       append([]architecture.NewComponentHome(nil), pending.newComponentHomes...),
+		DetailDiagrams: append([]architecture.DetailDiagramChange(nil), pending.detailDiagrams...),
+		DiagramTitles:  append([]architecture.DiagramTitleChange(nil), pending.diagramTitles...),
+		HomeMoves:      append([]architecture.ComponentHomeMove(nil), pending.homeMoves...),
+		References:     append([]architecture.ReferenceAppearanceChange(nil), pending.references...), Stale: pending.stale,
+	}
+	if pending.candidate != nil {
+		candidate := h.agentArchitectureProjectionLocked(pending.candidate.Snapshot())
+		value.Candidate = &candidate
+	}
+	if pending.validationCode != "" {
+		value.Validation = &agentValidationProjection{
+			Code: pending.validationCode, ComponentID: pending.validationItem,
+			RelationshipPosition: pending.validationRelationshipPosition, RelationshipField: pending.validationRelationshipField,
+			DiagramID: pending.validationDiagram, DiagramField: pending.validationDiagramField,
+		}
+	}
+	if pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
+		value.Review = &agentReviewIdentity{BaseRevision: pending.review.baseRevision, CandidateTree: pending.review.candidateTree, Generation: pending.review.generation}
+	}
+	return value
+}
+
+func (h *Handler) checkAgentStateLocked(expected agentapi.StatePreconditions) (architecture.Snapshot, *pendingChangeSet, *agentapi.Error) {
+	if h.loadedSnapshot == nil || h.loadedProject == nil {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "project_not_open", Message: agentMessage("project_not_open"), Details: map[string]any{}}
+	}
+	if expected.StoreID == "" || expected.StoreID != h.loadedProject.storeID {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "project_mismatch", Message: agentMessage("project_mismatch"), Details: map[string]any{"expected_store_id": expected.StoreID, "current_store_id": h.loadedProject.storeID}}
+	}
+	snapshot := *h.loadedSnapshot
+	if h.loadedStale || expected.AcceptedRevision == "" || expected.AcceptedRevision != snapshot.Revision() {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{"expected_revision": expected.AcceptedRevision, "loaded_revision": snapshot.Revision()}}
+	}
+	if (expected.PendingGeneration == nil) != (h.pending == nil) || (expected.PendingGeneration != nil && h.pending != nil && *expected.PendingGeneration != h.pending.generation) {
+		details := map[string]any{"expected_generation": expected.PendingGeneration}
+		if h.pending == nil {
+			details["current_generation"] = nil
+		} else {
+			details["current_generation"] = h.pending.generation
+		}
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "pending_generation_mismatch", Message: agentMessage("pending_generation_mismatch"), Details: details}
+	}
+	if h.pending != nil && (h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision()) {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{}}
+	}
+	return snapshot, h.pending, nil
+}
+
+func (h *Handler) writeAgentDomainErrorLocked(response http.ResponseWriter, status int, err *agentapi.Error) {
+	h.writeAgentErrorLocked(response, status, err.Code, err.Message, err.Details)
+}
+
+func agentDomainErrorStatus(err *agentapi.Error) int {
+	switch err.Code {
+	case "invalid_request":
+		return http.StatusBadRequest
+	case "target_not_found":
+		return http.StatusNotFound
+	default:
+		return http.StatusConflict
+	}
+}
+
+func agentMutationResult(pending *pendingChangeSet, values map[string]any) map[string]any {
+	if values == nil {
+		values = map[string]any{}
+	}
+	values["pending_generation"] = pending.generation
+	values["candidate_valid"] = pending.candidate != nil
+	if pending.validationCode != "" {
+		values["validation_code"] = pending.validationCode
+	}
+	return values
+}
+
+// Kept for bounded response capture when reusing the existing exact
+// Refresh/review/acceptance transitions. It is not an HTTP endpoint or an
+// operation registry.
+type localResponseCapture struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (capture *localResponseCapture) Header() http.Header {
+	if capture.header == nil {
+		capture.header = make(http.Header)
+	}
+	return capture.header
+}
+
+func (capture *localResponseCapture) WriteHeader(status int) { capture.status = status }
+
+func (capture *localResponseCapture) Write(data []byte) (int, error) {
+	if capture.status == 0 {
+		capture.status = http.StatusOK
+	}
+	return capture.body.Write(data)
+}
+
+func localJSONRequest(ctx context.Context, path string, value any, origin string) *http.Request {
+	data, _ := json.Marshal(value)
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(data))
+	request.Header.Set("Origin", origin)
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+func decodeCapturedArchitecture(capture *localResponseCapture) (architectureResponse, string, error) {
+	if capture.status == 0 {
+		capture.status = http.StatusOK
+	}
+	var result architectureResponse
+	if err := json.Unmarshal(capture.body.Bytes(), &result); err == nil && (result.StoreID != "" || result.ActionError != "" || capture.status == http.StatusNoContent) {
+		return result, result.ActionError, nil
+	}
+	var failure errorResponse
+	if err := json.Unmarshal(capture.body.Bytes(), &failure); err != nil {
+		return architectureResponse{}, "", err
+	}
+	return architectureResponse{}, failure.Code, nil
+}
+
+func requireNonEmpty(values ...string) bool {
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func exactOccurrence(values []architecture.AuthoringRelationship, target, label string, occurrence int) int {
+	if occurrence < 1 {
+		return -1
+	}
+	seen := 0
+	for index, value := range values {
+		if value.TargetID == target && value.Label == label {
+			seen++
+			if seen == occurrence {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func unexpectedAgentFailure(err error) *agentapi.Error {
+	_ = err
+	return &agentapi.Error{Code: "operation_failed", Message: agentMessage("operation_failed"), Details: map[string]any{}}
+}
+
+func (h *Handler) agentProjectCreate(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ProjectCreateRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(payload.Name) == "" {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Project name is required.", map[string]any{"field": "name"})
+		return
+	}
+	capture := &localResponseCapture{}
+	h.createProject(capture, localJSONRequest(request.Context(), "/api/projects/create", map[string]any{"name": payload.Name}, h.expectedOrigin))
+	result, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 {
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	h.writeAgentSuccess(response, http.StatusCreated, map[string]any{
+		"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
+		"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
+	})
+}
+
+func (h *Handler) agentProjectOpen(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ProjectOpenRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.Slug == "" {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Project slug is required.", map[string]any{"field": "slug"})
+		return
+	}
+	capture := &localResponseCapture{}
+	h.openProject(capture, localJSONRequest(request.Context(), "/api/projects/open", openProjectRequest{ProjectSlug: payload.Slug}, h.expectedOrigin))
+	result, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 {
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	h.writeAgentSuccess(response, http.StatusOK, map[string]any{
+		"project":           map[string]any{"store_id": result.StoreID, "name": result.ProjectName, "slug": result.ProjectSlug},
+		"accepted_revision": result.Revision, "root_diagram_id": result.RootDiagramID,
+	})
+}
+
+func (h *Handler) currentProjectLocator() (string, string) {
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedProject == nil {
+		return "", ""
+	}
+	return h.loadedProject.projectSlug, h.loadedProject.storeID
+}
+
+func (h *Handler) agentProjectClose(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ProjectCloseRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.StoreID == "" {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID is required.", map[string]any{"field": "store_id"})
+		return
+	}
+	slug, _ := h.currentProjectLocator()
+	capture := &localResponseCapture{}
+	h.leaveProject(capture, localJSONRequest(request.Context(), "/api/projects/leave", architectureActionRequest{ProjectSlug: slug, StoreID: payload.StoreID}, h.expectedOrigin))
+	_, code, err := decodeCapturedArchitecture(capture)
+	if capture.status == http.StatusNoContent {
+		h.writeAgentSuccess(response, http.StatusOK, map[string]any{"closed_store_id": payload.StoreID})
+		return
+	}
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	h.writeMappedAgentError(response, capture.status, code)
+}
+
+func (h *Handler) writeMappedAgentError(response http.ResponseWriter, status int, code string) {
+	mapped := "operation_failed"
+	details := map[string]any{}
+	switch code {
+	case errorProjectNotFound:
+		mapped = "project_not_found"
+	case errorCatalogConflict:
+		mapped = "project_conflict"
+	case errorCatalogUnavailable, errorArchitectureUnavailable, errorArchitectureInvalid, errorArchitectureUnsupported:
+		mapped = "project_unavailable"
+	case errorArchitectureNotOpen:
+		_, storeID := h.currentProjectLocator()
+		if storeID == "" {
+			mapped = "project_not_open"
+		} else {
+			mapped = "project_mismatch"
+		}
+	case errorPendingBlocksSwitch, errorChangesUnavailable:
+		mapped = "pending_conflict"
+	case errorChangesElsewhere:
+		mapped = "pending_generation_mismatch"
+	case errorArchitectureStale, errorRefreshChanged, errorRefreshUnavailable, errorRefreshInvalid, errorRefreshUnsupported:
+		mapped = "architecture_non_current"
+		if code != errorArchitectureStale {
+			details["classification"] = "known_non_current"
+		}
+	case errorRefreshFailed:
+		mapped = "refresh_failed"
+		details["classification"] = "indeterminate"
+	case errorReviewFailed:
+		mapped = "validation_blocked"
+	case errorReviewChanged:
+		mapped = "review_invalidated"
+	case errorUpdateUncertain:
+		mapped = "acceptance_uncertain"
+	case errorUpdatedReload:
+		mapped = "accepted_reload_required"
+	case errorHomeMoveUnavailable, errorComponentNotFound:
+		mapped = "target_not_found"
+	case errorChangeFailed:
+		mapped = "target_not_eligible"
+	}
+	h.writeAgentError(response, status, mapped, agentMessage(mapped), details)
+}
+
+func (h *Handler) agentArchitectureRefresh(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ArchitectureRefreshRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if !requireNonEmpty(payload.StoreID, payload.AcceptedRevision) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID and accepted revision are required.", nil)
+		return
+	}
+	slug, _ := h.currentProjectLocator()
+	capture := &localResponseCapture{}
+	h.refreshArchitecture(capture, localJSONRequest(request.Context(), "/api/architecture/refresh", architectureActionRequest{
+		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedRevision: payload.AcceptedRevision,
+	}, h.expectedOrigin))
+	result, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 {
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	classification := "unchanged"
+	if result.Revision != payload.AcceptedRevision {
+		classification = "adopted"
+	}
+	h.writeAgentSuccess(response, http.StatusOK, map[string]any{"classification": classification, "accepted_revision": result.Revision, "slug": result.ProjectSlug})
+}
+
+func (h *Handler) agentChangesReview(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangesReviewRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.PendingGeneration == nil || *payload.PendingGeneration != payload.Generation {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Review requires the exact inspected pending generation.", nil)
+		return
+	}
+	slug, _ := h.currentProjectLocator()
+	capture := &localResponseCapture{}
+	h.reviewChanges(capture, localJSONRequest(request.Context(), "/api/architecture/review", architectureActionRequest{
+		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedRevision: payload.AcceptedRevision, ExpectedGeneration: payload.PendingGeneration,
+		PendingGenerationObserved: true,
+	}, h.expectedOrigin))
+	result, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 || result.Changes == nil || result.Changes.Review == nil {
+		if result.Changes != nil && result.Changes.ValidationCode != "" {
+			h.writeAgentError(response, http.StatusUnprocessableEntity, "validation_blocked", agentMessage("validation_blocked"), map[string]any{
+				"code": result.Changes.ValidationCode, "component_id": result.Changes.ValidationItem,
+				"relationship_position": result.Changes.ValidationRelationshipPosition, "relationship_field": result.Changes.ValidationRelationshipField,
+				"diagram_id": result.Changes.ValidationDiagram, "diagram_field": result.Changes.ValidationDiagramField,
+			})
+			return
+		}
+		if code == errorReviewFailed {
+			h.writeAgentError(response, http.StatusConflict, "review_required", agentMessage("review_required"), nil)
+			return
+		}
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	h.writeAgentSuccess(response, http.StatusOK, result.Changes.Review)
+}
+
+func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangesDiscardRequest](h, response, request)
+	if !ok {
+		return
+	}
+	slug, _ := h.currentProjectLocator()
+	generation := payload.Generation
+	capture := &localResponseCapture{}
+	h.discardChanges(capture, localJSONRequest(request.Context(), "/api/architecture/discard", architectureActionRequest{
+		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedGeneration: &generation, PendingGenerationObserved: true,
+	}, h.expectedOrigin))
+	_, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 {
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	h.writeAgentSuccess(response, http.StatusOK, map[string]any{"discarded_generation": payload.Generation})
+}
+
+func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ArchitectureUpdateRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if !requireNonEmpty(payload.StoreID, payload.BaseRevision, payload.CandidateTree) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID and exact review binding are required.", nil)
+		return
+	}
+	slug, _ := h.currentProjectLocator()
+	capture := &localResponseCapture{}
+	h.acceptChanges(capture, localJSONRequest(request.Context(), "/api/architecture/accept", acceptChangesRequest{
+		ProjectSlug: slug, StoreID: payload.StoreID, BaseRevision: payload.BaseRevision, CandidateTree: payload.CandidateTree, Generation: payload.Generation,
+	}, h.expectedOrigin))
+	result, code, err := decodeCapturedArchitecture(capture)
+	if err != nil {
+		h.writeAgentError(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if capture.status >= 400 {
+		if code == errorArchitectureStale {
+			h.writeAgentError(response, capture.status, "accepted_conflict", agentMessage("accepted_conflict"), nil)
+			return
+		}
+		if code == errorReviewFailed {
+			h.writeAgentError(response, capture.status, "review_required", agentMessage("review_required"), nil)
+			return
+		}
+		h.writeMappedAgentError(response, capture.status, code)
+		return
+	}
+	h.writeAgentSuccess(response, http.StatusOK, map[string]any{
+		"base_revision": payload.BaseRevision, "candidate_tree": payload.CandidateTree, "generation": payload.Generation,
+		"accepted_revision": result.Revision, "publication": "published", "parent_diff": result.ParentDiff,
+	})
+}
+
+func (h *Handler) agentComponentCreate(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ComponentCreateRequest](h, response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	if snapshot.FormatVersion() != 2 {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "unsupported_action", agentMessage("unsupported_action"), nil)
+		return
+	}
+	homeDiagramID := snapshot.RootDiagramID()
+	if payload.DiagramID != nil {
+		homeDiagramID = *payload.DiagramID
+	}
+	if homeDiagramID == "" || !pendingHasDiagram(snapshot, pending, homeDiagramID) {
+		h.writeAgentErrorLocked(response, http.StatusNotFound, "target_not_found", agentMessage("target_not_found"), map[string]any{"diagram_id": homeDiagramID})
+		return
+	}
+	pending = h.ensurePendingLocked(snapshot, pending)
+	change := h.architecture.NewComponentChange(snapshot, pending.changes, strings.TrimSpace(payload.Title), normalizeAuthoredDescription(payload.Description))
+	change.Relationships = []architecture.AuthoringRelationship{}
+	change.RelationshipsChanged = true
+	pending.newComponentHomes = append(pending.newComponentHomes, architecture.NewComponentHome{ComponentID: change.ID, DiagramID: homeDiagramID})
+	pending = h.keepComponentChangeLocked(request.Context(), snapshot, pending, change, -1)
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": change.ID, "home_diagram_id": homeDiagramID}))
+}
+
+func (h *Handler) agentComponentEdit(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ComponentEditRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.ComponentID == "" || (payload.Title == nil && payload.Description == nil) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Component ID and at least one changed field are required.", nil)
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	change, index, found := componentChangeLocked(snapshot, pending, payload.ComponentID)
+	if !found {
+		h.writeAgentErrorLocked(response, http.StatusNotFound, "target_not_found", agentMessage("target_not_found"), map[string]any{"component_id": payload.ComponentID})
+		return
+	}
+	changedFields := make([]string, 0, 2)
+	if payload.Title != nil {
+		change.Title = strings.TrimSpace(*payload.Title)
+		change.TitleChanged = true
+		changedFields = append(changedFields, "title")
+	}
+	if payload.Description != nil {
+		change.Description = normalizeAuthoredDescription(*payload.Description)
+		change.DescriptionChanged = true
+		changedFields = append(changedFields, "description")
+	}
+	pending = h.keepComponentChangeLocked(request.Context(), snapshot, pending, change, index)
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "changed_fields": changedFields}))
+}
+
+func (h *Handler) relationshipChangeStateLocked(expected agentapi.StatePreconditions, sourceID string) (architecture.Snapshot, *pendingChangeSet, architecture.ComponentChange, int, *agentapi.Error) {
+	snapshot, pending, stateErr := h.checkAgentStateLocked(expected)
+	if stateErr != nil {
+		return architecture.Snapshot{}, nil, architecture.ComponentChange{}, -1, stateErr
+	}
+	if sourceID == "" {
+		return architecture.Snapshot{}, nil, architecture.ComponentChange{}, -1, &agentapi.Error{Code: "invalid_request", Message: "Source Component ID is required.", Details: map[string]any{"field": "source_id"}}
+	}
+	change, index, found := componentChangeLocked(snapshot, pending, sourceID)
+	if !found {
+		return architecture.Snapshot{}, nil, architecture.ComponentChange{}, -1, &agentapi.Error{Code: "target_not_found", Message: agentMessage("target_not_found"), Details: map[string]any{"component_id": sourceID}}
+	}
+	return snapshot, pending, change, index, nil
+}
+
+func (h *Handler) commitRelationshipChangeLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, change architecture.ComponentChange, index int) *pendingChangeSet {
+	change.RelationshipsChanged = true
+	return h.keepComponentChangeLocked(ctx, snapshot, pending, change, index)
+}
+
+func (h *Handler) agentRelationshipAdd(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.RelationshipAddRequest](h, response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, change, index, stateErr := h.relationshipChangeStateLocked(payload.StatePreconditions, payload.SourceID)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, agentDomainErrorStatus(stateErr), stateErr)
+		return
+	}
+	change.Relationships = append(change.Relationships, architecture.AuthoringRelationship{TargetID: payload.TargetID, Label: payload.Label})
+	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+		"source_id": payload.SourceID, "target_id": payload.TargetID, "label": payload.Label,
+	}))
+}
+
+func (h *Handler) agentRelationshipEdit(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.RelationshipEditRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.Occurrence < 1 {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Relationship occurrence must be a one-based integer.", map[string]any{"field": "occurrence"})
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, change, index, stateErr := h.relationshipChangeStateLocked(payload.StatePreconditions, payload.SourceID)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, agentDomainErrorStatus(stateErr), stateErr)
+		return
+	}
+	selected := exactOccurrence(change.Relationships, payload.OldTargetID, payload.OldLabel, payload.Occurrence)
+	if selected < 0 {
+		h.writeAgentErrorLocked(response, http.StatusNotFound, "target_not_found", "That exact pending Relationship occurrence was not found. Inspect changes again.", map[string]any{
+			"source_id": payload.SourceID, "old_target_id": payload.OldTargetID, "old_label": payload.OldLabel, "occurrence": payload.Occurrence,
+		})
+		return
+	}
+	old := change.Relationships[selected]
+	change.Relationships[selected] = architecture.AuthoringRelationship{TargetID: payload.TargetID, Label: payload.Label}
+	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+		"source_id": payload.SourceID,
+		"removed":   map[string]any{"target_id": old.TargetID, "label": old.Label, "occurrence": payload.Occurrence},
+		"added":     map[string]any{"target_id": payload.TargetID, "label": payload.Label},
+	}))
+}
+
+func (h *Handler) agentRelationshipRemove(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.RelationshipRemoveRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.Occurrence < 1 {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Relationship occurrence must be a one-based integer.", map[string]any{"field": "occurrence"})
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, change, index, stateErr := h.relationshipChangeStateLocked(payload.StatePreconditions, payload.SourceID)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, agentDomainErrorStatus(stateErr), stateErr)
+		return
+	}
+	selected := exactOccurrence(change.Relationships, payload.TargetID, payload.Label, payload.Occurrence)
+	if selected < 0 {
+		h.writeAgentErrorLocked(response, http.StatusNotFound, "target_not_found", "That exact pending Relationship occurrence was not found. Inspect changes again.", map[string]any{
+			"source_id": payload.SourceID, "target_id": payload.TargetID, "label": payload.Label, "occurrence": payload.Occurrence,
+		})
+		return
+	}
+	change.Relationships = append(change.Relationships[:selected], change.Relationships[selected+1:]...)
+	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+		"source_id": payload.SourceID, "removed": map[string]any{"target_id": payload.TargetID, "label": payload.Label, "occurrence": payload.Occurrence},
+	}))
+}
+
+func (h *Handler) agentDiagramCreateDetail(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.DiagramCreateDetailRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.ComponentID == "" {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Anchor Component ID is required.", nil)
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	pending, addition, homeDiagramID, operationError := h.createDetailDiagramLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.Title)
+	if operationError != "" {
+		status := http.StatusConflict
+		if operationError == changeTargetNotFound {
+			status = http.StatusNotFound
+		}
+		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), map[string]any{"component_id": payload.ComponentID})
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+		"diagram_id": addition.ID, "anchor_component_id": payload.ComponentID, "parent_diagram_id": homeDiagramID, "title": payload.Title,
+	}))
+}
+
+func (h *Handler) agentDiagramEditTitle(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.DiagramEditTitleRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.DiagramID == "" {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Diagram ID is required.", nil)
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	pending, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title)
+	if operationError != "" {
+		h.writeAgentErrorLocked(response, http.StatusNotFound, operationError, agentMessage(operationError), map[string]any{"diagram_id": payload.DiagramID})
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"diagram_id": payload.DiagramID, "title": payload.Title}))
+}
+
+func (h *Handler) agentComponentMoveHome(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ComponentMoveHomeRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if !requireNonEmpty(payload.ComponentID, payload.DiagramID) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Component and destination Diagram IDs are required.", nil)
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	pending, unchanged, operationError := h.moveComponentHomeLocked(request.Context(), snapshot, pending, payload.ComponentID, payload.DiagramID)
+	if operationError != "" {
+		status := http.StatusConflict
+		if operationError == changeTargetNotFound {
+			status = http.StatusNotFound
+		}
+		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), nil)
+		return
+	}
+	if unchanged {
+		generation := any(nil)
+		if pending != nil {
+			generation = pending.generation
+		}
+		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID, "pending_generation": generation, "unchanged": true})
+		return
+	}
+	if pending == nil {
+		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID, "pending_generation": nil})
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID}))
+}
+
+func (h *Handler) agentDiagramShowComponent(response http.ResponseWriter, request *http.Request) {
+	h.agentChangeReference(response, request, true)
+}
+
+func (h *Handler) agentDiagramStopShowingComponent(response http.ResponseWriter, request *http.Request) {
+	h.agentChangeReference(response, request, false)
+}
+
+func (h *Handler) agentChangeReference(response http.ResponseWriter, request *http.Request, present bool) {
+	payload, ok := decodeAgentRequest[agentapi.DiagramComponentRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if !requireNonEmpty(payload.DiagramID, payload.ComponentID) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Diagram and Component IDs are required.", nil)
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	snapshot, pending, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
+		return
+	}
+	pending, operationError := h.changeReferenceLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.ComponentID, present)
+	if operationError != "" {
+		status := http.StatusConflict
+		if operationError == changeTargetNotFound {
+			status = http.StatusNotFound
+		}
+		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), nil)
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+		"diagram_id": payload.DiagramID, "component_id": payload.ComponentID, "present": present,
+	}))
+}

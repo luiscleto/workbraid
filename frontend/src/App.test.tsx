@@ -199,7 +199,7 @@ describe('slug workspace and reusable references', () => {
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(window.location.pathname).toBe('/projects/new-locator'))
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40) })
   })
 
   it('shows a candidate-relative component through structured controls', async () => {
@@ -216,7 +216,7 @@ describe('slug workspace and reusable references', () => {
     render(<App />)
     const picker = (await screen.findAllByLabelText('Show component here'))[0]
     await user.selectOptions(picker, external)
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), pending_generation_observed: true, expected_pending_generation: null, diagram_id: root, component_id: external })
     expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
   })
 
@@ -242,7 +242,7 @@ describe('slug workspace and reusable references', () => {
     const index = await screen.findByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(index).getByRole('button', { name: /External, Included here/ }))
     await user.click(screen.getByRole('button', { name: 'Stop showing here' }))
-    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), diagram_id: root, component_id: external })
+    expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), pending_generation_observed: true, expected_pending_generation: null, diagram_id: root, component_id: external })
   })
 
   it('keeps folder and setup language out of a writable workspace', async () => {

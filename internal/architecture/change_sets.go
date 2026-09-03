@@ -188,12 +188,18 @@ func (manager *Manager) LoadChangeSets(ctx context.Context, storeID string) ([]C
 	unavailable := make([]UnavailableChangeSet, 0)
 	for _, entry := range refs {
 		parsed, parseErr := uuid.Parse(entry.id)
+		unavailableReason := ""
 		if parseErr != nil || parsed.String() != entry.id || strings.Contains(entry.id, "/") {
-			unavailable = append(unavailable, UnavailableChangeSet{ID: entry.id, Lifecycle: entry.lifecycle, Ref: entry.Name, Reason: "invalid change-set ref identity"})
-			continue
+			unavailableReason = "invalid change-set ref identity"
+		} else if counts[entry.id] != 1 {
+			unavailableReason = "change-set identity occurs in more than one lifecycle"
 		}
-		if counts[entry.id] != 1 {
-			unavailable = append(unavailable, UnavailableChangeSet{ID: entry.id, Lifecycle: entry.lifecycle, Ref: entry.Name, Reason: "change-set identity occurs in more than one lifecycle"})
+		if unavailableReason != "" {
+			name := ""
+			if entry.lifecycle == "active" {
+				name = manager.readableChangeSetNameAtObject(ctx, storePath, entry.Object)
+			}
+			unavailable = append(unavailable, UnavailableChangeSet{ID: entry.id, Name: name, Lifecycle: entry.lifecycle, Ref: entry.Name, Reason: unavailableReason})
 			continue
 		}
 		record, loadErr := manager.loadChangeSet(ctx, storePath, storeID, entry.lifecycle, entry.id, entry.Name, entry.Object)
@@ -251,10 +257,16 @@ func (manager *Manager) loadChangeSet(ctx context.Context, storePath, storeID, l
 	record := ChangeSet{ID: id, Lifecycle: lifecycle, RefObject: object}
 	objectType, err := manager.git.objectType(ctx, storePath, object)
 	if err != nil || objectType != "commit" {
+		if lifecycle == "active" {
+			record.Name = manager.readableChangeSetNameAtObject(ctx, storePath, object)
+		}
 		return record, errors.New("change-set ref does not name a commit")
 	}
 	parent, err := manager.git.commitParent(ctx, storePath, object)
 	if err != nil {
+		if lifecycle == "active" {
+			record.Name = manager.readableChangeSetNameAtObject(ctx, storePath, object)
+		}
 		return record, err
 	}
 	entries, err := manager.git.directTreeEntries(ctx, storePath, object)
@@ -683,6 +695,32 @@ func readableChangeSetName(contents []byte) string {
 		name = value.Value
 	}
 	return name
+}
+
+func (manager *Manager) readableChangeSetNameAtObject(ctx context.Context, storePath, object string) string {
+	entries, err := manager.git.directTreeEntries(ctx, storePath, object)
+	if err != nil {
+		return ""
+	}
+	var metadata treeEntry
+	found := false
+	for _, entry := range entries {
+		if entry.Path != "change-set.yaml" {
+			continue
+		}
+		if found || entry.Type != "blob" {
+			return ""
+		}
+		metadata, found = entry, true
+	}
+	if !found {
+		return ""
+	}
+	contents, err := manager.git.readBlob(ctx, storePath, metadata.Object)
+	if err != nil {
+		return ""
+	}
+	return readableChangeSetName(contents)
 }
 
 func oneYAMLMapping(contents []byte, name string) (*yaml.Node, error) {

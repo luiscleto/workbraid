@@ -429,6 +429,34 @@ func TestChangeSetLoaderIsolatesClosedSchemaAndIdentityConflicts(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid parent retains its readable active name", func(t *testing.T) {
+		ctx := context.Background()
+		manager := NewManager(t.TempDir())
+		base, record, object, storePath := changeSetFixture(t, manager, ctx, "Invalid Parent")
+		tree, err := manager.git.commitTree(ctx, storePath, object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		invalidParent, err := manager.git.makeBootstrapCommit(ctx, storePath, tree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.git.updateRef(ctx, storePath, activeChangeSetPrefix+record.ID, invalidParent, object); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, unavailable, err := manager.LoadChangeSets(ctx, base.StoreID())
+		if err != nil || len(loaded) != 0 || len(unavailable) != 1 {
+			t.Fatalf("loaded=%+v unavailable=%+v err=%v", loaded, unavailable, err)
+		}
+		if unavailable[0].Name != record.Name || unavailable[0].Lifecycle != "active" || unavailable[0].Reason != "state commit must have exactly one parent" {
+			t.Fatalf("invalid-parent record = %+v", unavailable[0])
+		}
+		if _, _, err := manager.NewChangeSet([]ChangeSet{{Name: unavailable[0].Name, Lifecycle: unavailable[0].Lifecycle}}, "invalid parent"); err == nil {
+			t.Fatal("readable unavailable active name did not reserve creation")
+		}
+	})
+
 	t.Run("duplicate lifecycle UUID is never selected", func(t *testing.T) {
 		ctx := context.Background()
 		manager := NewManager(t.TempDir())
@@ -439,6 +467,21 @@ func TestChangeSetLoaderIsolatesClosedSchemaAndIdentityConflicts(t *testing.T) {
 		loaded, unavailable, err := manager.LoadChangeSets(ctx, base.StoreID())
 		if err != nil || len(loaded) != 0 || len(unavailable) != 2 {
 			t.Fatalf("loaded=%+v unavailable=%+v err=%v", loaded, unavailable, err)
+		}
+		var reserved []ChangeSet
+		for _, unavailableRecord := range unavailable {
+			if unavailableRecord.Reason != "change-set identity occurs in more than one lifecycle" {
+				t.Fatalf("duplicate-lifecycle record = %+v", unavailableRecord)
+			}
+			if unavailableRecord.Lifecycle == "active" {
+				if unavailableRecord.Name != record.Name {
+					t.Fatalf("active duplicate lost readable name: %+v", unavailableRecord)
+				}
+				reserved = append(reserved, ChangeSet{Name: unavailableRecord.Name, Lifecycle: unavailableRecord.Lifecycle})
+			}
+		}
+		if _, _, err := manager.NewChangeSet(reserved, "duplicate LIFECYCLE"); err == nil {
+			t.Fatal("readable duplicate-lifecycle active name did not reserve creation")
 		}
 	})
 

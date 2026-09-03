@@ -652,6 +652,95 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 	})
 }
 
+func TestUnavailableActiveReadableNamesBlockCreateAndRename(t *testing.T) {
+	cases := []struct {
+		name    string
+		corrupt func(*testing.T, string, string, string)
+	}{
+		{
+			name: "invalid parent",
+			corrupt: func(t *testing.T, storePath, activeRef, object string) {
+				tree := git(t, "--git-dir", storePath, "rev-parse", object+"^{tree}")
+				invalidParent := gitInput(t, []byte("Invalid parent\n"), "-c", "user.name=Test", "-c", "user.email=test@workbraid.invalid", "--git-dir", storePath, "commit-tree", tree)
+				git(t, "--git-dir", storePath, "update-ref", activeRef, invalidParent, object)
+			},
+		},
+		{
+			name: "duplicate lifecycle",
+			corrupt: func(t *testing.T, storePath, activeRef, object string) {
+				id := strings.TrimPrefix(activeRef, "refs/workbraid/change-sets/active/")
+				git(t, "--git-dir", storePath, "update-ref", "refs/workbraid/change-sets/applied/"+id, object, strings.Repeat("0", 40))
+			},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			data := t.TempDir()
+			state, handler := newHandler(testOrigin, testUI(t), data)
+			created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Reserved names"}))
+			reserved := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/change-sets/create", changeSetCreateRequest{
+				ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, AcceptedRevision: created.Revision, Name: "Reserved Early",
+			}))
+			renameSource := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/change-sets/create", changeSetCreateRequest{
+				ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, AcceptedRevision: created.Revision, Name: "Rename Source",
+			}))
+			activeRef := "refs/workbraid/change-sets/active/" + reserved.ActionChangeSetID
+			storePath := storePathFor(t, state.architecture, created.StoreID)
+			object := git(t, "--git-dir", storePath, "show-ref", "--verify", "--hash", activeRef)
+			test.corrupt(t, storePath, activeRef, object)
+
+			restarted, restartedHandler := newHandler(testOrigin, testUI(t), data)
+			opened := decodeArchitectureResponse(t, postJSONRequest(t, restartedHandler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
+			foundUnavailable := false
+			for _, record := range opened.UnavailableChangeSets {
+				if record.ID == reserved.ActionChangeSetID && record.Lifecycle == "active" && record.Name == "Reserved Early" && record.Reason != "" {
+					foundUnavailable = true
+				}
+			}
+			if !foundUnavailable {
+				t.Fatalf("readable active record was not typed unavailable: %+v", opened.UnavailableChangeSets)
+			}
+
+			createConflict := postJSONRequest(t, restartedHandler, "/api/architecture/change-sets/create", changeSetCreateRequest{
+				ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, AcceptedRevision: opened.Revision, Name: "reserved early",
+			})
+			if createConflict.Code != http.StatusConflict || !strings.Contains(createConflict.Body.String(), `"code":"`+errorChangeFailed+`"`) {
+				t.Fatalf("create reused unavailable name: status=%d body=%s", createConflict.Code, createConflict.Body.String())
+			}
+
+			var source *changesResponse
+			for _, record := range opened.ChangeSets {
+				if record.ID == renameSource.ActionChangeSetID {
+					source = record
+					break
+				}
+			}
+			if source == nil || source.Lifecycle != "active" {
+				t.Fatalf("rename source missing after reload: %+v", opened.ChangeSets)
+			}
+			renameConflict := postJSONRequest(t, restartedHandler, "/api/architecture/change-sets/rename", changeSetEditRequest{
+				ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ChangeSetID: source.ID, Generation: source.Generation, Name: "RESERVED EARLY",
+			})
+			if renameConflict.Code != http.StatusConflict || !strings.Contains(renameConflict.Body.String(), `"code":"`+errorChangeFailed+`"`) {
+				t.Fatalf("rename reused unavailable name: status=%d body=%s", renameConflict.Code, renameConflict.Body.String())
+			}
+
+			restarted.stateMutex.Lock()
+			defer restarted.stateMutex.Unlock()
+			if restarted.changeSets[source.ID] == nil || restarted.changeSets[source.ID].name != "Rename Source" {
+				t.Fatalf("failed conflicts mutated rename source: %+v", restarted.changeSets[source.ID])
+			}
+			stillUnavailable := false
+			for _, record := range restarted.unavailableChangeSets {
+				stillUnavailable = stillUnavailable || record.ID == reserved.ActionChangeSetID && record.Lifecycle == "active" && record.Name == "Reserved Early"
+			}
+			if !stillUnavailable {
+				t.Fatalf("conflict attempts lost typed unavailable state: %+v", restarted.unavailableChangeSets)
+			}
+		})
+	}
+}
+
 func TestReferenceReviewChangesCompositionWithoutSemanticDeltas(t *testing.T) {
 	ctx := context.Background()
 	manager := architecture.NewManager(t.TempDir())

@@ -1,6 +1,6 @@
 # Architecture Agent Access 1 execution packet
 
-Status: Approved
+Status: Complete — human checkpoint **PASS** on 2026-09-03
 
 Target: CLI, `--skill`, MCP, and black-box agent usability over the completed Architecture product
 
@@ -329,3 +329,41 @@ Do not introduce:
 - unrelated Phase 2 polish or recorded future UX candidates.
 
 Stop after explicit Agent Access 1 human **PASS** and its separate completion record. Do not prepare or begin rich-diagram Phase 3.
+
+## Execution result
+
+Status: Complete — human checkpoint **PASS** on 2026-09-03
+
+- Exact Phase 2 completion prerequisite: `8cd9ce145980fbc57377e729975940b9e2f0b8b6`.
+- Approved Agent Access baseline and roadmap: `4efbe773580dbe1f4ed1778a7211d50ba626892b`.
+- Approved packet-inclusive worker base: `9679e41b11ae827b33d3095bf7fe08fc528597a4`.
+- Final implementation after reviewed authority, CLI-dispatch, and public-language corrections: `0a82c89d2a214896fe6b7020fe312cdd109beaeb`.
+- The implementation adds one versioned local agent HTTP surface to the existing loopback process, a thin JSON CLI client, one embedded `workbraid --skill` document, and a stateless MCP stdio-to-loopback adapter. Browser, CLI, and MCP use the same loaded project, pending set, candidate construction, review binding, validation, confirmation, and CAS/publication authority.
+- The MCP adapter uses `github.com/modelcontextprotocol/go-sdk` `v1.7.0`. Automated negotiation covered protocol `2026-07-28` while retaining the SDK's compatible protocol behavior.
+- Exactly one implementation worker produced the complete range `9679e41b11ae827b33d3095bf7fe08fc528597a4..0a82c89d2a214896fe6b7020fe312cdd109beaeb`. All bounded corrections returned to that worker.
+
+### Independent review and automated evidence
+
+- One fresh independent reviewer inspected the implementation and tests against the approved contract. It found concrete state-precondition, atomic capture, redirect, error-classification, help/dispatch, and evidence gaps. Corrections at `ee678e2a71b6541aa63039994bf7d514a5168a00`, `2293ca809ce16180494823738672f0ae5814f3dd`, and `b27d03500b405eb4e18079ddff99ae4c14e162f4` each received fresh rereview. Final technical verdict: **PASS** with no findings.
+- Review confirmed one running Manager authority, exact server-owned store/revision/generation preconditions, immutable review capture under the existing synchronization boundary, exact bound acceptance, no private-store fallback, and no second candidate/review/pending model.
+- Real-binary CLI/MCP evidence covered all approved reads and mutations, raw invalid-Relationship repair selectors, exact review/diff/update binding, stale and validation classifications, bridge restart, process-wide project selection, and fresh-process reconstruction.
+- Ordinary checks passed: `git diff --check`; `go test ./... -count=1`; `go test -race ./... -count=1`; `go vet ./...`; `go mod verify`; 34/34 ordinary frontend tests through `npm test`; production frontend build; and the bounded Agent Access production-browser scenario. No raw Vitest invocation or manual asynchronous test loop was used, and no abnormal process growth occurred.
+- After the final public-language-only correction, focused CLI/skill/MCP/error tests and independent rereview passed. Final-head `go test ./... -count=1`, `go vet ./...`, and `go mod verify` also passed. Frontend tests were not repeated because no frontend source or bundle input changed.
+
+### Black-box agent and canonical verification evidence
+
+- A fresh `gpt-5.6-luna` CLI verifier received only the requested outcome, the built binary/running instance, and the instruction to begin with `workbraid --skill`. After one earlier gate exposed the advertised `project list` dispatch defect, the same worker fixed it and the full fresh gate was rerun. The final verifier completed discovery, structured authoring, review, exact-bound Update, and final inspection without source access, private-Git edits, undocumented HTTP calls, human rescue, or failed product calls.
+- CLI project `CLI Agent Relay`: store `8c8a371a-aca2-4e09-9b27-696c1afc415b`; base `2cc5fe60c986c820f9675a0c64d66af3afcc21bb`; reviewed candidate tree `0d155dbe4125bed1aa77bee36421650081607d99`; generation `8`; accepted revision `5a29e2c763e726561766ab13814c44756c5f3779`. It contains Portal, Executor, Journal, their two Relationships, nested `Executor internals`, Journal's home there, and Portal's reusable appearance.
+- A separate fresh `gpt-5.6-luna` MCP verifier received only the task and configured MCP connection. Using normal tool discovery, it completed the equivalent workflow without CLI skill, source access, private-Git edits, undocumented calls, orchestrator sequencing hints, human rescue, or failed product calls.
+- MCP project `MCP Agent Observatory`: store `d439c5d6-3c53-4519-9c48-72459a30217f`; base `e7999a5a36aa6c0db1a56c9153cb5e33c7b1e66a`; reviewed candidate tree `a899ff2b9dfbbf9740a46a0d12aa8d3f2f2d257c`; generation `8`; accepted revision `350d31ce3e2857c29764c06ee3065de082601213`. It contains Ingress, Processor, Ledger, their two Relationships, nested `Processor internals`, Ledger's home there, and Ingress's reusable appearance.
+- A stronger fresh independent verifier inspected only the approved contract, the two claims, private Git objects, built binary, and a fresh process. It confirmed both sole accepted refs, exact parents and candidate trees, closed-v2 blobs/modes, IDs, Markdown, Relationships, hierarchy, homes, references, derived boundaries, no pending state, both browser routes, and shared CLI/MCP process authority. It found no SQLite file, source registry, second catalog, non-Git Architecture projection, or residual runtime/browser process. Technical truth verdict: **PASS**.
+
+### Public-language review and human checkpoint
+
+- Before the human gate, the existing WorkBraid Grok reviewer inspected CLI help, `workbraid --skill`, MCP discovery text/schemas, public errors, and non-internal documentation for unnecessary jargon, duplication, and complexity. It found a misleading accepted-but-reload-required recovery line, ambiguous JSON help, and MCP descriptions that exposed too much internal terminology.
+- The original worker made only bounded wording/test changes in `0a82c89d2a214896fe6b7020fe312cdd109beaeb`: recovery now forbids a second Update while correctly directing Refresh/reopen; CLI output behavior is explicit; MCP descriptions use product language; ID provenance/server connection guidance is clearer; and shared human errors no longer require candidate/binding jargon. Command/tool names, schemas, structured fields, error codes, dispatch, and acceptance semantics did not change.
+- The fresh technical reviewer and Grok both rereviewed that final range and returned **PASS** with no material findings.
+- Using a fresh final-head binary and the same canonical application data, the human opened `/projects/cli-agent-relay` and `/projects/mcp-agent-observatory`, inspected both exact accepted nested Architectures, and confirmed coherent UI with no unexpected pending work.
+- Human checkpoint result: **PASS**.
+
+Architecture Agent Access 1 is complete. Stop here; rich-diagram Phase 3 remains unplanned and unstarted.

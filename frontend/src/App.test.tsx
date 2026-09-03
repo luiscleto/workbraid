@@ -40,7 +40,7 @@ function response(value: unknown, status = 200) {
 }
 
 function architecture(overrides: Record<string, unknown> = {}) {
-  return {
+  const result: Record<string, any> = {
     project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', project_name: 'Example Project',
     state: 'ready', revision: 'a'.repeat(40), format_version: 2, component_count: 2,
     component_titles: ['Worker', 'External'], root_diagram_id: root,
@@ -60,12 +60,34 @@ function architecture(overrides: Record<string, unknown> = {}) {
     }],
     home_move_destinations: [{ component_id: worker, current_home_id: root, diagram_ids: [] }, { component_id: external, current_home_id: detail, diagram_ids: [root] }],
     reference_choices: [{ diagram_id: root, component_id: external, title: 'External', home_diagram: 'Detail' }],
+    change_sets: [],
     ...overrides,
   }
+  if (result.changes) {
+    result.changes = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'Steady lantern', lifecycle: 'active', proposal_markdown: '',
+      base_revision: result.revision, generation: 1, components: [], valid: true,
+      ...(result.changes as Record<string, unknown>),
+    }
+    if (!Object.hasOwn(overrides, 'change_sets')) result.change_sets = [result.changes]
+  }
+  return result
 }
 
 function requestBody(mock: ReturnType<typeof vi.fn>, index: number) {
   return JSON.parse(String(mock.mock.calls[index][1]?.body))
+}
+
+async function selectProposal(user: ReturnType<typeof userEvent.setup>) {
+  await user.selectOptions(await screen.findByLabelText('Architecture context'), 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+}
+
+function changeSet(id: string, name: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id, name, lifecycle: 'active', proposal_markdown: '', base_revision: 'a'.repeat(40), generation: 0,
+    components: [], valid: true, candidate: architecture(),
+    ...overrides,
+  }
 }
 
 function reviewedArchitecture(overrides: Record<string, unknown> = {}) {
@@ -217,7 +239,7 @@ describe('slug workspace and reusable references', () => {
     const picker = (await screen.findAllByLabelText('Show component here'))[0]
     await user.selectOptions(picker, external)
     expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), pending_generation_observed: true, expected_pending_generation: null, diagram_id: root, component_id: external })
-    expect(await screen.findByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Proposed: Steady lantern' })).toBeInTheDocument()
   })
 
   it('offers Stop showing here only for a canonical reference', async () => {
@@ -267,18 +289,18 @@ describe('slug workspace and reusable references', () => {
     expect(screen.getByRole('button', { name: 'Keep editing' })).toBeInTheDocument()
   })
 
-  it('keeps backend-held pending work visible when project leave is blocked', async () => {
+  it('leaves durable proposals intact when switching projects', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const pending = architecture({ changes: { components: [{ id: worker, title: 'Worker', description: 'Changed.\n', new: false, relationships: [] }], valid: true, candidate: architecture() } })
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => response(pending))
-      .mockImplementationOnce(() => response({ ...pending, action_error: 'pending_blocks_switch' }, 409))
+      .mockImplementationOnce(() => Promise.resolve(new Response(null, { status: 204 })))
+      .mockImplementationOnce(() => response({ projects: [] }))
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Open another project' }))
-    expect(await screen.findByText('Keep working here or discard these changes before opening another project.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Changes in progress' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument()
     expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
   })
 
@@ -399,6 +421,7 @@ describe('candidate review regressions', () => {
     vi.stubGlobal('fetch', vi.fn(() => response(value)))
     const user = userEvent.setup()
     render(<App />)
+    await selectProposal(user)
 
     const diagramChanges = await screen.findByRole('region', { name: 'Diagram changes' })
     expect(within(diagramChanges).getByRole('button', { name: 'External no longer shown in System' })).toBeInTheDocument()
@@ -417,6 +440,7 @@ describe('candidate review regressions', () => {
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
     const user = userEvent.setup()
     render(<App />)
+    await selectProposal(user)
     expect(await screen.findByRole('button', { name: 'With changes' })).toHaveAttribute('aria-pressed', 'true')
     const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
     expect(within(navigation).getByRole('button', { name: /Worker updated/ })).toBeInTheDocument()
@@ -441,7 +465,9 @@ describe('candidate review regressions', () => {
     window.history.replaceState({}, '', '/projects/example-project')
     graphHarness.fail = true
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
     render(<App />)
+    await selectProposal(user)
     expect(await screen.findByText('The architecture map could not be shown.')).toBeInTheDocument()
     expect(screen.getByTestId('raw-diff')).toHaveTextContent('components/worker.md')
     expect(screen.getByRole('button', { name: 'Update architecture' })).toBeEnabled()
@@ -461,9 +487,151 @@ describe('candidate review regressions', () => {
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
     render(<App />)
+    await selectProposal(user)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
-    expect(await screen.findByText('These changes started from an older architecture and are read-only.')).toBeInTheDocument()
+    expect(await screen.findByText('The current architecture could not be loaded. This earlier view is read-only.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Delete change set' })).not.toBeInTheDocument()
+  })
+})
+
+describe('change-set workspace contexts', () => {
+  it('creates a generated change set from the exact Accepted context', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const generatedID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const generated = changeSet(generatedID, 'quiet-harbor')
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(architecture({ change_sets: [] })))
+      .mockImplementationOnce(() => response(architecture({ change_sets: [generated], action_change_set_id: generatedID }), 201))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'New changes' }))
+    await user.click(screen.getByRole('button', { name: 'Create change set' }))
+    expect(requestBody(fetchMock, 1)).toEqual({
+      project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', accepted_revision: 'a'.repeat(40),
+    })
+    expect(await screen.findByRole('heading', { name: 'Proposed: quiet-harbor' })).toBeInTheDocument()
+  })
+
+  it('switches Accepted, valid, and invalid contexts locally without overlaying snapshots', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const validID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const invalidID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const candidate = architecture({
+      component_titles: ['Proposed worker', 'External'],
+      components: [
+        { id: worker, title: 'Proposed worker', description: 'Only in the proposal.\n', filename: 'worker.md', relationships: [] },
+        { id: external, title: 'External', description: 'Elsewhere.\n', filename: 'external.md', relationships: [] },
+      ],
+    })
+    const fetchMock = vi.fn(() => response(architecture({ change_sets: [
+      changeSet(validID, 'Steady lantern', { candidate }),
+      changeSet(invalidID, 'Broken compass', {
+        valid: false, candidate: undefined, validation_code: 'relationship_target_invalid', validation_item: worker,
+        validation_relationship_position: 1, validation_relationship_field: 'target',
+        components: [{ id: worker, title: 'Worker', description: 'Exact facts.\n', new: false, relationships: [{ target_id: 'not-a-uuid', label: 'calls' }] }],
+      }),
+    ] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByText('Does work.')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Architecture context'), validID)
+    await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'Proposed worker' }))
+    expect(await screen.findByText('Only in the proposal.')).toBeInTheDocument()
+    expect(screen.queryByText('Does work.')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Architecture context'), invalidID)
+    expect(await screen.findByRole('heading', { name: 'Needs correction' })).toBeInTheDocument()
+    expect(screen.queryByTestId('architecture-map')).not.toBeInTheDocument()
+    expect(screen.queryByText('Does work.')).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('protects unsaved proposal Markdown before switching contexts and renders it inertly', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const firstID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const secondID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [
+      changeSet(firstID, 'Steady lantern', { proposal_markdown: '# Plan\n\n<script>alert(1)</script>' }),
+      changeSet(secondID, 'Quiet harbor'),
+    ] }))))
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+
+    await user.selectOptions(await screen.findByLabelText('Architecture context'), firstID)
+    await user.click(await screen.findByRole('button', { name: 'Change set' }))
+    expect(screen.getByRole('heading', { name: 'Plan' })).toBeInTheDocument()
+    expect(container.querySelector('script')).toBeNull()
+    await user.type(screen.getByLabelText('Proposal Markdown'), '\nUnsent')
+    await user.selectOptions(screen.getByLabelText('Architecture context'), secondID)
+    expect(screen.getByRole('dialog', { name: 'Leave without keeping?' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Proposed: Steady lantern' })).toBeInTheDocument()
+  })
+
+  it('keeps an out-of-date proposal editable and reviewable but unable to update Accepted', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const reviewed = reviewedArchitecture()
+    const proposal = (reviewed as unknown as { changes: Record<string, unknown> }).changes
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [{ ...proposal, out_of_date: true }] }))))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await selectProposal(user)
+    expect(await screen.findByText(/Out of date with Accepted/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Change-set name')).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'With changes' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+  })
+
+  it('shows applied proposal evidence read-only', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const appliedID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(appliedID, 'Shipped bridge', {
+      lifecycle: 'applied', read_only: true, proposal_markdown: '## Why\n\nDurable evidence.', applied_revision: 'b'.repeat(40),
+    })] }))))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.selectOptions(await screen.findByLabelText('Architecture context'), appliedID)
+    await user.click(await screen.findByRole('button', { name: 'Applied proposal' }))
+    expect(screen.getByRole('heading', { name: 'Applied: Shipped bridge' })).toBeInTheDocument()
+    expect(screen.getByText('Durable evidence.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Change-set name')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Review changes' })).not.toBeInTheDocument()
+  })
+
+  it('disambiguates duplicate applied names by stable identity', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const firstID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const secondID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [
+      changeSet(firstID, 'Reusable', { lifecycle: 'applied', read_only: true, applied_revision: 'b'.repeat(40) }),
+      changeSet(secondID, 'Reusable', { lifecycle: 'applied', read_only: true, applied_revision: 'c'.repeat(40) }),
+    ] }))))
+    render(<App />)
+
+    const selector = await screen.findByLabelText('Architecture context')
+    expect(within(selector).getByRole('option', { name: `Applied: Reusable — ${firstID.slice(0, 8)}` })).toBeInTheDocument()
+    expect(within(selector).getByRole('option', { name: `Applied: Reusable — ${secondID.slice(0, 8)}` })).toBeInTheDocument()
+  })
+
+  it('explains an empty review without offering an Accepted update', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const value = reviewedArchitecture()
+    const review = (value as unknown as { changes: { review: { diff: string } } }).changes.review
+    review.diff = ''
+    vi.stubGlobal('fetch', vi.fn(() => response(value)))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await selectProposal(user)
+    expect(await screen.findByText('There is no Architecture change to accept.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
   })
 })

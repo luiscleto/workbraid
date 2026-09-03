@@ -156,7 +156,7 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return "", nil, &failure
 	}
 	group, action, actionArgs := args[0], args[1], args[2:]
-	operation := group + "_" + strings.ReplaceAll(action, "-", "_")
+	operation := strings.ReplaceAll(group, "-", "_") + "_" + strings.ReplaceAll(action, "-", "_")
 	if group == "project" && action == "list" {
 		return noArgumentCommand("projects_list", actionArgs)
 	}
@@ -164,9 +164,6 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return noArgumentCommand(operation, actionArgs)
 	}
 	if group == "architecture" && action == "inspect" {
-		return noArgumentCommand(operation, actionArgs)
-	}
-	if group == "changes" && action == "inspect" {
 		return noArgumentCommand(operation, actionArgs)
 	}
 	flags := flag.NewFlagSet(group+" "+action, flag.ContinueOnError)
@@ -207,37 +204,63 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		}
 		return operation, agentapi.ArchitectureRefreshRequest{StoreID: storeID, AcceptedRevision: revision}, nil
 	case "architecture_update":
-		var storeID, base, tree, generation string
+		var storeID, changeSetID, base, tree, generation string
 		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+		flags.StringVar(&changeSetID, "change-set-id", "", "exact reviewed change-set UUID")
 		flags.StringVar(&base, "base-revision", "", "reviewed base commit")
 		flags.StringVar(&tree, "candidate-tree", "", "reviewed candidate tree")
 		flags.StringVar(&generation, "generation", "", "reviewed pending generation")
-		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, base, tree, generation) {
-			return invalid("Architecture update requires the exact --store-id, --base-revision, --candidate-tree, and --generation review binding.")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, changeSetID, base, tree, generation) {
+			return invalid("Architecture update requires the exact --store-id, --change-set-id, --base-revision, --candidate-tree, and --generation review binding.")
 		}
 		parsed, err := parseRequiredGeneration(generation)
 		if err != nil || parsed == nil {
 			return invalid("Architecture update generation must be a non-negative integer.")
 		}
-		return operation, agentapi.ArchitectureUpdateRequest{StoreID: storeID, BaseRevision: base, CandidateTree: tree, Generation: *parsed}, nil
-	case "changes_review":
-		state, generation, ok := parseStateFlags(flags, actionArgs)
-		if !ok || generation == nil {
-			return invalid("Changes review requires exact state and a numeric --generation.")
-		}
-		return operation, agentapi.ChangesReviewRequest{StatePreconditions: state, Generation: *generation}, nil
-	case "changes_discard":
-		var storeID, generation string
+		return operation, agentapi.ArchitectureUpdateRequest{StoreID: storeID, ChangeSetID: changeSetID, BaseRevision: base, CandidateTree: tree, Generation: *parsed}, nil
+	case "change_set_list":
+		var storeID string
 		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
-		flags.StringVar(&generation, "generation", "", "inspected pending generation")
-		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, generation) {
-			return invalid("Changes discard requires --store-id and numeric --generation.")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || storeID == "" {
+			return invalid("Change-set list requires --store-id.")
 		}
-		parsed, err := parseRequiredGeneration(generation)
-		if err != nil || parsed == nil {
-			return invalid("Changes discard generation must be a non-negative integer.")
+		return "change_sets_list", agentapi.ChangeSetsListRequest{StoreID: storeID}, nil
+	case "change_set_create":
+		var storeID, revision string
+		var name trackedString
+		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+		flags.StringVar(&revision, "accepted-revision", "", "exact current Accepted revision")
+		flags.Var(&name, "name", "optional change-set name")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, revision) {
+			return invalid("Change-set create requires --store-id and --accepted-revision.")
 		}
-		return operation, agentapi.ChangesDiscardRequest{StoreID: storeID, Generation: *parsed}, nil
+		var requested *string
+		if name.set {
+			requested = &name.value
+		}
+		return operation, agentapi.ChangeSetCreateRequest{StoreID: storeID, AcceptedRevision: revision, Name: requested}, nil
+	case "change_set_inspect":
+		var storeID, changeSetID string
+		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+		flags.StringVar(&changeSetID, "change-set-id", "", "exact change-set UUID")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, changeSetID) {
+			return invalid("Change-set inspect requires --store-id and --change-set-id.")
+		}
+		return operation, agentapi.ChangeSetInspectRequest{StoreID: storeID, ChangeSetID: changeSetID}, nil
+	case "change_set_review":
+		state, ok := parseStateFlags(flags, actionArgs)
+		if !ok {
+			return invalid("Change-set review requires exact store, change-set ID, and generation.")
+		}
+		return operation, agentapi.ChangeSetReviewRequest{StatePreconditions: state}, nil
+	case "change_set_discard":
+		state, ok := parseStateFlags(flags, actionArgs)
+		if !ok {
+			return invalid("Change-set discard requires exact store, change-set ID, and generation.")
+		}
+		return operation, agentapi.ChangeSetDiscardRequest{StatePreconditions: state}, nil
+	case "change_set_edit_proposal", "change_set_rename":
+		return parseChangeSetText(operation, flags, actionArgs, stdin, invalid)
 	case "component_create":
 		return parseComponentCreate(flags, actionArgs, stdin, invalid)
 	case "component_edit":
@@ -268,25 +291,22 @@ func noArgumentCommand(operation string, args []string) (string, any, *agentapi.
 }
 
 func addStateFlags(flags *flag.FlagSet) (*string, *string, *string) {
-	return flags.String("store-id", "", "exact store UUID"), flags.String("accepted-revision", "", "inspected accepted revision"), flags.String("generation", "", "inspected pending generation or none")
+	return flags.String("store-id", "", "exact store UUID"), flags.String("change-set-id", "", "exact active change-set UUID"), flags.String("generation", "", "exact inspected change-set generation")
 }
 
-func parseStateFlags(flags *flag.FlagSet, args []string) (agentapi.StatePreconditions, *uint64, bool) {
-	storeID, revision, generation := addStateFlags(flags)
-	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*storeID, *revision, *generation) {
-		return agentapi.StatePreconditions{}, nil, false
+func parseStateFlags(flags *flag.FlagSet, args []string) (agentapi.StatePreconditions, bool) {
+	storeID, changeSetID, generation := addStateFlags(flags)
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*storeID, *changeSetID, *generation) {
+		return agentapi.StatePreconditions{}, false
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return agentapi.StatePreconditions{}, nil, false
+	if err != nil || parsed == nil {
+		return agentapi.StatePreconditions{}, false
 	}
-	return agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, parsed, true
+	return agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *changeSetID, Generation: *parsed}, true
 }
 
 func parseRequiredGeneration(value string) (*uint64, error) {
-	if value == "none" {
-		return nil, nil
-	}
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
 		return nil, err
@@ -308,6 +328,9 @@ func exactText(literal, file trackedString, stdin io.Reader) (string, bool, erro
 		return "", false, nil
 	}
 	if literal.set {
+		if !utf8.ValidString(literal.value) {
+			return "", true, fmt.Errorf("input is not UTF-8")
+		}
 		return literal.value, true, nil
 	}
 	var data []byte
@@ -326,6 +349,36 @@ func exactText(literal, file trackedString, stdin io.Reader) (string, bool, erro
 	return string(data), true, nil
 }
 
+func parseChangeSetText(operation string, flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
+	storeID, changeSetID, generation := addStateFlags(flags)
+	var name, proposal, proposalFile trackedString
+	if operation == "change_set_rename" {
+		flags.Var(&name, "name", "new active change-set name")
+	} else {
+		flags.Var(&proposal, "proposal", "exact proposal Markdown")
+		flags.Var(&proposalFile, "proposal-file", "exact proposal Markdown file or - for stdin")
+	}
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*storeID, *changeSetID, *generation) {
+		return invalid("Change-set edit requires exact store, change-set ID, and generation.")
+	}
+	parsed, err := parseRequiredGeneration(*generation)
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
+	}
+	state := agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *changeSetID, Generation: *parsed}
+	if operation == "change_set_rename" {
+		if !name.set {
+			return invalid("Change-set rename requires --name.")
+		}
+		return operation, agentapi.ChangeSetRenameRequest{StatePreconditions: state, Name: name.value}, nil
+	}
+	text, present, readErr := exactText(proposal, proposalFile, stdin)
+	if readErr != nil || !present {
+		return invalid("Use exactly one of --proposal or --proposal-file.")
+	}
+	return operation, agentapi.ChangeSetEditProposalRequest{StatePreconditions: state, ProposalMarkdown: text}, nil
+}
+
 func parseComponentCreate(flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
 	storeID, revision, generation := addStateFlags(flags)
 	var title, description, descriptionFile trackedString
@@ -338,8 +391,8 @@ func parseComponentCreate(flags *flag.FlagSet, args []string, stdin io.Reader, i
 		return invalid("Component create requires exact state and --title; use at most one description input.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
 	text := ""
 	if description.set || descriptionFile.set {
@@ -352,7 +405,7 @@ func parseComponentCreate(flags *flag.FlagSet, args []string, stdin io.Reader, i
 	if diagramID.set {
 		diagram = &diagramID.value
 	}
-	return "component_create", agentapi.ComponentCreateRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, Title: title.value, Description: text, DiagramID: diagram}, nil
+	return "component_create", agentapi.ComponentCreateRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, Title: title.value, Description: text, DiagramID: diagram}, nil
 }
 
 func parseComponentEdit(flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -367,8 +420,8 @@ func parseComponentEdit(flags *flag.FlagSet, args []string, stdin io.Reader, inv
 		return invalid("Component edit requires exact state, --component-id, and at least one changed field.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
 	var titleValue, descriptionValue *string
 	if title.set {
@@ -381,7 +434,7 @@ func parseComponentEdit(flags *flag.FlagSet, args []string, stdin io.Reader, inv
 		}
 		descriptionValue = &text
 	}
-	return "component_edit", agentapi.ComponentEditRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, ComponentID: componentID, Title: titleValue, Description: descriptionValue}, nil
+	return "component_edit", agentapi.ComponentEditRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, ComponentID: componentID, Title: titleValue, Description: descriptionValue}, nil
 }
 
 func parseComponentMove(flags *flag.FlagSet, args []string, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -393,10 +446,10 @@ func parseComponentMove(flags *flag.FlagSet, args []string, invalid invalidComma
 		return invalid("Component move-home requires exact state, --component-id, and --diagram-id.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
-	return "component_move_home", agentapi.ComponentMoveHomeRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, ComponentID: componentID, DiagramID: diagramID}, nil
+	return "component_move_home", agentapi.ComponentMoveHomeRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, ComponentID: componentID, DiagramID: diagramID}, nil
 }
 
 func relationshipState(flags *flag.FlagSet) (*string, *string, *string, *string) {
@@ -419,14 +472,14 @@ func parseRelationshipAdd(flags *flag.FlagSet, args []string, stdin io.Reader, i
 		return invalid("Relationship add requires exact state, --source-id, --target-id, and one label input.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
 	text, present, err := exactText(label, labelFile, stdin)
 	if err != nil || !present {
 		return invalid("Use exactly one of --label or --label-file.")
 	}
-	return "relationship_add", agentapi.RelationshipAddRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, SourceID: *sourceID, TargetID: targetID.value, Label: text}, nil
+	return "relationship_add", agentapi.RelationshipAddRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, SourceID: *sourceID, TargetID: targetID.value, Label: text}, nil
 }
 
 func parseRelationshipEdit(flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -444,15 +497,15 @@ func parseRelationshipEdit(flags *flag.FlagSet, args []string, stdin io.Reader, 
 		return invalid("Relationship edit requires exact state, raw old selector, occurrence, and new target/label.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
 	oldText, oldPresent, oldErr := exactText(oldLabel, oldLabelFile, stdin)
 	newText, newPresent, newErr := exactText(label, labelFile, stdin)
 	if oldErr != nil || newErr != nil || !oldPresent || !newPresent {
 		return invalid("Use exactly one old-label input and one new label input.")
 	}
-	return "relationship_edit", agentapi.RelationshipEditRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, SourceID: *sourceID, OldTargetID: oldTarget.value, OldLabel: oldText, Occurrence: *occurrence, TargetID: target.value, Label: newText}, nil
+	return "relationship_edit", agentapi.RelationshipEditRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, SourceID: *sourceID, OldTargetID: oldTarget.value, OldLabel: oldText, Occurrence: *occurrence, TargetID: target.value, Label: newText}, nil
 }
 
 func parseRelationshipRemove(flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -466,14 +519,14 @@ func parseRelationshipRemove(flags *flag.FlagSet, args []string, stdin io.Reader
 		return invalid("Relationship remove requires exact state, raw target/label, and occurrence.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
 	text, present, err := exactText(label, labelFile, stdin)
 	if err != nil || !present {
 		return invalid("Use exactly one of --label or --label-file.")
 	}
-	return "relationship_remove", agentapi.RelationshipRemoveRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}, SourceID: *sourceID, TargetID: target.value, Label: text, Occurrence: *occurrence}, nil
+	return "relationship_remove", agentapi.RelationshipRemoveRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, SourceID: *sourceID, TargetID: target.value, Label: text, Occurrence: *occurrence}, nil
 }
 
 func parseDiagramCommand(operation string, flags *flag.FlagSet, args []string, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -487,10 +540,10 @@ func parseDiagramCommand(operation string, flags *flag.FlagSet, args []string, i
 		return invalid("Diagram command requires exact state and its target fields.")
 	}
 	parsed, err := parseRequiredGeneration(*generation)
-	if err != nil {
-		return invalid("Generation must be a non-negative integer or none.")
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
 	}
-	state := agentapi.StatePreconditions{StoreID: *storeID, AcceptedRevision: *revision, PendingGeneration: parsed}
+	state := agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}
 	switch operation {
 	case "diagram_create_detail":
 		if componentID == "" || !title.set {
@@ -529,10 +582,16 @@ Connect, choose a project, and inspect:
   project close --store-id <uuid>
   architecture inspect
   architecture refresh --store-id <uuid> --accepted-revision <sha>
-  changes inspect
+
+Durable change sets:
+  change-set list --store-id <uuid>
+  change-set create --store-id <uuid> --accepted-revision <sha> [--name <text>]
+  change-set inspect --store-id <uuid> --change-set-id <uuid>
+  change-set rename <state> --name <text>
+  change-set edit-proposal <state> (--proposal <markdown>|--proposal-file <path|->)
 
 Every authoring command requires this exact inspected state:
-  --store-id <uuid> --accepted-revision <sha> --generation <n|none>
+  --store-id <uuid> --change-set-id <uuid> --generation <n>
 
 Authoring commands:
   component create <state> --title <text> [--description <text>|--description-file <path|->] [--diagram-id <uuid>]
@@ -547,11 +606,12 @@ Authoring commands:
   diagram stop-showing-component <state> --diagram-id <uuid> --component-id <uuid>
 
 Review and deliberate update:
-  changes review <state with numeric generation>
-  changes discard --store-id <uuid> --generation <n>
-  architecture update --store-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
+  change-set review <state>
+  change-set discard <state>
+  architecture update --store-id <uuid> --change-set-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
 
-The slug locates a project; store, Component, and Diagram UUIDs are stable identity.
-Inspect after conflicts. Review returns the only base/tree/generation binding accepted
-by Update. Run workbraid --skill for typed recovery and a complete JSON workflow.
+The slug locates a project. Store, change-set, Component, and Diagram UUIDs are stable
+identity. Each change set has its own generation. Inspect after conflicts. Review returns
+the only ID/base/tree/generation binding accepted by Update. Run workbraid --skill for
+typed recovery, out-of-date rules, and a complete JSON workflow.
 `

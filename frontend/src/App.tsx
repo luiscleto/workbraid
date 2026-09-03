@@ -26,6 +26,9 @@ type ArchitectureResult = {
   home_move_destinations?: { component_id: string; current_home_id: string; diagram_ids: string[] }[]
   reference_choices?: { diagram_id: string; component_id: string; title: string; context?: string; home_diagram: string }[]
   changes?: ChangesInProgress
+  change_sets: ChangesInProgress[]
+  unavailable_change_sets?: { id?: string; name?: string; lifecycle?: string; reason: string }[]
+  action_change_set_id?: string
   stale?: boolean
   parent_diff?: string
   action_error?: string
@@ -81,8 +84,15 @@ type AuthoringComponent = {
 type PendingComponent = AuthoringComponent & { new: boolean }
 
 type ChangesInProgress = {
-  base_revision?: string
-  generation?: number
+  id: string
+  name: string
+  lifecycle: 'active' | 'applied'
+  proposal_markdown: string
+  applied_revision?: string
+  out_of_date?: boolean
+  read_only?: boolean
+  base_revision: string
+  generation: number
   components: PendingComponent[]
   relationship_targets?: RelationshipTarget[]
   valid: boolean
@@ -175,6 +185,7 @@ type NavigationIntent =
   | { kind: 'component'; id: string }
   | { kind: 'diagram'; id: string; focusComponentID?: string }
   | { kind: 'changes' }
+  | { kind: 'context'; id: string }
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
   | { kind: 'open-another' }
@@ -344,21 +355,33 @@ export function App() {
   const [reviewFocus, setReviewFocus] = useState<ReviewFocus | null>(null)
   const [reviewSelectionCleared, setReviewSelectionCleared] = useState(false)
   const [reviewVisible, setReviewVisible] = useState(false)
+  const [selectedContextID, setSelectedContextID] = useState('accepted')
+  const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
+  const [creatingChangeSet, setCreatingChangeSet] = useState(false)
+  const [newChangeSetName, setNewChangeSetName] = useState('')
+  const selectedContextIDRef = useRef(selectedContextID)
+  selectedContextIDRef.current = selectedContextID
 
-  const enterWorkspace = useCallback((result: ArchitectureResult, task?: WorkspaceTask) => {
+  const enterWorkspace = useCallback((incoming: ArchitectureResult, task?: WorkspaceTask, requestedContextID?: string) => {
+    const changeSets = incoming.change_sets ?? (incoming.changes ? [incoming.changes] : [])
+    const contextID = requestedContextID ?? incoming.action_change_set_id ?? incoming.changes?.id ?? selectedContextIDRef.current
+    const selectedChangeSet = contextID === 'accepted' ? undefined : changeSets.find((changeSet) => changeSet.id === contextID)
+    const result = { ...incoming, change_sets: changeSets, changes: selectedChangeSet }
+    setSelectedContextID(selectedChangeSet?.id ?? 'accepted')
     setState({ kind: 'ready', value: result })
-    if (result.format_version === 2) {
-      const selectedDiagram = result.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
-        ?? result.diagrams?.find((diagram) => diagram.id === result.root_diagram_id)
+    const contextProjection = selectedChangeSet?.candidate ?? (selectedChangeSet ? undefined : result)
+    if (contextProjection?.format_version === 2) {
+      const selectedDiagram = contextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+        ?? contextProjection.diagrams?.find((diagram) => diagram.id === contextProjection.root_diagram_id)
       setSelectedDiagramID(selectedDiagram?.id)
       setSelectedComponentID((current) => selectedDiagram?.appearances.some((appearance) => appearance.component_id === current)
         ? current
         : selectedDiagram?.appearances[0]?.component_id)
     } else {
       setSelectedDiagramID(undefined)
-      setSelectedComponentID((current) => result.components?.some((component) => component.id === current) ? current : result.components?.[0]?.id)
+      setSelectedComponentID((current) => contextProjection?.components?.some((component) => component.id === current) ? current : contextProjection?.components?.[0]?.id)
     }
-    setWorkspaceTask(task ?? (result.changes ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
+    setWorkspaceTask(task ?? (selectedChangeSet ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
   }, [selectedDiagramID])
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
@@ -374,7 +397,7 @@ export function App() {
     ? diagramEditor.diagramID !== ''
     : diagramEditor.title !== diagramEditor.initialTitle)
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -431,9 +454,17 @@ export function App() {
       if (selectedComponentID) setSelectedComponentID(undefined)
       return
     }
-    if (state.value.format_version === 2) {
-      const diagram = state.value.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
-        ?? state.value.diagrams?.find((candidate) => candidate.id === state.value.root_diagram_id)
+    const selectedProjection = state.value.changes
+      ? state.value.changes.candidate
+      : state.value
+    if (!selectedProjection) {
+      if (selectedComponentID) setSelectedComponentID(undefined)
+      if (selectedDiagramID) setSelectedDiagramID(undefined)
+      return
+    }
+    if (selectedProjection.format_version === 2) {
+      const diagram = selectedProjection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
+        ?? selectedProjection.diagrams?.find((candidate) => candidate.id === selectedProjection.root_diagram_id)
       if (diagram && diagram.id !== selectedDiagramID && !(heldReview && !reviewVisible)) {
         setSelectedDiagramID(diagram.id)
       }
@@ -442,9 +473,9 @@ export function App() {
       setSelectedComponentID(diagram?.appearances[0]?.component_id)
       return
     }
-    if (workspaceTask === 'empty' && state.value.components?.length) return
-    if (selectedComponentID && state.value.components?.some((component) => component.id === selectedComponentID)) return
-    setSelectedComponentID(state.value.components?.[0]?.id)
+    if (workspaceTask === 'empty' && selectedProjection.components?.length) return
+    if (selectedComponentID && selectedProjection.components?.some((component) => component.id === selectedComponentID)) return
+    setSelectedComponentID(selectedProjection.components?.[0]?.id)
   }, [state, selectedComponentID, selectedDiagramID, reviewFocus, reviewSelectionCleared, reviewSide, reviewVisible, workspaceTask])
 
   useEffect(() => {
@@ -487,19 +518,13 @@ export function App() {
     try {
       const response = await postJSON('/api/projects/open', { project_slug: slug })
       const result = await response.json() as ArchitectureResult | ErrorPayload
-      if (!response.ok && 'state' in result) {
-        window.history.replaceState({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
-        enterWorkspace({ ...result, action_error: undefined }, 'changes')
-        setArchitectureNotice('Keep working here or discard these changes before opening another project.')
-        return
-      }
       if (!response.ok || !('state' in result)) {
         if ('code' in result && result.code === 'project_not_found') setState({ kind: 'not-found', slug })
         else setState({ kind: 'catalog-error', message: messageForError('code' in result ? result.code : undefined) })
         return
       }
       window.history[replaceRoute ? 'replaceState' : 'pushState']({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
-      enterWorkspace(result)
+      enterWorkspace(result, undefined, 'accepted')
     } catch {
       setState({ kind: 'catalog-error', message: 'WorkBraid could not open that project. Try again.' })
     }
@@ -520,7 +545,7 @@ export function App() {
       }
       window.history.pushState({}, '', `/projects/${encodeURIComponent(result.project_slug)}`)
       setProjectName('')
-      enterWorkspace(result)
+      enterWorkspace(result, undefined, 'accepted')
     } catch {
       setState({ kind: 'catalog-error', message: 'WorkBraid could not create that project. Try again.' })
     }
@@ -580,6 +605,7 @@ export function App() {
       const response = await postJSON(endpoint, {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         expected_revision: result.revision,
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
@@ -610,6 +636,7 @@ export function App() {
       const response = await postJSON('/api/architecture/review', {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         expected_revision: result.revision,
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
@@ -645,6 +672,7 @@ export function App() {
       const response = await postJSON(endpoint, {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         expected_revision: result.revision,
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
@@ -675,6 +703,7 @@ export function App() {
         : '/api/architecture/diagrams/stop-showing-component', {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         expected_revision: result.revision,
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
@@ -705,6 +734,7 @@ export function App() {
       const response = await postJSON('/api/architecture/accept', {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         base_revision: review.base_revision,
         candidate_tree: review.candidate_tree,
         generation: review.generation,
@@ -723,10 +753,74 @@ export function App() {
     }
   }
 
+  async function createChangeSet(result: ArchitectureResult) {
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/architecture/change-sets/create', {
+        project_slug: result.project_slug,
+        store_id: result.store_id,
+        accepted_revision: result.revision,
+        ...(newChangeSetName.trim() ? { name: newChangeSetName } : {}),
+      })
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload)) {
+        setArchitectureNotice("WorkBraid couldn't create that change set. Choose a different active name or Refresh.")
+        return
+      }
+      setCreatingChangeSet(false)
+      setNewChangeSetName('')
+      enterWorkspace(payload, 'changes', payload.action_change_set_id)
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't create that change set. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
+  async function renameChangeSet(result: ArchitectureResult, name: string) {
+    const changes = result.changes
+    if (!changes) return
+    await updateChangeSetText(result, '/api/architecture/change-sets/rename', { name })
+  }
+
+  async function saveProposal(result: ArchitectureResult, proposal: string) {
+    const changes = result.changes
+    if (!changes) return
+    await updateChangeSetText(result, '/api/architecture/change-sets/proposal', { proposal_markdown: proposal })
+  }
+
+  async function updateChangeSetText(result: ArchitectureResult, endpoint: string, value: { name: string } | { proposal_markdown: string }) {
+    const changes = result.changes
+    if (!changes) return
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON(endpoint, {
+        project_slug: result.project_slug,
+        store_id: result.store_id,
+        change_set_id: changes.id,
+        generation: changes.generation,
+        ...value,
+      })
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload)) {
+        setArchitectureNotice("WorkBraid couldn't keep that change-set change. Inspect it and try again.")
+        return
+      }
+      setChangeSetTextDirty(false)
+      enterWorkspace(payload, 'changes', changes.id)
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't keep that change-set change. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -757,6 +851,15 @@ export function App() {
     if (intent.kind === 'changes') {
       if (currentReview) setReviewVisible(false)
       setWorkspaceTask('changes')
+      return
+    }
+    if (intent.kind === 'context') {
+      if (state.kind !== 'ready') return
+      const selected = intent.id === 'accepted' ? undefined : state.value.change_sets.find((changeSet) => changeSet.id === intent.id)
+      enterWorkspace({ ...state.value, changes: selected, action_change_set_id: undefined }, selected ? 'changes' : state.value.components.length ? 'documentation' : 'empty', intent.id)
+      setReviewVisible(false)
+      setDiscardConfirming(false)
+      setChangeSetTextDirty(false)
       return
     }
     if (intent.kind === 'clear') {
@@ -799,13 +902,7 @@ export function App() {
         await loadCatalog()
         return
       }
-      const payload = (await response.json()) as ArchitectureResult | ErrorPayload
-      if ('state' in payload) {
-        enterWorkspace({ ...payload, action_error: undefined }, 'changes')
-        setArchitectureNotice('Keep working here or discard these changes before opening another project.')
-      } else {
-        setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
-      }
+      setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
     } catch {
       setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
     } finally {
@@ -836,15 +933,8 @@ export function App() {
         await loadCatalog()
         return
       }
-      const payload = await response.json() as ArchitectureResult | ErrorPayload
-      if ('state' in payload) {
-        window.history.replaceState({}, '', `/projects/${encodeURIComponent(payload.project_slug)}`)
-        enterWorkspace({ ...payload, action_error: undefined }, 'changes')
-        setArchitectureNotice('Keep working here or discard these changes before leaving this project.')
-      } else {
-        window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
-        setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
-      }
+      window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
+      setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
     } catch {
       window.history.replaceState({}, '', `/projects/${encodeURIComponent(current.value.project_slug)}`)
       setArchitectureNotice("WorkBraid couldn't leave this project. Try again.")
@@ -860,6 +950,7 @@ export function App() {
       const response = await postJSON('/api/architecture/discard', {
         project_slug: result.project_slug,
         store_id: result.store_id,
+        ...(result.changes ? { change_set_id: result.changes.id } : {}),
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
       })
@@ -910,7 +1001,15 @@ export function App() {
     const result = state.value
     const review = reviewVisible ? currentReview : undefined
     const activeProjection = review ? (reviewSide === 'with' ? review.with_changes : review.before) : undefined
-    const diagramProjection = activeProjection ?? result
+    const invalidProposalProjection: ReviewSnapshot = {
+      revision: result.changes?.base_revision ?? result.revision,
+      format_version: result.format_version,
+      component_count: 0,
+      component_titles: [],
+      components: [],
+      diagrams: [],
+    }
+    const diagramProjection = activeProjection ?? (result.changes ? result.changes.candidate ?? invalidProposalProjection : result)
     const candidateOnlyDiagramBefore = Boolean(review && reviewSide === 'before' && selectedDiagramID &&
       review.with_changes.diagrams?.some((diagram) => diagram.id === selectedDiagramID) &&
       !review.before.diagrams?.some((diagram) => diagram.id === selectedDiagramID))
@@ -923,7 +1022,7 @@ export function App() {
       ? diagramProjection.diagrams?.find((diagram) => diagram.id === (candidateFallbackDiagramID ?? selectedDiagramID))
         ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
-    const authoringAvailable = !result.stale && !result.changes?.stale && !acceptanceUnknown
+    const authoringAvailable = !result.stale && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
     const compositionDiagrams = result.changes?.diagram_options ?? compositionProjection.diagrams ?? result.diagrams ?? []
     const editorDiagrams = diagramEditor?.kind === 'move'
@@ -945,7 +1044,7 @@ export function App() {
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
     const activeComponents = activeProjection?.format_version === 2
       ? activeDiagramComponents ?? []
-      : activeProjection?.components ?? activeDiagramComponents ?? result.components ?? []
+      : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents = diagramMapComponents ?? activeComponents
     const selected = activeComponents.find((component) => component.id === selectedComponentID)
@@ -1067,6 +1166,9 @@ export function App() {
         ))}
       </nav>
     ) : undefined
+    const nameCounts = new Map<string, number>()
+    for (const changeSet of result.change_sets) nameCounts.set(changeSet.name, (nameCounts.get(changeSet.name) ?? 0) + 1)
+    const changeSetLabel = (changeSet: ChangesInProgress) => `${changeSet.lifecycle === 'applied' ? 'Applied' : 'Proposed'}: ${changeSet.name}${(nameCounts.get(changeSet.name) ?? 0) > 1 ? ` — ${changeSet.id.slice(0, 8)}` : ''}${changeSet.out_of_date ? ' — Out of date' : ''}`
     return (
       <main className="workspace-shell">
         <header className="application-frame">
@@ -1075,11 +1177,23 @@ export function App() {
             <p className="workspace-context"><strong>{result.project_name}</strong><span>Architecture</span></p>
           </div>
           <div className="frame-actions">
-            {result.changes ? (
-              <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'changes' })}>
-                Changes in progress {result.changes.components.length > 0 && <span className="change-count">{result.changes.components.length}</span>}
-              </button>
-            ) : null}
+            <label className="context-selector">Context
+              <select aria-label="Architecture context" value={selectedContextID} onChange={(event) => requestNavigation({ kind: 'context', id: event.target.value })}>
+                <option value="accepted">Accepted</option>
+                {result.change_sets.some((changeSet) => changeSet.lifecycle === 'active') && (
+                  <optgroup label="Active change sets">
+                    {result.change_sets.filter((changeSet) => changeSet.lifecycle === 'active').map((changeSet) => <option key={changeSet.id} value={changeSet.id}>{changeSetLabel(changeSet)}</option>)}
+                  </optgroup>
+                )}
+                {result.change_sets.some((changeSet) => changeSet.lifecycle === 'applied') && (
+                  <optgroup label="Applied change sets">
+                    {result.change_sets.filter((changeSet) => changeSet.lifecycle === 'applied').map((changeSet) => <option key={changeSet.id} value={changeSet.id}>{changeSetLabel(changeSet)}</option>)}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale} onClick={() => setCreatingChangeSet(true)}>New changes</button>
+            {result.changes ? <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'changes' })}>{result.changes.lifecycle === 'applied' ? 'Applied proposal' : 'Change set'}</button> : null}
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'refresh' })}>
               Refresh
             </button>
@@ -1088,6 +1202,15 @@ export function App() {
             </button>
           </div>
         </header>
+        {creatingChangeSet && (
+          <form className="new-change-set" onSubmit={(event) => { event.preventDefault(); void createChangeSet(result) }}>
+            <label>Change-set name <input autoFocus value={newChangeSetName} onChange={(event) => setNewChangeSetName(event.target.value)} placeholder="Optional generated name" /></label>
+            <button className="inline-action" type="submit" disabled={architectureBusy}>Create change set</button>
+            <button className="text-action" type="button" onClick={() => { setCreatingChangeSet(false); setNewChangeSetName('') }}>Cancel</button>
+          </form>
+        )}
+        {result.unavailable_change_sets?.length ? <div className="stale-banner" role="alert">{result.unavailable_change_sets.length} change set{result.unavailable_change_sets.length === 1 ? '' : 's'} unavailable. Accepted and other change sets remain available.</div> : null}
+        {result.changes?.out_of_date && <div className="stale-banner proposal-stale" role="status">Out of date with Accepted. This change set remains editable and reviewable, but cannot update Architecture.</div>}
         {result.stale && <div className="stale-banner" role="alert">The current architecture could not be loaded. This earlier view is read-only.</div>}
         {architectureNotice && (
           <div className="workspace-notice" role="alert">
@@ -1189,23 +1312,27 @@ export function App() {
                 ))}
               </nav>
             )}
-            <ArchitectureMap
-              revision={`${activeProjection?.revision ?? result.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
-              components={mapComponents}
-              selectedID={selectedComponentID}
-              onSelect={selectMapNode}
-              emptyMessage={activeDiagram ? 'This diagram has no components.' : undefined}
-              {...(review ? {
-                layoutComponentIDs,
-                reviewSide,
-                reviewComponents: review.comparison.components,
-                reviewRelationships: review.comparison.relationships,
-                reviewDiagramID: activeDiagram?.id,
-                selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
-                onSelectRelationship: selectRelationship,
-              } : {})}
-              externalReferences={externalReferences}
-            />
+            {result.changes && !result.changes.candidate && !review ? (
+              <div className="workspace-empty invalid-proposal-map"><p className="eyebrow">Proposed Architecture</p><h2>Needs correction</h2><p>This proposal has no valid complete Architecture to display. Use its exact authored facts to repair the issue.</p></div>
+            ) : (
+              <ArchitectureMap
+                revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
+                components={mapComponents}
+                selectedID={selectedComponentID}
+                onSelect={selectMapNode}
+                emptyMessage={activeDiagram ? 'This diagram has no components.' : undefined}
+                {...(review ? {
+                  layoutComponentIDs,
+                  reviewSide,
+                  reviewComponents: review.comparison.components,
+                  reviewRelationships: review.comparison.relationships,
+                  reviewDiagramID: activeDiagram?.id,
+                  selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
+                  onSelectRelationship: selectRelationship,
+                } : {})}
+                externalReferences={externalReferences}
+              />
+            )}
           </section>
           <aside className="working-pane" aria-label="Architecture task">
             {review && result.changes ? (
@@ -1240,6 +1367,9 @@ export function App() {
                 })}
                 onReview={() => reviewChanges(result)}
                 onUpdate={() => updateArchitecture(result)}
+                onRename={(name) => renameChangeSet(result, name)}
+                onSaveProposal={(proposal) => saveProposal(result, proposal)}
+                onTextDirty={setChangeSetTextDirty}
                 onBeginDiscard={() => setDiscardConfirming(true)}
                 onCancelDiscard={() => setDiscardConfirming(false)}
                 onDiscard={() => discardChanges(result)}
@@ -1282,6 +1412,9 @@ export function App() {
                 onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
                 onUpdate={() => updateArchitecture(result)}
+                onRename={(name) => renameChangeSet(result, name)}
+                onSaveProposal={(proposal) => saveProposal(result, proposal)}
+                onTextDirty={setChangeSetTextDirty}
                 onBeginDiscard={() => setDiscardConfirming(true)}
                 onCancelDiscard={() => setDiscardConfirming(false)}
                 onDiscard={() => discardChanges(result)}
@@ -1589,6 +1722,9 @@ function ChangesTask({
   onStopShowing,
   onReview,
   onUpdate,
+  onRename,
+  onSaveProposal,
+  onTextDirty,
   onBeginDiscard,
   onCancelDiscard,
   onDiscard,
@@ -1615,13 +1751,16 @@ function ChangesTask({
   onStopShowing?: (diagramID: string, componentID: string) => void
   onReview: () => void
   onUpdate: () => void
+  onRename: (name: string) => void
+  onSaveProposal: (proposal: string) => void
+  onTextDirty: (dirty: boolean) => void
   onBeginDiscard: () => void
   onCancelDiscard: () => void
   onDiscard: () => void
 }) {
   const changes = result.changes
   if (!changes) return null
-  const readOnly = Boolean(result.stale || changes.stale)
+  const readOnly = Boolean(result.stale || changes.stale || changes.read_only)
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field
     ? changes.components.find((component) => component.id === changes.validation_item)
     : undefined
@@ -1632,12 +1771,13 @@ function ChangesTask({
       ?? changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)?.title
     : undefined
   const compositionComponents = changes.candidate?.components ?? result.components
-  const discardAction = !acceptanceUnknown
-    ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Discard changes</button>
+  const discardAction = !acceptanceUnknown && !readOnly && changes.lifecycle === 'active'
+    ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Delete change set</button>
     : null
   if (changes.review && !readOnly && reviewSide && onReviewSide && onClearReviewFocus) {
     return (
       <section className="changes-in-progress review-workspace-pane" aria-labelledby="review-heading">
+        <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
         <div className="review-heading-row">
           <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="review-heading">Review changes</h2></div>
           <div className="review-side-toggle" role="group" aria-label="Review side">
@@ -1688,7 +1828,8 @@ function ChangesTask({
           </dl>
         </details>
         <div className="change-actions">
-          <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>
+          {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
+          {!changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
           {onContinueEditing && <button className="secondary-action" type="button" disabled={busy} onClick={onContinueEditing}>Continue editing</button>}
           {discardAction}
         </div>
@@ -1698,8 +1839,9 @@ function ChangesTask({
   }
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
-      <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="changes-heading">Changes in progress</h2></div>
-      <p>{changes.stale ? 'These changes started from an older architecture and are read-only.' : 'These changes have not updated the architecture yet.'}</p>
+      <div className="pane-heading"><p className="eyebrow">Architecture change set</p><h2 id="changes-heading">{changes.lifecycle === 'applied' ? 'Applied' : 'Proposed'}: {changes.name}</h2></div>
+      <p>{changes.lifecycle === 'applied' ? 'Read-only evidence of the proposal that updated Architecture.' : changes.out_of_date ? 'This proposal keeps its original base and remains editable and reviewable.' : 'This change set has not updated the architecture yet.'}</p>
+      <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
       <ul>
         {changes.components.map((component) => {
           const ownsReviewBlocker = Boolean(changes.review_blocker && changes.validation_item === component.id)
@@ -1797,13 +1939,62 @@ function ChangesTask({
           {!readOnly && changes.review && onReturnToReview && (
             <button className="inline-action" type="button" onClick={onReturnToReview}>Return to review</button>
           )}
-          {!result.stale && !changes.stale && !changes.review && (
+          {!readOnly && changes.lifecycle === 'active' && !changes.review && (
             <button className="inline-action" type="button" disabled={busy} onClick={onReview}>{busy ? 'Preparing…' : 'Review changes'}</button>
           )}
           {discardAction}
         </div>
       )}
       {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
+    </section>
+  )
+}
+
+function ChangeSetContextEditor({
+  changes,
+  busy,
+  readOnly,
+  onRename,
+  onSaveProposal,
+  onDirty,
+}: {
+  changes: ChangesInProgress
+  busy: boolean
+  readOnly: boolean
+  onRename: (name: string) => void
+  onSaveProposal: (proposal: string) => void
+  onDirty: (dirty: boolean) => void
+}) {
+  const [name, setName] = useState(changes.name)
+  const [proposal, setProposal] = useState(changes.proposal_markdown)
+  const dirty = name !== changes.name || proposal !== changes.proposal_markdown
+  useEffect(() => {
+    onDirty(dirty)
+    return () => onDirty(false)
+  }, [dirty, onDirty])
+  return (
+    <section className="change-set-context" aria-label="Change-set context">
+      <dl className="change-set-binding">
+        <dt>Change-set ID</dt><dd>{changes.id}</dd>
+        <dt>Base revision</dt><dd>{changes.base_revision}</dd>
+        <dt>Generation</dt><dd>{changes.generation}</dd>
+        {changes.applied_revision && <><dt>Applied revision</dt><dd>{changes.applied_revision}</dd></>}
+      </dl>
+      {readOnly ? (
+        <section className="proposal-document"><h3>Proposal</h3><MarkdownBody source={changes.proposal_markdown} /></section>
+      ) : (
+        <>
+          <form className="change-set-name-form" onSubmit={(event) => { event.preventDefault(); onRename(name) }}>
+            <label>Change-set name <input value={name} onChange={(event) => setName(event.target.value)} /></label>
+            <button className="secondary-action" type="submit" disabled={busy || name === changes.name}>Rename</button>
+          </form>
+          <form className="proposal-editor" onSubmit={(event) => { event.preventDefault(); onSaveProposal(proposal) }}>
+            <label>Proposal Markdown <textarea rows={8} value={proposal} onChange={(event) => setProposal(event.target.value)} /></label>
+            <button className="secondary-action" type="submit" disabled={busy || proposal === changes.proposal_markdown}>Keep proposal</button>
+          </form>
+          <section className="proposal-document"><h3>Proposal preview</h3><MarkdownBody source={proposal} /></section>
+        </>
+      )}
     </section>
   )
 }
@@ -1887,11 +2078,11 @@ function DiscardChangesDialog({ busy, onCancel, onDiscard }: { busy: boolean; on
   return (
     <div className="navigation-guard" role="dialog" aria-modal="true" aria-labelledby="discard-heading">
       <div className="discard-confirmation">
-        <h2 id="discard-heading">Discard changes?</h2>
-        <p>This clears every change in progress. The accepted architecture will not change.</p>
+        <h2 id="discard-heading">Delete this change set?</h2>
+        <p>This permanently removes this whole active proposal. Accepted Architecture and every other change set stay as they are.</p>
         <div className="button-group">
-          <button className="secondary-action" type="button" onClick={onCancel}>Keep changes</button>
-          <button className="destructive-action" type="button" disabled={busy} onClick={onDiscard}>Discard changes</button>
+          <button className="secondary-action" type="button" onClick={onCancel}>Keep change set</button>
+          <button className="destructive-action" type="button" disabled={busy} onClick={onDiscard}>Delete change set</button>
         </div>
       </div>
     </div>

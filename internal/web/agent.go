@@ -1,11 +1,15 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime"
 	"net/http"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"workbraid/internal/agentapi"
 	"workbraid/internal/architecture"
@@ -39,19 +43,26 @@ type agentValidationProjection struct {
 	DiagramField         string `json:"diagram_field,omitempty"`
 }
 
-type agentPendingProjection struct {
-	BaseRevision   string                                   `json:"base_revision"`
-	Generation     uint64                                   `json:"generation"`
-	Components     []pendingComponentResponse               `json:"components"`
-	NewHomes       []architecture.NewComponentHome          `json:"new_component_homes,omitempty"`
-	DetailDiagrams []architecture.DetailDiagramChange       `json:"detail_diagrams,omitempty"`
-	DiagramTitles  []architecture.DiagramTitleChange        `json:"diagram_titles,omitempty"`
-	HomeMoves      []architecture.ComponentHomeMove         `json:"home_moves,omitempty"`
-	References     []architecture.ReferenceAppearanceChange `json:"references,omitempty"`
-	Candidate      *agentArchitectureProjection             `json:"candidate"`
-	Validation     *agentValidationProjection               `json:"validation"`
-	Stale          bool                                     `json:"stale"`
-	Review         *agentReviewIdentity                     `json:"review"`
+type agentChangeSetProjection struct {
+	ID              string                                   `json:"id"`
+	Name            string                                   `json:"name"`
+	Lifecycle       string                                   `json:"lifecycle"`
+	BaseRevision    string                                   `json:"base_revision"`
+	Generation      uint64                                   `json:"generation"`
+	Proposal        string                                   `json:"proposal_markdown"`
+	AppliedRevision string                                   `json:"applied_revision,omitempty"`
+	Components      []pendingComponentResponse               `json:"components"`
+	NewHomes        []architecture.NewComponentHome          `json:"new_component_homes"`
+	DetailDiagrams  []architecture.DetailDiagramChange       `json:"detail_diagrams"`
+	DiagramTitles   []architecture.DiagramTitleChange        `json:"diagram_titles"`
+	HomeMoves       []architecture.ComponentHomeMove         `json:"home_moves"`
+	References      []architecture.ReferenceAppearanceChange `json:"references"`
+	Valid           bool                                     `json:"valid"`
+	CandidateTree   string                                   `json:"candidate_tree,omitempty"`
+	Candidate       *agentArchitectureProjection             `json:"candidate"`
+	Validation      *agentValidationProjection               `json:"validation"`
+	OutOfDate       bool                                     `json:"out_of_date"`
+	Review          *agentReviewIdentity                     `json:"review"`
 }
 
 type agentReviewIdentity struct {
@@ -60,29 +71,48 @@ type agentReviewIdentity struct {
 	Generation    uint64 `json:"generation"`
 }
 
+type agentUnavailableChangeSet struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Lifecycle string `json:"lifecycle,omitempty"`
+	Reason    string `json:"reason"`
+}
+
 func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/agent/v1/status", h.agentStatus)
-	mux.HandleFunc("GET /api/agent/v1/projects/list", h.agentProjectsList)
-	mux.HandleFunc("GET /api/agent/v1/projects/current", h.agentProjectCurrent)
-	mux.HandleFunc("POST /api/agent/v1/projects/create", h.agentProjectCreate)
-	mux.HandleFunc("POST /api/agent/v1/projects/open", h.agentProjectOpen)
-	mux.HandleFunc("POST /api/agent/v1/projects/close", h.agentProjectClose)
-	mux.HandleFunc("GET /api/agent/v1/architecture/inspect", h.agentArchitectureInspect)
-	mux.HandleFunc("POST /api/agent/v1/architecture/refresh", h.agentArchitectureRefresh)
-	mux.HandleFunc("POST /api/agent/v1/architecture/update", h.agentArchitectureUpdate)
-	mux.HandleFunc("GET /api/agent/v1/changes/inspect", h.agentChangesInspect)
-	mux.HandleFunc("POST /api/agent/v1/changes/review", h.agentChangesReview)
-	mux.HandleFunc("POST /api/agent/v1/changes/discard", h.agentChangesDiscard)
-	mux.HandleFunc("POST /api/agent/v1/components/create", h.agentComponentCreate)
-	mux.HandleFunc("POST /api/agent/v1/components/edit", h.agentComponentEdit)
-	mux.HandleFunc("POST /api/agent/v1/components/move-home", h.agentComponentMoveHome)
-	mux.HandleFunc("POST /api/agent/v1/relationships/add", h.agentRelationshipAdd)
-	mux.HandleFunc("POST /api/agent/v1/relationships/edit", h.agentRelationshipEdit)
-	mux.HandleFunc("POST /api/agent/v1/relationships/remove", h.agentRelationshipRemove)
-	mux.HandleFunc("POST /api/agent/v1/diagrams/create-detail", h.agentDiagramCreateDetail)
-	mux.HandleFunc("POST /api/agent/v1/diagrams/edit-title", h.agentDiagramEditTitle)
-	mux.HandleFunc("POST /api/agent/v1/diagrams/show-component", h.agentDiagramShowComponent)
-	mux.HandleFunc("POST /api/agent/v1/diagrams/stop-showing-component", h.agentDiagramStopShowingComponent)
+	mux.HandleFunc("/api/agent/v1/", h.agentV1Incompatible)
+	mux.HandleFunc("GET /api/agent/v2/status", h.agentStatus)
+	mux.HandleFunc("GET /api/agent/v2/projects/list", h.agentProjectsList)
+	mux.HandleFunc("GET /api/agent/v2/projects/current", h.agentProjectCurrent)
+	mux.HandleFunc("POST /api/agent/v2/projects/create", h.agentProjectCreate)
+	mux.HandleFunc("POST /api/agent/v2/projects/open", h.agentProjectOpen)
+	mux.HandleFunc("POST /api/agent/v2/projects/close", h.agentProjectClose)
+	mux.HandleFunc("GET /api/agent/v2/architecture/inspect", h.agentArchitectureInspect)
+	mux.HandleFunc("POST /api/agent/v2/architecture/refresh", h.agentArchitectureRefresh)
+	mux.HandleFunc("POST /api/agent/v2/architecture/update", h.agentArchitectureUpdate)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/list", h.agentChangeSetsList)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/create", h.agentChangeSetCreate)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/inspect", h.agentChangeSetInspect)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/rename", h.agentChangeSetRename)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/edit-proposal", h.agentChangeSetEditProposal)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/review", h.agentChangeSetReview)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/discard", h.agentChangeSetDiscard)
+	mux.HandleFunc("POST /api/agent/v2/components/create", h.agentComponentCreate)
+	mux.HandleFunc("POST /api/agent/v2/components/edit", h.agentComponentEdit)
+	mux.HandleFunc("POST /api/agent/v2/components/move-home", h.agentComponentMoveHome)
+	mux.HandleFunc("POST /api/agent/v2/relationships/add", h.agentRelationshipAdd)
+	mux.HandleFunc("POST /api/agent/v2/relationships/edit", h.agentRelationshipEdit)
+	mux.HandleFunc("POST /api/agent/v2/relationships/remove", h.agentRelationshipRemove)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/create-detail", h.agentDiagramCreateDetail)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/show-component", h.agentDiagramShowComponent)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/stop-showing-component", h.agentDiagramStopShowingComponent)
+}
+
+func (h *Handler) agentV1Incompatible(response http.ResponseWriter, request *http.Request) {
+	if !h.agentRequestAllowed(response, request, false) {
+		return
+	}
+	h.writeAgentError(response, http.StatusConflict, "incompatible_server", "This server requires the WorkBraid agent v2 change-set protocol.", map[string]any{"protocol": agentapi.Protocol})
 }
 
 func (h *Handler) agentRequestAllowed(response http.ResponseWriter, request *http.Request, body bool) bool {
@@ -106,12 +136,24 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		return zero, false
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBody)
-	decoder := json.NewDecoder(request.Body)
+	contents, err := io.ReadAll(request.Body)
+	if err != nil || !utf8.Valid(contents) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
+		return zero, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	var value T
 	if err := decoder.Decode(&value); err != nil || ensureJSONEnd(decoder) != nil {
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
 		return zero, false
+	}
+	if _, required := any(value).(interface{ RequiresExactGeneration() }); required {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(contents, &fields); err != nil || fields["generation"] == nil {
+			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "The exact change-set generation is required.", map[string]any{"field": "generation"})
+			return zero, false
+		}
 	}
 	return value, true
 }
@@ -127,10 +169,6 @@ func (h *Handler) agentContextLocked() agentapi.Context {
 	context.AuthorityState = "current"
 	if h.loadedStale {
 		context.AuthorityState = "non_current"
-	}
-	if h.pending != nil {
-		generation := h.pending.generation
-		context.PendingGeneration = &generation
 	}
 	return context
 }
@@ -185,10 +223,18 @@ func agentMessage(code string) string {
 		return "The loaded Architecture is not current. Refresh before editing."
 	case "refresh_failed":
 		return "WorkBraid could not determine current accepted Architecture. Retry Refresh explicitly."
-	case "pending_conflict":
-		return "Changes in progress block this action. Inspect or discard them deliberately."
-	case "pending_generation_mismatch":
-		return "Pending work changed. Inspect changes again before editing."
+	case "change_set_not_found":
+		return "That change set was not found. List change sets again."
+	case "change_set_unavailable":
+		return "That change set cannot be loaded. Other change sets and Accepted remain available."
+	case "change_set_name_conflict":
+		return "Another active change set already uses that name. Choose another name."
+	case "change_set_generation_mismatch":
+		return "That change set changed. Inspect it again before editing."
+	case "change_set_not_editable":
+		return "Applied change sets are read-only. Choose an active change set."
+	case "change_set_out_of_date":
+		return "This change set is out of date with Accepted. It can still be edited and reviewed, but not accepted until reconciliation exists."
 	case "target_not_found":
 		return "That Component or Diagram is not in the current Architecture, accepted or pending."
 	case "target_not_eligible":
@@ -266,21 +312,59 @@ func (h *Handler) agentArchitectureInspect(response http.ResponseWriter, request
 	h.writeAgentSuccessLocked(response, http.StatusOK, projection)
 }
 
-func (h *Handler) agentChangesInspect(response http.ResponseWriter, request *http.Request) {
-	if !h.agentRequestAllowed(response, request, false) {
+func (h *Handler) agentChangeSetsList(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetsListRequest](h, response, request)
+	if !ok {
 		return
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if h.loadedSnapshot == nil || h.loadedProject == nil {
-		h.writeAgentErrorLocked(response, http.StatusConflict, "project_not_open", agentMessage("project_not_open"), nil)
+	if h.loadedProject == nil || payload.StoreID != h.loadedProject.storeID {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "project_mismatch", agentMessage("project_mismatch"), nil)
 		return
 	}
-	if h.pending == nil {
-		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"changes": nil})
+	values := make([]agentChangeSetProjection, 0, len(h.changeSets))
+	for _, record := range h.changeSets {
+		values = append(values, h.agentChangeSetProjectionLocked(record))
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].Lifecycle != values[j].Lifecycle {
+			return values[i].Lifecycle < values[j].Lifecycle
+		}
+		if values[i].Name != values[j].Name {
+			return values[i].Name < values[j].Name
+		}
+		return values[i].ID < values[j].ID
+	})
+	unavailable := make([]agentUnavailableChangeSet, len(h.unavailableChangeSets))
+	for index, record := range h.unavailableChangeSets {
+		unavailable[index] = agentUnavailableChangeSet{ID: record.ID, Name: record.Name, Lifecycle: record.Lifecycle, Reason: record.Reason}
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"change_sets": values, "unavailable": unavailable})
+}
+
+func (h *Handler) agentChangeSetInspect(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetInspectRequest](h, response, request)
+	if !ok {
 		return
 	}
-	h.writeAgentSuccessLocked(response, http.StatusOK, h.agentPendingProjectionLocked(h.pending))
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedProject == nil || payload.StoreID != h.loadedProject.storeID {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "project_mismatch", agentMessage("project_mismatch"), nil)
+		return
+	}
+	if record := h.changeSets[payload.ChangeSetID]; record != nil {
+		h.writeAgentSuccessLocked(response, http.StatusOK, h.agentChangeSetProjectionLocked(record))
+		return
+	}
+	for _, record := range h.unavailableChangeSets {
+		if record.ID == payload.ChangeSetID {
+			h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_unavailable", agentMessage("change_set_unavailable"), map[string]any{"change_set_id": payload.ChangeSetID, "reason": record.Reason})
+			return
+		}
+	}
+	h.writeAgentErrorLocked(response, http.StatusNotFound, "change_set_not_found", agentMessage("change_set_not_found"), map[string]any{"change_set_id": payload.ChangeSetID})
 }
 
 func (h *Handler) agentArchitectureProjectionLocked(snapshot architecture.Snapshot) agentArchitectureProjection {
@@ -309,30 +393,37 @@ func (h *Handler) agentArchitectureProjectionLocked(snapshot architecture.Snapsh
 		diagrams[index] = agentDiagramProjection{diagramResponse: diagram, ChildDiagramIDs: children[diagram.ID]}
 	}
 	return agentArchitectureProjection{
-		Project:  agentapi.ProjectContext{StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: h.loadedProject.projectSlug},
+		Project:  agentapi.ProjectContext{StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: snapshot.ProjectSlug()},
 		Revision: snapshot.Revision(), RootDiagramID: snapshot.RootDiagramID(), Components: components, Diagrams: diagrams,
 	}
 }
 
-func (h *Handler) agentPendingProjectionLocked(pending *pendingChangeSet) agentPendingProjection {
+func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agentChangeSetProjection {
 	components := make([]pendingComponentResponse, len(pending.changes))
 	for index, change := range pending.changes {
 		relationships := make([]relationshipResponse, len(change.Relationships))
 		for relationshipIndex, relationship := range change.Relationships {
 			relationships[relationshipIndex] = relationshipResponse{TargetID: relationship.TargetID, Label: relationship.Label}
 		}
-		components[index] = pendingComponentResponse{ID: change.ID, Title: change.Title, Description: change.Description, New: change.New, Relationships: relationships}
+		components[index] = pendingComponentResponse{
+			ID: change.ID, Title: change.Title, Description: change.Description, Path: change.Path, New: change.New,
+			TitleChanged: change.TitleChanged, DescriptionChanged: change.DescriptionChanged,
+			Relationships: relationships, RelationshipsChanged: change.RelationshipsChanged,
+		}
 	}
-	value := agentPendingProjection{
+	value := agentChangeSetProjection{
+		ID: pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,
 		BaseRevision: pending.baseRevision, Generation: pending.generation, Components: components,
-		NewHomes:       append([]architecture.NewComponentHome(nil), pending.newComponentHomes...),
-		DetailDiagrams: append([]architecture.DetailDiagramChange(nil), pending.detailDiagrams...),
-		DiagramTitles:  append([]architecture.DiagramTitleChange(nil), pending.diagramTitles...),
-		HomeMoves:      append([]architecture.ComponentHomeMove(nil), pending.homeMoves...),
-		References:     append([]architecture.ReferenceAppearanceChange(nil), pending.references...), Stale: pending.stale,
+		NewHomes:       append([]architecture.NewComponentHome{}, pending.newComponentHomes...),
+		DetailDiagrams: append([]architecture.DetailDiagramChange{}, pending.detailDiagrams...),
+		DiagramTitles:  append([]architecture.DiagramTitleChange{}, pending.diagramTitles...),
+		HomeMoves:      append([]architecture.ComponentHomeMove{}, pending.homeMoves...),
+		References:     append([]architecture.ReferenceAppearanceChange{}, pending.references...), OutOfDate: pending.lifecycle == "active" && h.loadedSnapshot != nil && pending.baseRevision != h.loadedSnapshot.Revision(),
 	}
 	if pending.candidate != nil {
 		candidate := h.agentArchitectureProjectionLocked(pending.candidate.Snapshot())
+		value.Valid = true
+		value.CandidateTree = pending.candidate.Tree()
 		value.Candidate = &candidate
 	}
 	if pending.validationCode != "" {
@@ -356,22 +447,20 @@ func (h *Handler) checkAgentStateLocked(expected agentapi.StatePreconditions) (a
 		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "project_mismatch", Message: agentMessage("project_mismatch"), Details: map[string]any{"expected_store_id": expected.StoreID, "current_store_id": h.loadedProject.storeID}}
 	}
 	snapshot := *h.loadedSnapshot
-	if h.loadedStale || expected.AcceptedRevision == "" || expected.AcceptedRevision != snapshot.Revision() {
-		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{"expected_revision": expected.AcceptedRevision, "loaded_revision": snapshot.Revision()}}
+	if h.loadedStale {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{"loaded_revision": snapshot.Revision()}}
 	}
-	if (expected.PendingGeneration == nil) != (h.pending == nil) || (expected.PendingGeneration != nil && h.pending != nil && *expected.PendingGeneration != h.pending.generation) {
-		details := map[string]any{"expected_generation": expected.PendingGeneration}
-		if h.pending == nil {
-			details["current_generation"] = nil
-		} else {
-			details["current_generation"] = h.pending.generation
-		}
-		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "pending_generation_mismatch", Message: agentMessage("pending_generation_mismatch"), Details: details}
+	record := h.changeSets[expected.ChangeSetID]
+	if record == nil {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_not_found", Message: agentMessage("change_set_not_found"), Details: map[string]any{"change_set_id": expected.ChangeSetID}}
 	}
-	if h.pending != nil && (h.pending.stale || h.pending.storeID != snapshot.StoreID() || h.pending.baseRevision != snapshot.Revision()) {
-		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{}}
+	if record.lifecycle != "active" {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_not_editable", Message: agentMessage("change_set_not_editable"), Details: map[string]any{"change_set_id": expected.ChangeSetID, "lifecycle": record.lifecycle}}
 	}
-	return snapshot, h.pending, nil
+	if record.generation != expected.Generation {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_generation_mismatch", Message: agentMessage("change_set_generation_mismatch"), Details: map[string]any{"change_set_id": expected.ChangeSetID, "expected_generation": expected.Generation, "current_generation": record.generation}}
+	}
+	return record.baseSnapshot, clonePending(record), nil
 }
 
 func (h *Handler) writeAgentDomainErrorLocked(response http.ResponseWriter, status int, err *agentapi.Error) {
@@ -382,7 +471,7 @@ func agentDomainErrorStatus(err *agentapi.Error) int {
 	switch err.Code {
 	case "invalid_request":
 		return http.StatusBadRequest
-	case "target_not_found":
+	case "target_not_found", "change_set_not_found":
 		return http.StatusNotFound
 	default:
 		return http.StatusConflict
@@ -393,7 +482,8 @@ func agentMutationResult(pending *pendingChangeSet, values map[string]any) map[s
 	if values == nil {
 		values = map[string]any{}
 	}
-	values["pending_generation"] = pending.generation
+	values["change_set_id"] = pending.id
+	values["generation"] = pending.generation
 	values["candidate_valid"] = pending.candidate != nil
 	if pending.validationCode != "" {
 		values["validation_code"] = pending.validationCode
@@ -426,6 +516,123 @@ func exactOccurrence(values []architecture.AuthoringRelationship, target, label 
 	return -1
 }
 
+func (h *Handler) agentChangeSetCreate(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetCreateRequest](h, response, request)
+	if !ok {
+		return
+	}
+	if payload.Name != nil && (strings.TrimSpace(*payload.Name) == "" || strings.ContainsAny(*payload.Name, "\r\n")) {
+		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "A supplied change-set name must be non-empty and fit on one line.", map[string]any{"field": "name"})
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	if h.loadedSnapshot == nil || h.loadedProject == nil || payload.StoreID != h.loadedProject.storeID {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "project_mismatch", agentMessage("project_mismatch"), nil)
+		return
+	}
+	if h.loadedStale || payload.AcceptedRevision != h.loadedSnapshot.Revision() {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "architecture_non_current", agentMessage("architecture_non_current"), map[string]any{"expected_revision": payload.AcceptedRevision, "loaded_revision": h.loadedSnapshot.Revision()})
+		return
+	}
+	name := ""
+	if payload.Name != nil {
+		name = *payload.Name
+	}
+	id, selectedName, err := h.architecture.NewChangeSet(h.existingDurableChangeSetsLocked(), name)
+	if err != nil {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_name_conflict", agentMessage("change_set_name_conflict"), nil)
+		return
+	}
+	base := *h.loadedSnapshot
+	candidate, err := h.architecture.ConstructCandidate(request.Context(), base, nil, architecture.CandidateComposition{})
+	if err != nil {
+		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	record := &pendingChangeSet{id: id, name: selectedName, lifecycle: "active", storeID: base.StoreID(), baseRevision: base.Revision(), baseSnapshot: base, candidate: &candidate}
+	if !h.persistActiveLocked(request.Context(), record, "") {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusCreated, h.agentChangeSetProjectionLocked(record))
+}
+
+func (h *Handler) agentChangeSetRename(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetRenameRequest](h, response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	_, current, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, agentDomainErrorStatus(stateErr), stateErr)
+		return
+	}
+	name := strings.TrimSpace(payload.Name)
+	if architecture.ValidateChangeSetName(name) != nil {
+		h.writeAgentErrorLocked(response, http.StatusBadRequest, "invalid_request", "The change-set name must be non-empty and fit on one line.", nil)
+		return
+	}
+	for id, record := range h.changeSets {
+		if id != current.id && record.lifecycle == "active" && strings.EqualFold(record.name, name) {
+			h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_name_conflict", agentMessage("change_set_name_conflict"), nil)
+			return
+		}
+	}
+	for _, record := range h.unavailableChangeSets {
+		if record.Lifecycle == "active" && record.Name != "" && strings.EqualFold(record.Name, name) {
+			h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_name_conflict", agentMessage("change_set_name_conflict"), nil)
+			return
+		}
+	}
+	if current.name == name {
+		h.writeAgentSuccessLocked(response, http.StatusOK, h.agentChangeSetProjectionLocked(h.changeSets[current.id]))
+		return
+	}
+	current.name, current.review = name, nil
+	current.generation++
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, current) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, h.agentChangeSetProjectionLocked(current))
+}
+
+func (h *Handler) agentChangeSetEditProposal(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetEditProposalRequest](h, response, request)
+	if !ok {
+		return
+	}
+	h.stateMutex.Lock()
+	defer h.stateMutex.Unlock()
+	_, current, stateErr := h.checkAgentStateLocked(payload.StatePreconditions)
+	if stateErr != nil {
+		h.writeAgentDomainErrorLocked(response, agentDomainErrorStatus(stateErr), stateErr)
+		return
+	}
+	if current.proposal == payload.ProposalMarkdown {
+		h.writeAgentSuccessLocked(response, http.StatusOK, h.agentChangeSetProjectionLocked(h.changeSets[current.id]))
+		return
+	}
+	current.proposal, current.review = payload.ProposalMarkdown, nil
+	current.generation++
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, current) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
+	h.writeAgentSuccessLocked(response, http.StatusOK, h.agentChangeSetProjectionLocked(current))
+}
+
+func (h *Handler) persistAgentMutationLocked(ctx context.Context, currentID string, proposed *pendingChangeSet) bool {
+	current := h.changeSetLocked(currentID)
+	if current == nil {
+		return false
+	}
+	return h.persistActiveLocked(ctx, proposed, current.refObject)
+}
+
 func (h *Handler) agentProjectCreate(response http.ResponseWriter, request *http.Request) {
 	payload, ok := decodeAgentRequest[agentapi.ProjectCreateRequest](h, response, request)
 	if !ok {
@@ -442,9 +649,6 @@ func (h *Handler) agentProjectCreate(response http.ResponseWriter, request *http
 	var envelope agentapi.Envelope
 	if code != "" {
 		status = http.StatusInternalServerError
-		if code == errorPendingBlocksSwitch {
-			status = http.StatusConflict
-		}
 		envelope = h.mappedAgentErrorEnvelopeLocked(code)
 	} else {
 		envelope = h.agentSuccessEnvelopeLocked(map[string]any{
@@ -530,10 +734,10 @@ func (h *Handler) mappedAgentErrorLocked(code string) *agentapi.Error {
 		} else {
 			mapped = "project_mismatch"
 		}
-	case errorPendingBlocksSwitch, errorChangesUnavailable:
-		mapped = "pending_conflict"
+	case errorChangesUnavailable:
+		mapped = "unsupported_action"
 	case errorChangesElsewhere:
-		mapped = "pending_generation_mismatch"
+		mapped = "change_set_generation_mismatch"
 	case errorArchitectureStale, errorRefreshChanged, errorRefreshUnavailable, errorRefreshInvalid, errorRefreshUnsupported:
 		mapped = "architecture_non_current"
 		if code != errorArchitectureStale {
@@ -595,23 +799,19 @@ func (h *Handler) agentArchitectureRefresh(response http.ResponseWriter, request
 	writeJSON(response, status, envelope)
 }
 
-func (h *Handler) agentChangesReview(response http.ResponseWriter, request *http.Request) {
-	payload, ok := decodeAgentRequest[agentapi.ChangesReviewRequest](h, response, request)
+func (h *Handler) agentChangeSetReview(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetReviewRequest](h, response, request)
 	if !ok {
 		return
 	}
-	if payload.PendingGeneration == nil || *payload.PendingGeneration != payload.Generation {
-		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Review requires the exact inspected pending generation.", nil)
-		return
-	}
+	generation := payload.Generation
 	h.stateMutex.Lock()
 	slug := ""
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
 	}
 	result, code, status := h.reviewChangesLocked(request.Context(), architectureActionRequest{
-		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedRevision: payload.AcceptedRevision, ExpectedGeneration: payload.PendingGeneration,
-		PendingGenerationObserved: true,
+		ProjectSlug: slug, StoreID: payload.StoreID, ChangeSetID: payload.ChangeSetID, ExpectedGeneration: &generation, PendingGenerationObserved: true,
 	})
 	h.runBeforeAgentResultCaptureLocked()
 	var envelope agentapi.Envelope
@@ -638,8 +838,8 @@ func (h *Handler) agentChangesReview(response http.ResponseWriter, request *http
 	writeJSON(response, status, envelope)
 }
 
-func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *http.Request) {
-	payload, ok := decodeAgentRequest[agentapi.ChangesDiscardRequest](h, response, request)
+func (h *Handler) agentChangeSetDiscard(response http.ResponseWriter, request *http.Request) {
+	payload, ok := decodeAgentRequest[agentapi.ChangeSetDiscardRequest](h, response, request)
 	if !ok {
 		return
 	}
@@ -649,8 +849,8 @@ func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *htt
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
 	}
-	_, code := h.discardChangesLocked(architectureActionRequest{
-		ProjectSlug: slug, StoreID: payload.StoreID, ExpectedGeneration: &generation, PendingGenerationObserved: true,
+	_, code := h.discardChangesLocked(request.Context(), architectureActionRequest{
+		ProjectSlug: slug, StoreID: payload.StoreID, ChangeSetID: payload.ChangeSetID, ExpectedGeneration: &generation, PendingGenerationObserved: true,
 	})
 	h.runBeforeAgentResultCaptureLocked()
 	status := http.StatusOK
@@ -659,7 +859,7 @@ func (h *Handler) agentChangesDiscard(response http.ResponseWriter, request *htt
 		status = http.StatusConflict
 		envelope = h.mappedAgentErrorEnvelopeLocked(code)
 	} else {
-		envelope = h.agentSuccessEnvelopeLocked(map[string]any{"discarded_generation": payload.Generation})
+		envelope = h.agentSuccessEnvelopeLocked(map[string]any{"change_set_id": payload.ChangeSetID, "discarded_generation": payload.Generation})
 	}
 	h.stateMutex.Unlock()
 	writeJSON(response, status, envelope)
@@ -670,7 +870,7 @@ func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request 
 	if !ok {
 		return
 	}
-	if !requireNonEmpty(payload.StoreID, payload.BaseRevision, payload.CandidateTree) {
+	if !requireNonEmpty(payload.StoreID, payload.ChangeSetID, payload.BaseRevision, payload.CandidateTree) {
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Store ID and exact review binding are required.", nil)
 		return
 	}
@@ -679,23 +879,35 @@ func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request 
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
 	}
+	wasOutOfDate := false
+	if record := h.changeSets[payload.ChangeSetID]; record != nil && h.loadedSnapshot != nil {
+		wasOutOfDate = record.lifecycle == "active" && record.baseRevision != h.loadedSnapshot.Revision()
+	}
 	result, code, status, casConflict := h.acceptChangesLocked(acceptChangesRequest{
-		ProjectSlug: slug, StoreID: payload.StoreID, BaseRevision: payload.BaseRevision, CandidateTree: payload.CandidateTree, Generation: payload.Generation,
+		ProjectSlug: slug, StoreID: payload.StoreID, ChangeSetID: payload.ChangeSetID, BaseRevision: payload.BaseRevision, CandidateTree: payload.CandidateTree, Generation: payload.Generation,
 	})
 	h.runBeforeAgentResultCaptureLocked()
 	var envelope agentapi.Envelope
 	if code != "" {
 		if code == errorArchitectureStale && casConflict {
-			envelope = h.agentErrorEnvelopeLocked("accepted_conflict", agentMessage("accepted_conflict"), nil)
+			classification := "accepted_conflict"
+			if wasOutOfDate {
+				classification = "change_set_out_of_date"
+			}
+			envelope = h.agentErrorEnvelopeLocked(classification, agentMessage(classification), map[string]any{"change_set_id": payload.ChangeSetID})
 		} else if code == errorReviewFailed {
 			envelope = h.agentErrorEnvelopeLocked("review_required", agentMessage("review_required"), nil)
 		} else {
 			envelope = h.mappedAgentErrorEnvelopeLocked(code)
 		}
 	} else {
+		publication := "published"
+		if result.AlreadyApplied {
+			publication = "already_applied"
+		}
 		envelope = h.agentSuccessEnvelopeLocked(map[string]any{
-			"base_revision": payload.BaseRevision, "candidate_tree": payload.CandidateTree, "generation": payload.Generation,
-			"accepted_revision": result.Revision, "publication": "published", "parent_diff": result.ParentDiff,
+			"change_set_id": payload.ChangeSetID, "base_revision": payload.BaseRevision, "candidate_tree": payload.CandidateTree, "generation": payload.Generation,
+			"accepted_revision": result.Revision, "publication": publication, "parent_diff": result.ParentDiff,
 		})
 	}
 	h.stateMutex.Unlock()
@@ -742,6 +954,10 @@ func (h *Handler) agentComponentCreate(response http.ResponseWriter, request *ht
 		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
 		return
 	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": change.ID, "home_diagram_id": homeDiagramID}))
 }
 
@@ -767,19 +983,27 @@ func (h *Handler) agentComponentEdit(response http.ResponseWriter, request *http
 		return
 	}
 	changedFields := make([]string, 0, 2)
-	if payload.Title != nil {
+	if payload.Title != nil && change.Title != strings.TrimSpace(*payload.Title) {
 		change.Title = strings.TrimSpace(*payload.Title)
 		change.TitleChanged = true
 		changedFields = append(changedFields, "title")
 	}
-	if payload.Description != nil {
+	if payload.Description != nil && change.Description != normalizeAuthoredDescription(*payload.Description) {
 		change.Description = normalizeAuthoredDescription(*payload.Description)
 		change.DescriptionChanged = true
 		changedFields = append(changedFields, "description")
 	}
+	if len(changedFields) == 0 {
+		h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "changed_fields": changedFields, "unchanged": true}))
+		return
+	}
 	pending = h.keepComponentChangeLocked(request.Context(), snapshot, pending, change, index)
 	if pendingOperationFailed(pending) {
 		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "changed_fields": changedFields}))
@@ -823,6 +1047,10 @@ func (h *Handler) agentRelationshipAdd(response http.ResponseWriter, request *ht
 		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
 		return
 	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"source_id": payload.SourceID, "target_id": payload.TargetID, "label": payload.Label,
 	}))
@@ -852,10 +1080,20 @@ func (h *Handler) agentRelationshipEdit(response http.ResponseWriter, request *h
 		return
 	}
 	old := change.Relationships[selected]
+	if old.TargetID == payload.TargetID && old.Label == payload.Label {
+		h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
+			"source_id": payload.SourceID, "unchanged": true,
+		}))
+		return
+	}
 	change.Relationships[selected] = architecture.AuthoringRelationship{TargetID: payload.TargetID, Label: payload.Label}
 	pending = h.commitRelationshipChangeLocked(request.Context(), snapshot, pending, change, index)
 	if pendingOperationFailed(pending) {
 		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
+		return
+	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
@@ -894,6 +1132,10 @@ func (h *Handler) agentRelationshipRemove(response http.ResponseWriter, request 
 		h.writeAgentErrorLocked(response, http.StatusInternalServerError, "operation_failed", agentMessage("operation_failed"), nil)
 		return
 	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"source_id": payload.SourceID, "removed": map[string]any{"target_id": payload.TargetID, "label": payload.Label, "occurrence": payload.Occurrence},
 	}))
@@ -926,6 +1168,10 @@ func (h *Handler) agentDiagramCreateDetail(response http.ResponseWriter, request
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), map[string]any{"component_id": payload.ComponentID})
 		return
 	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
+		return
+	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{
 		"diagram_id": addition.ID, "anchor_component_id": payload.ComponentID, "parent_diagram_id": homeDiagramID, "title": payload.Title,
 	}))
@@ -947,13 +1193,21 @@ func (h *Handler) agentDiagramEditTitle(response http.ResponseWriter, request *h
 		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
 		return
 	}
-	pending, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title)
+	pending, unchanged, operationError := h.editDiagramTitleLocked(request.Context(), snapshot, pending, payload.DiagramID, payload.Title)
 	if operationError != "" {
 		status := http.StatusNotFound
 		if operationError == changeOperationFailed {
 			status = http.StatusInternalServerError
 		}
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), map[string]any{"diagram_id": payload.DiagramID})
+		return
+	}
+	if unchanged {
+		h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"diagram_id": payload.DiagramID, "title": payload.Title, "unchanged": true}))
+		return
+	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"diagram_id": payload.DiagramID, "title": payload.Title}))
@@ -987,15 +1241,11 @@ func (h *Handler) agentComponentMoveHome(response http.ResponseWriter, request *
 		return
 	}
 	if unchanged {
-		generation := any(nil)
-		if pending != nil {
-			generation = pending.generation
-		}
-		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID, "pending_generation": generation, "unchanged": true})
+		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"change_set_id": payload.ChangeSetID, "component_id": payload.ComponentID, "diagram_id": payload.DiagramID, "generation": payload.Generation, "unchanged": true})
 		return
 	}
-	if pending == nil {
-		h.writeAgentSuccessLocked(response, http.StatusOK, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID, "pending_generation": nil})
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{"component_id": payload.ComponentID, "diagram_id": payload.DiagramID}))
@@ -1034,6 +1284,10 @@ func (h *Handler) agentChangeReference(response http.ResponseWriter, request *ht
 			status = http.StatusInternalServerError
 		}
 		h.writeAgentErrorLocked(response, status, operationError, agentMessage(operationError), nil)
+		return
+	}
+	if !h.persistAgentMutationLocked(request.Context(), payload.ChangeSetID, pending) {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "change_set_generation_mismatch", agentMessage("change_set_generation_mismatch"), nil)
 		return
 	}
 	h.writeAgentSuccessLocked(response, http.StatusOK, agentMutationResult(pending, map[string]any{

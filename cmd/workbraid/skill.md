@@ -1,17 +1,17 @@
 # WorkBraid Architecture agent guide
 
-WorkBraid keeps accepted Architecture as documented Components, Relationships, and nested Diagrams. One running WorkBraid server is the only authority for the current project, accepted revision, pending changes, review, and update. CLI and MCP commands are loopback clients of that process. Never edit WorkBraid's private Git stores or canonical YAML directly.
+WorkBraid has one Accepted Architecture and durable, named, independent change sets. The running loopback WorkBraid process is the only authority for the current project, Accepted revision, change-set records, review, and update. CLI and MCP are thin clients of that process. Never open the private Git store or edit canonical YAML directly.
 
-Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` supplies the server URL when `--server` is absent. Global flags always precede the command. The CLI does not start WorkBraid. Start with `status`; on `connection_failed`, the operator must start the WorkBraid server separately or correct its configured URL. Never open a store directly as a substitute.
+Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` supplies the URL when `--server` is absent. Global flags precede the command. Start with `status`; `connection_failed` means the operator must start WorkBraid or correct the URL.
 
-## Identity and safe state
+## Identity and exact state
 
-- A project slug locates a catalog entry. Its store UUID is the exact project identity.
-- Component and Diagram titles are labels; use their stable IDs for authoring.
-- `architecture inspect` returns the accepted revision, exact Markdown, Diagram tree, homes, reusable references, Relationships, and boundary context.
-- `changes inspect` returns the one pending base, generation, raw authored rows, validation, candidate when valid, and current review identity.
-- Every authoring command requires `--store-id`, `--accepted-revision`, and `--generation`. Use `--generation none` only when inspection reported no pending set. After every mutation, use the returned generation or inspect again.
-- Copy `store_id`, `accepted_revision` or `revision`, `pending_generation`, and every created Component or Diagram ID from each JSON result into later commands. Never invent IDs.
+- A project slug locates a catalog entry; its store UUID is project identity.
+- Accepted Architecture is singular. `architecture inspect` returns its exact revision, Components, Relationships, Diagram hierarchy, homes, references, and IDs.
+- A change-set UUID is proposal identity. Its mutable name is display text only. Never select by name.
+- `change-set list --store-id <uuid>` returns active, applied, and unavailable records. `change-set inspect` returns one exact record: lifecycle, name, original base, generation, proposal Markdown, concrete facts, validity, candidate, review, out-of-date state, and applied revision.
+- Every structured proposal mutation supplies the exact `store_id`, `change_set_id`, and that record's `generation`. After a successful mutation, use its returned generation or inspect that exact ID again.
+- Copy stable IDs and review fields from results. Never invent IDs or infer one proposal from browser selection.
 
 ## Commands
 
@@ -26,18 +26,25 @@ workbraid project open --slug <slug>
 workbraid project close --store-id <uuid>
 ```
 
-Reads, Refresh, review, discard, and deliberate update:
+Accepted and change-set reads:
 
 ```text
 workbraid architecture inspect
 workbraid architecture refresh --store-id <uuid> --accepted-revision <sha>
-workbraid changes inspect
-workbraid changes review --store-id <uuid> --accepted-revision <sha> --generation <n>
-workbraid changes discard --store-id <uuid> --generation <n>
-workbraid architecture update --store-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
+workbraid change-set list --store-id <uuid>
+workbraid change-set create --store-id <uuid> --accepted-revision <sha> [--name <text>]
+workbraid change-set inspect --store-id <uuid> --change-set-id <uuid>
 ```
 
-`changes review` validates and returns the complete unified diff, immutable Before/With projections, comparison context, and exact base/tree/generation binding. Inspect it. `architecture update` accepts only that exact binding; there is no force, accept-latest, automatic review, or combined mutate-and-accept command. Continue editing by inspecting and using another structured mutation; this invalidates the old review. Discard removes the entire pending set only and requires its exact generation.
+Change-set context:
+
+```text
+workbraid change-set rename <state> --name <text>
+workbraid change-set edit-proposal <state> (--proposal <markdown>|--proposal-file <path|->)
+workbraid change-set review <state>
+workbraid change-set discard <state>
+workbraid architecture update --store-id <uuid> --change-set-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
+```
 
 Structured authoring:
 
@@ -54,47 +61,54 @@ workbraid diagram show-component <state> --diagram-id <uuid> --component-id <uui
 workbraid diagram stop-showing-component <state> --diagram-id <uuid> --component-id <uuid>
 ```
 
-Here `<state>` means `--store-id <uuid> --accepted-revision <sha> --generation <n|none>`. Pass `--diagram-id` when Component creation has a known Diagram context; omission deliberately uses the root. File values are read as exact UTF-8; `-` reads stdin. Literal and file forms are mutually exclusive. Relationship edit/remove selects source ID plus exact raw old target, exact raw old label, and the one-based occurrence among identical raw pairs. Empty selector values are valid when the flag is explicitly present, so malformed or incomplete pending rows can be repaired without Discard.
+Here `<state>` is `--store-id <uuid> --change-set-id <uuid> --generation <n>`. Component creation may omit `--diagram-id` only for deliberate root fallback. File values are exact UTF-8; `-` reads stdin; literal and file forms are mutually exclusive. Relationship edit/remove uses the exact raw source/target/label plus one-based occurrence. Empty or malformed raw selectors remain valid inputs so invalid rows can be repaired without deleting the change set.
+
+Creation starts at generation 0 with a valid candidate equal to its exact Accepted base. Rename, proposal edit, and semantic edits increment only that change set and invalidate only its Review. `change-set review` returns the complete unified Architecture diff, Before/With projections, and exact ID/base/tree/generation binding. `architecture update` accepts only that binding. There is no force, accept-latest, automatic review, rebase, merge, or combined mutate-and-accept action.
+
+An out-of-date active change set keeps its original base, remains editable and reviewable, and cannot update Accepted. Reconciliation is a future product. Applied change sets are immutable evidence. Discard deletes one whole active change set at its exact generation and changes neither Accepted nor any other record.
 
 ## Recovery by error code
 
-- `invalid_request`: correct missing/malformed flags or schema fields; empty raw Relationship selectors are valid only when their flag is explicitly present.
+- `invalid_request`: correct missing or malformed fields. All mutation state fields are required.
 - `connection_failed`: start/check the configured server; do not access application data.
-- `incompatible_server`: use matching WorkBraid client/server binaries.
-- `project_not_found`: list the catalog, then use the exact slug or create deliberately.
-- `project_conflict`, `project_unavailable`: do not select or bypass the store; resolve the catalog conflict or invalid accepted Architecture outside this agent workflow.
-- `project_not_open`, `project_mismatch`: run `project current`, list/open deliberately, then inspect.
-- `pending_generation_mismatch`: run `changes inspect` and retry with its exact generation.
-- `architecture_non_current`, `accepted_conflict`: Refresh, inspect accepted and preserved pending state, then decide whether to discard. WorkBraid does not reconcile.
-- `refresh_failed`: authority could not be determined; preserve prior knowledge and retry Refresh explicitly.
-- `target_not_found`: inspect accepted and pending Architecture for the current stable ID or exact raw selector.
-- `target_not_eligible`: inspect the current Architecture and choose an allowed Component or Diagram target.
-- `validation_blocked`: use the returned stable location and raw pending values to correct the structured row.
-- `review_required`: inspect changes and run Review before Update.
-- `review_invalidated`: this Review is no longer valid; inspect changes, then Review again.
-- `acceptance_uncertain`: inspect/Refresh before any retry.
-- `accepted_reload_required`: Architecture was already accepted; do not run Update again; Refresh or reopen to load the accepted result.
-- `pending_conflict`: inspect pending work and discard the whole set only when deliberate.
-- `unsupported_action`: the requested semantic action is outside this Architecture version; do not use raw Git/YAML as a substitute.
-- `operation_failed`: inspect current state before retrying.
+- `incompatible_server`: use matching WorkBraid v2 client/server binaries.
+- `project_not_found`: list projects, then use the exact slug or create deliberately.
+- `project_conflict`, `project_unavailable`: do not bypass the catalog or store authority.
+- `project_not_open`, `project_mismatch`: inspect/open the intended project, then inspect again.
+- `change_set_not_found`: list change sets for the exact store and copy the UUID.
+- `change_set_unavailable`: the record is malformed; Accepted and other records remain usable.
+- `change_set_name_conflict`: choose a different active name.
+- `change_set_generation_mismatch`: inspect that exact change-set ID and retry from its current generation.
+- `change_set_not_editable`: the record is applied and read-only.
+- `change_set_out_of_date`: keep editing/reviewing against its original base or wait for a future reconciliation capability; do not retry Update.
+- `architecture_non_current`, `accepted_conflict`: Refresh and inspect Accepted plus the preserved change sets. WorkBraid does not reconcile.
+- `refresh_failed`: authority is indeterminate; preserve prior knowledge and retry Refresh explicitly.
+- `target_not_found`: inspect Accepted and the addressed change set for stable IDs or the exact raw selector.
+- `target_not_eligible`: choose an allowed target from the inspected proposal context.
+- `validation_blocked`: use the returned stable location and raw values to repair the addressed change set.
+- `review_required`: inspect and Review the exact current generation.
+- `review_invalidated`: inspect, then Review again.
+- `acceptance_uncertain`: inspect/list/Refresh before any retry; an applied record is the durable receipt.
+- `accepted_reload_required`: acceptance succeeded; do not Update again. Refresh or reopen.
+- `unsupported_action`: do not substitute raw Git/YAML operations.
+- `operation_failed`: inspect current authoritative state before retrying.
 
 ## Small JSON workflow
 
-Each line below uses values copied from the preceding JSON results: project identity and revision, the latest pending generation, created Component and Diagram IDs, and the exact Review fields. Do not invent placeholder values in a real run.
+Every value below is copied from the preceding JSON result:
 
 ```text
 workbraid --json project create --name "Agent example"
 workbraid --json architecture inspect
-workbraid --json component create --store-id <store> --accepted-revision <revision> --generation none --diagram-id <root> --title Gateway --description "Entry point"
-workbraid --json component create --store-id <store> --accepted-revision <revision> --generation 1 --diagram-id <root> --title Worker
-workbraid --json relationship add --store-id <store> --accepted-revision <revision> --generation 2 --source-id <gateway> --target-id <worker> --label calls
-workbraid --json diagram create-detail --store-id <store> --accepted-revision <revision> --generation 3 --component-id <gateway> --title Runtime
-workbraid --json component move-home --store-id <store> --accepted-revision <revision> --generation 4 --component-id <worker> --diagram-id <runtime>
-workbraid --json diagram show-component --store-id <store> --accepted-revision <revision> --generation 5 --diagram-id <runtime> --component-id <gateway>
-workbraid --json changes inspect
-workbraid --json changes review --store-id <store> --accepted-revision <revision> --generation 6
-workbraid --json architecture update --store-id <store> --base-revision <review-base> --candidate-tree <review-tree> --generation 6
+workbraid --json change-set create --store-id <store> --accepted-revision <revision> --name "Gateway proposal"
+workbraid --json change-set edit-proposal --store-id <store> --change-set-id <change> --generation 0 --proposal "# Gateway proposal"
+workbraid --json component create --store-id <store> --change-set-id <change> --generation 1 --diagram-id <root> --title Gateway --description "Entry point"
+workbraid --json component create --store-id <store> --change-set-id <change> --generation 2 --diagram-id <root> --title Worker
+workbraid --json relationship add --store-id <store> --change-set-id <change> --generation 3 --source-id <gateway> --target-id <worker> --label calls
+workbraid --json change-set inspect --store-id <store> --change-set-id <change>
+workbraid --json change-set review --store-id <store> --change-set-id <change> --generation 4
+workbraid --json architecture update --store-id <store> --change-set-id <change> --base-revision <review-base> --candidate-tree <review-tree> --generation 4
 workbraid --json architecture inspect
 ```
 
-For MCP clients, launch `workbraid [--server <loopback-url>] mcp`. Its typed tools implement these same reads, preconditions, review, and update against the same process-wide current project.
+For MCP, launch `workbraid [--server <loopback-url>] mcp`. Its typed tools implement the same explicit records and exact preconditions against the same running process.

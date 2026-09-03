@@ -297,19 +297,19 @@ func ensureDiagramBoundary(projection *DiagramProjection, existing map[uuid.UUID
 // AuthoringComponent is the structured projection used by the local browser.
 // Canonical Markdown interpretation remains owned by the accepted loader.
 type AuthoringComponent struct {
-	ID            string
-	Title         string
-	Description   string
-	Filename      string
-	Relationships []AuthoringRelationship
+	ID            string                  `json:"id"`
+	Title         string                  `json:"title"`
+	Description   string                  `json:"description"`
+	Filename      string                  `json:"filename"`
+	Relationships []AuthoringRelationship `json:"relationships"`
 }
 
 // AuthoringRelationship is the accepted browser projection of an authored
 // outgoing relationship. Its slice order is retained for faithful
 // representation only and has no domain meaning.
 type AuthoringRelationship struct {
-	TargetID string
-	Label    string
+	TargetID string `json:"target_id" yaml:"target"`
+	Label    string `json:"label" yaml:"label"`
 }
 
 func (snapshot Snapshot) AuthoringComponents() []AuthoringComponent {
@@ -360,64 +360,64 @@ func (snapshot Snapshot) ChangeForAcceptedComponent(id string) (ComponentChange,
 // Architecture change set. Its path and identity are assigned by the backend,
 // never by browser input.
 type ComponentChange struct {
-	ID                   string
-	Title                string
-	Description          string
-	Path                 string
-	New                  bool
-	TitleChanged         bool
-	DescriptionChanged   bool
-	Relationships        []AuthoringRelationship
-	RelationshipsChanged bool
+	ID                   string                  `json:"id" yaml:"id"`
+	Title                string                  `json:"title" yaml:"title"`
+	Description          string                  `json:"description" yaml:"description"`
+	Path                 string                  `json:"path" yaml:"path"`
+	New                  bool                    `json:"new" yaml:"new"`
+	TitleChanged         bool                    `json:"title_changed" yaml:"title_changed"`
+	DescriptionChanged   bool                    `json:"description_changed" yaml:"description_changed"`
+	Relationships        []AuthoringRelationship `json:"relationships" yaml:"relationships"`
+	RelationshipsChanged bool                    `json:"relationships_changed" yaml:"relationships_changed"`
 }
 
 // CandidateComposition is the minimum concrete non-Component input to the
 // one candidate-construction path. The owning pending Architecture change set
 // supplies it alongside its Component edits.
 type CandidateComposition struct {
-	NewComponentHomes []NewComponentHome
-	DetailDiagrams    []DetailDiagramChange
-	DiagramTitles     []DiagramTitleChange
-	HomeMoves         []ComponentHomeMove
-	References        []ReferenceAppearanceChange
+	NewComponentHomes []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
+	DetailDiagrams    []DetailDiagramChange       `json:"detail_diagrams" yaml:"detail_diagrams"`
+	DiagramTitles     []DiagramTitleChange        `json:"diagram_titles" yaml:"diagram_titles"`
+	HomeMoves         []ComponentHomeMove         `json:"home_moves" yaml:"home_moves"`
+	References        []ReferenceAppearanceChange `json:"references" yaml:"references"`
 }
 
 // ReferenceAppearanceChange is the final intended reference state for one
 // Diagram/Component pair. Presence and absence are both explicit so repeated
 // home moves cannot resurrect a reference from the accepted base.
 type ReferenceAppearanceChange struct {
-	DiagramID   string `json:"diagram_id"`
-	ComponentID string `json:"component_id"`
-	Present     bool   `json:"present"`
+	DiagramID   string `json:"diagram_id" yaml:"diagram_id"`
+	ComponentID string `json:"component_id" yaml:"component_id"`
+	Present     bool   `json:"present" yaml:"present"`
 }
 
 // NewComponentHome associates one newly generated Component with its required
 // home Diagram. It is composition, not a synthetic Component edit.
 type NewComponentHome struct {
-	ComponentID string `json:"component_id"`
-	DiagramID   string `json:"diagram_id"`
+	ComponentID string `json:"component_id" yaml:"component_id"`
+	DiagramID   string `json:"diagram_id" yaml:"diagram_id"`
 }
 
 // DetailDiagramChange is one pending detail Diagram creation. Identity and
 // path are generated once by the backend; hierarchy remains owned by the
 // anchoring home appearance.
 type DetailDiagramChange struct {
-	ID                string `json:"id"`
-	Path              string `json:"path"`
-	Title             string `json:"title"`
-	AnchorComponentID string `json:"anchor_component_id"`
+	ID                string `json:"id" yaml:"id"`
+	Path              string `json:"path" yaml:"path"`
+	Title             string `json:"title" yaml:"title"`
+	AnchorComponentID string `json:"anchor_component_id" yaml:"anchor_component_id"`
 }
 
 // DiagramTitleChange changes only the authored title of an existing Diagram.
 type DiagramTitleChange struct {
-	DiagramID string `json:"diagram_id"`
-	Title     string `json:"title"`
+	DiagramID string `json:"diagram_id" yaml:"diagram_id"`
+	Title     string `json:"title" yaml:"title"`
 }
 
 // ComponentHomeMove is one explicit Diagram-composition destination.
 type ComponentHomeMove struct {
-	ComponentID string `json:"component_id"`
-	DiagramID   string `json:"diagram_id"`
+	ComponentID string `json:"component_id" yaml:"component_id"`
+	DiagramID   string `json:"diagram_id" yaml:"diagram_id"`
 }
 
 type DiagramValidationError struct {

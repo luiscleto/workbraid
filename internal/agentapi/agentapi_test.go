@@ -24,11 +24,11 @@ func TestClientRequiresLiteralLoopbackHTTPURL(t *testing.T) {
 func TestClientHandshakesBeforeEveryNonStatusOperation(t *testing.T) {
 	var statusCalls, listCalls int
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/agent/v1/status", func(response http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /api/agent/v2/status", func(response http.ResponseWriter, _ *http.Request) {
 		statusCalls++
 		writeEnvelope(response, Envelope{Protocol: Protocol, OK: true, Context: Context{AuthorityState: "none"}, Result: map[string]any{"protocol": Protocol}})
 	})
-	mux.HandleFunc("GET /api/agent/v1/projects/list", func(response http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /api/agent/v2/projects/list", func(response http.ResponseWriter, _ *http.Request) {
 		listCalls++
 		writeEnvelope(response, Envelope{Protocol: Protocol, OK: true, Context: Context{AuthorityState: "none"}, Result: map[string]any{"projects": []any{}}})
 	})
@@ -70,7 +70,7 @@ func TestClientRejectsRedirectsBeforeMutationBodyCanLeaveConfiguredLoopback(t *t
 	defer target.Close()
 
 	source := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/api/agent/v1/status" {
+		if request.URL.Path == "/api/agent/v2/status" {
 			writeEnvelope(response, Envelope{Protocol: Protocol, OK: true})
 			return
 		}
@@ -92,5 +92,5 @@ func TestClientRejectsRedirectsBeforeMutationBodyCanLeaveConfiguredLoopback(t *t
 
 func writeEnvelope(response http.ResponseWriter, envelope Envelope) {
 	response.Header().Set("Content-Type", "application/json")
-	_, _ = response.Write([]byte(`{"protocol":"` + envelope.Protocol + `","ok":true,"context":{"project":null,"accepted_revision":null,"authority_state":"none","pending_generation":null},"result":{}}`))
+	_, _ = response.Write([]byte(`{"protocol":"` + envelope.Protocol + `","ok":true,"context":{"project":null,"accepted_revision":null,"authority_state":"none"},"result":{}}`))
 }

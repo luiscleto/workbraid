@@ -148,7 +148,7 @@ async function fillComponent(page: Page, title: string, description: string) {
   await page.getByLabel('Title').fill(title)
   await page.getByLabel('Description').fill(description)
   await page.getByRole('button', { name: 'Keep change' }).click()
-  await expect(page.getByRole('heading', { name: 'Changes in progress' })).toBeVisible()
+  await expect(page.locator('.changes-in-progress')).toBeVisible()
 }
 
 async function editPendingRelationships(page: Page, title: string, relationships: Array<{ target: string; label: string }>) {

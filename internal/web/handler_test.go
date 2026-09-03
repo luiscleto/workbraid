@@ -20,6 +20,15 @@ import (
 
 const testOrigin = "http://127.0.0.1:8080"
 
+func testActiveChangeSet(handler *Handler) *pendingChangeSet {
+	for _, record := range handler.changeSets {
+		if record.lifecycle == "active" {
+			return record
+		}
+	}
+	return nil
+}
+
 func TestSlugNativeCreateCatalogOpenAndReload(t *testing.T) {
 	data := t.TempDir()
 	_, handler := newHandler(testOrigin, testUI(t), data)
@@ -60,7 +69,7 @@ func TestSlugNativeCreateCatalogOpenAndReload(t *testing.T) {
 	}
 }
 
-func TestCatalogCreationIsAtomicAndProjectSwitchGuardUsesStoreIdentity(t *testing.T) {
+func TestCatalogCreationIsAtomicAndProjectSwitchRaceUsesStoreIdentity(t *testing.T) {
 	data := t.TempDir()
 	state, handler := newHandler(testOrigin, testUI(t), data)
 	first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Same"}))
@@ -90,13 +99,16 @@ func TestCatalogCreationIsAtomicAndProjectSwitchGuardUsesStoreIdentity(t *testin
 	for status := range results {
 		statuses[status]++
 	}
-	if statuses[http.StatusOK] != 1 || statuses[http.StatusConflict] != 1 {
+	if statuses[http.StatusOK]+statuses[http.StatusConflict] != 2 || statuses[http.StatusOK] < 1 {
 		t.Fatalf("race statuses = %v", statuses)
 	}
 	state.stateMutex.Lock()
 	defer state.stateMutex.Unlock()
-	if state.pending != nil && state.loadedProject.storeID != first.StoreID {
-		t.Fatalf("mixed project/pending state: project=%+v pending=%+v", state.loadedProject, state.pending)
+	if state.loadedProject == nil || state.loadedProject.storeID != second.StoreID {
+		t.Fatalf("project switch lost race authority: project=%+v", state.loadedProject)
+	}
+	if pending := testActiveChangeSet(state); pending != nil {
+		t.Fatalf("Project A change set leaked into Project B memory: project=%+v change-set=%+v", state.loadedProject, pending)
 	}
 }
 
@@ -210,11 +222,11 @@ func TestReferenceMutationAndDiscardShareOneStateBoundary(t *testing.T) {
 	}
 	state.stateMutex.Lock()
 	defer state.stateMutex.Unlock()
-	if state.pending != nil {
-		if state.pending.candidate == nil || state.pending.generation != 1 {
-			t.Fatalf("incoherent final pending = %+v", state.pending)
+	if pending := testActiveChangeSet(state); pending != nil {
+		if pending.candidate == nil || pending.generation != 1 {
+			t.Fatalf("incoherent final change set = %+v", pending)
 		}
-		projection := projectSnapshot(state.pending.candidate.Snapshot(), "")
+		projection := projectSnapshot(pending.candidate.Snapshot(), "")
 		if role(&projection, opened.RootDiagramID, target.ID) != "reference" {
 			t.Fatalf("incoherent final reference projection = %+v", projection)
 		}
@@ -270,7 +282,7 @@ func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testin
 		t.Fatalf("stop failed: %+v", stopped.Changes)
 	}
 	invalidated := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, BaseRevision: firstReview.Changes.Review.BaseRevision,
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ChangeSetID: firstReview.Changes.ID, BaseRevision: firstReview.Changes.Review.BaseRevision,
 		CandidateTree: firstReview.Changes.Review.CandidateTree, Generation: firstReview.Changes.Review.Generation,
 	})
 	if invalidated.Code != http.StatusConflict || !strings.Contains(invalidated.Body.String(), errorReviewFailed) {
@@ -281,7 +293,7 @@ func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testin
 	if reviewed.Changes == nil || reviewed.Changes.Review == nil {
 		t.Fatalf("review missing: %+v", reviewed.Changes)
 	}
-	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
+	accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ChangeSetID: reviewed.Changes.ID, BaseRevision: reviewed.Changes.Review.BaseRevision, CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation}))
 	if accepted.Revision == opened.Revision || roleSnapshot(accepted, c.ID, moving.ID) != "home" || roleSnapshot(accepted, b.ID, moving.ID) != "" {
 		t.Fatalf("accepted = %+v", accepted)
 	}
@@ -333,8 +345,8 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 		t.Fatalf("initial ineligible move status=%d body=%s", initialRejected.Code, initialRejected.Body.String())
 	}
 	state.stateMutex.Lock()
-	if state.pending != nil {
-		t.Fatalf("rejected move created hidden pending state: %+v", state.pending)
+	if pending := testActiveChangeSet(state); pending != nil {
+		t.Fatalf("rejected move created hidden change-set state: %+v", pending)
 	}
 	state.stateMutex.Unlock()
 
@@ -346,7 +358,7 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 		t.Fatalf("review missing: %+v", reviewed.Changes)
 	}
 	state.stateMutex.Lock()
-	pendingBefore := state.pending
+	pendingBefore := testActiveChangeSet(state)
 	generationBefore := pendingBefore.generation
 	reviewBefore := pendingBefore.review
 	treeBefore := pendingBefore.candidate.Tree()
@@ -359,8 +371,9 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 		t.Fatalf("ineligible move status=%d body=%s", rejected.Code, rejected.Body.String())
 	}
 	state.stateMutex.Lock()
-	if state.pending != pendingBefore || state.pending.generation != generationBefore || state.pending.review != reviewBefore || state.pending.candidate.Tree() != treeBefore || !slices.Equal(state.pending.homeMoves, movesBefore) || !slices.Equal(state.pending.references, referencesBefore) {
-		t.Fatalf("rejected move mutated pending: before=%+v after=%+v", pendingBefore, state.pending)
+	pendingAfter := testActiveChangeSet(state)
+	if pendingAfter != pendingBefore || pendingAfter.generation != generationBefore || pendingAfter.review != reviewBefore || pendingAfter.candidate.Tree() != treeBefore || !slices.Equal(pendingAfter.homeMoves, movesBefore) || !slices.Equal(pendingAfter.references, referencesBefore) {
+		t.Fatalf("rejected move mutated change set: before=%+v after=%+v", pendingBefore, pendingAfter)
 	}
 	state.stateMutex.Unlock()
 
@@ -369,8 +382,9 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 		t.Fatalf("valid move after rejection failed: %+v", moved.Changes)
 	}
 	state.stateMutex.Lock()
-	if state.pending.generation != generationBefore+1 || state.pending.review != nil {
-		t.Fatalf("successful move generation/review = %d/%+v", state.pending.generation, state.pending.review)
+	pendingAfter = testActiveChangeSet(state)
+	if pendingAfter.generation != generationBefore+1 || pendingAfter.review != nil {
+		t.Fatalf("successful move generation/review = %d/%+v", pendingAfter.generation, pendingAfter.review)
 	}
 	state.stateMutex.Unlock()
 	var gatewayAfterReparent componentHomeDestinationsResponse
@@ -401,7 +415,7 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 		t.Fatalf("replacement review missing: %+v", reviewedReplacement.Changes)
 	}
 	acceptedReplacement := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID,
+		ProjectSlug: opened.ProjectSlug, StoreID: opened.StoreID, ChangeSetID: reviewedReplacement.Changes.ID,
 		BaseRevision: reviewedReplacement.Changes.Review.BaseRevision, CandidateTree: reviewedReplacement.Changes.Review.CandidateTree, Generation: reviewedReplacement.Changes.Review.Generation,
 	}))
 	if roleSnapshot(acceptedReplacement, other.ID, worker.ID) != "home" || roleSnapshot(acceptedReplacement, storage.ID, gateway.ID) != "home" {
@@ -428,7 +442,7 @@ func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *t
 		t.Fatalf("candidate-relative references failed: new=%+v anchor=%+v", shownNew.Changes, shownAnchor.Changes)
 	}
 	state.stateMutex.Lock()
-	generation := state.pending.generation
+	generation := testActiveChangeSet(state).generation
 	state.stateMutex.Unlock()
 	duplicate := postJSONRequest(t, handler, "/api/architecture/diagrams/show-component", observedDiagramMutation(shownAnchor, diagramMutationRequest{DiagramID: detailID, ComponentID: anchorID}))
 	if duplicate.Code != http.StatusConflict {
@@ -439,8 +453,8 @@ func TestReferenceAuthoringUsesPendingNewComponentsAndCandidateOnlyDiagrams(t *t
 		t.Fatalf("home status=%d body=%s", home.Code, home.Body.String())
 	}
 	state.stateMutex.Lock()
-	if state.pending.generation != generation {
-		t.Fatalf("rejected reference mutation changed generation: got %d want %d", state.pending.generation, generation)
+	if current := testActiveChangeSet(state); current.generation != generation {
+		t.Fatalf("rejected reference mutation changed generation: got %d want %d", current.generation, generation)
 	}
 	state.stateMutex.Unlock()
 
@@ -486,7 +500,7 @@ func TestExternalAcceptedSlugRefreshAdoptsLocator(t *testing.T) {
 	}
 }
 
-func TestRefreshPreservesOldBasePendingAsStaleUntilDiscard(t *testing.T) {
+func TestRefreshPreservesOldBaseChangeSetAsEditableOutOfDateWork(t *testing.T) {
 	data := t.TempDir()
 	state, handler := newHandler(testOrigin, testUI(t), data)
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Refresh"}))
@@ -511,14 +525,19 @@ func TestRefreshPreservesOldBasePendingAsStaleUntilDiscard(t *testing.T) {
 	}
 
 	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/refresh", observedAction(pending)))
-	if refreshed.Revision != externalRevision || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale || refreshed.Changes.Review != nil {
+	selectActiveChangeSetForTest(&refreshed, pending.Changes.ID)
+	if refreshed.Revision != externalRevision || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.OutOfDate || refreshed.Changes.Stale {
 		t.Fatalf("refreshed = %+v changes=%+v", refreshed, refreshed.Changes)
 	}
-	blocked := postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(refreshed, componentMutationRequest{DiagramID: created.RootDiagramID, Title: "Blocked"}))
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("stale pending mutation status=%d body=%s", blocked.Code, blocked.Body.String())
+	edited := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(refreshed, componentMutationRequest{DiagramID: created.RootDiagramID, Title: "Still editable"})))
+	if edited.Changes == nil || !edited.Changes.OutOfDate || edited.Changes.Generation != pending.Changes.Generation+1 {
+		t.Fatalf("out-of-date edit = %+v", edited.Changes)
 	}
-	discarded := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", observedAction(refreshed)))
+	reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(edited)))
+	if reviewed.Changes == nil || reviewed.Changes.Review == nil || !reviewed.Changes.OutOfDate {
+		t.Fatalf("out-of-date review = %+v", reviewed.Changes)
+	}
+	discarded := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/discard", observedAction(reviewed)))
 	if discarded.Changes != nil || discarded.Revision != externalRevision {
 		t.Fatalf("discarded = %+v", discarded)
 	}
@@ -536,11 +555,11 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(kept)))
 		state.acceptedUpdateReportFailure = func() error { return errors.New("response lost") }
 		accepted := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ChangeSetID: reviewed.Changes.ID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		}))
-		if accepted.Revision == created.Revision || state.pending != nil {
-			t.Fatalf("accepted = %+v pending=%+v", accepted, state.pending)
+		if accepted.Revision == created.Revision || testActiveChangeSet(state) != nil {
+			t.Fatalf("accepted = %+v active=%+v", accepted, testActiveChangeSet(state))
 		}
 	})
 
@@ -551,12 +570,12 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(kept)))
 		state.publicationFailure = func() error { return errors.New("publication lost") }
 		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ChangeSetID: reviewed.Changes.ID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		})
 		value := decodeArchitectureBody(t, response)
-		if response.Code != http.StatusInternalServerError || value.ActionError != errorUpdatedReload || value.Revision == created.Revision || state.pending != nil {
-			t.Fatalf("response=%d value=%+v pending=%+v", response.Code, value, state.pending)
+		if response.Code != http.StatusInternalServerError || value.ActionError != errorUpdatedReload || value.Revision == created.Revision || testActiveChangeSet(state) != nil {
+			t.Fatalf("response=%d value=%+v active=%+v", response.Code, value, testActiveChangeSet(state))
 		}
 		accepted, present, err := state.architecture.AcceptedRevision(context.Background(), *state.loadedSnapshot)
 		if err != nil || !present || accepted != value.Revision {
@@ -588,7 +607,7 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 			}
 		}
 		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, BaseRevision: reviewed.Changes.Review.BaseRevision,
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ChangeSetID: reviewed.Changes.ID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		})
 		value := decodeArchitectureBody(t, response)
@@ -770,6 +789,7 @@ func pendingGenerationFor(response architectureResponse) *uint64 {
 func observedAction(response architectureResponse) architectureActionRequest {
 	return architectureActionRequest{
 		ProjectSlug: response.ProjectSlug, StoreID: response.StoreID, ExpectedRevision: response.Revision,
+		ChangeSetID:        changeSetIDFor(response),
 		ExpectedGeneration: pendingGenerationFor(response), PendingGenerationObserved: true,
 	}
 }
@@ -778,6 +798,7 @@ func observedComponentMutation(response architectureResponse, payload componentM
 	payload.ProjectSlug = response.ProjectSlug
 	payload.StoreID = response.StoreID
 	payload.ExpectedRevision = response.Revision
+	payload.ChangeSetID = changeSetIDFor(response)
 	payload.ExpectedGeneration = pendingGenerationFor(response)
 	payload.PendingGenerationObserved = true
 	return payload
@@ -787,9 +808,29 @@ func observedDiagramMutation(response architectureResponse, payload diagramMutat
 	payload.ProjectSlug = response.ProjectSlug
 	payload.StoreID = response.StoreID
 	payload.ExpectedRevision = response.Revision
+	payload.ChangeSetID = changeSetIDFor(response)
 	payload.ExpectedGeneration = pendingGenerationFor(response)
 	payload.PendingGenerationObserved = true
 	return payload
+}
+
+func changeSetIDFor(response architectureResponse) string {
+	if response.Changes == nil {
+		return ""
+	}
+	return response.Changes.ID
+}
+
+func selectActiveChangeSetForTest(response *architectureResponse, id string) {
+	if response.Changes != nil && response.Changes.ID == id {
+		return
+	}
+	for _, record := range response.ChangeSets {
+		if record.ID == id {
+			response.Changes = record
+			return
+		}
+	}
 }
 
 func decodeArchitectureResponse(t *testing.T, response *httptest.ResponseRecorder) architectureResponse {

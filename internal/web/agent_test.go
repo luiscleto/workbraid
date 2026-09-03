@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
-	"time"
 
 	"workbraid/internal/agentapi"
 	"workbraid/internal/architecture"
@@ -56,641 +56,490 @@ func resultMap(t *testing.T, envelope agentapi.Envelope) map[string]any {
 	return value
 }
 
-func TestAgentPublicRecoveryMessagesUseArchitectureLanguage(t *testing.T) {
-	want := map[string]string{
-		"target_not_found":    "That Component or Diagram is not in the current Architecture, accepted or pending.",
-		"target_not_eligible": "That Component or Diagram is not an allowed target for this change.",
-		"review_invalidated":  "This Review is no longer valid. Inspect changes, then Review again.",
+func changeSetState(t *testing.T, envelope agentapi.Envelope) agentapi.StatePreconditions {
+	t.Helper()
+	result := resultMap(t, envelope)
+	id, idOK := result["id"].(string)
+	if !idOK {
+		id, idOK = result["change_set_id"].(string)
 	}
-	for code, message := range want {
-		if got := agentMessage(code); got != message {
-			t.Fatalf("agentMessage(%q) = %q, want %q", code, got, message)
-		}
+	generation, generationOK := result["generation"].(float64)
+	if !idOK || !generationOK {
+		t.Fatalf("change-set result lacks identity/generation: %#v", result)
 	}
+	if envelope.Context.Project == nil {
+		t.Fatalf("change-set result lacks project context: %+v", envelope)
+	}
+	return agentapi.StatePreconditions{StoreID: envelope.Context.Project.StoreID, ChangeSetID: id, Generation: uint64(generation)}
 }
 
-func TestAgentAndBrowserSharePendingAuthorityAndRawRelationshipRepair(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Agent authority"}))
-
-	state := agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision}
-	gatewayEnvelope := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: state, Title: "Gateway", DiagramID: &created.RootDiagramID,
+func createAgentChangeSet(t *testing.T, handler http.Handler, storeID, revision, name string) agentapi.Envelope {
+	t.Helper()
+	envelope := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/create", agentapi.ChangeSetCreateRequest{
+		StoreID: storeID, AcceptedRevision: revision, Name: &name,
 	}))
-	if !gatewayEnvelope.OK || gatewayEnvelope.Context.PendingGeneration == nil || *gatewayEnvelope.Context.PendingGeneration != 1 {
-		t.Fatalf("gateway create = %+v", gatewayEnvelope)
+	if !envelope.OK {
+		t.Fatalf("create change set %q: %+v", name, envelope)
 	}
-	gatewayID := resultMap(t, gatewayEnvelope)["component_id"].(string)
-	state.PendingGeneration = gatewayEnvelope.Context.PendingGeneration
+	return envelope
+}
 
-	workerEnvelope := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: state, Title: "Worker", DiagramID: &created.RootDiagramID,
+func TestAgentV2ParallelChangeSetsPreserveInvalidRawStateAcrossRestart(t *testing.T) {
+	dataDirectory := t.TempDir()
+	uiDirectory := t.TempDir()
+	_, handler := newHandler("http://127.0.0.1:8080", uiDirectory, dataDirectory)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Parallel authority"}))
+
+	changeA := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Gateway work")
+	changeB := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Worker work")
+	stateA, stateB := changeSetState(t, changeA), changeSetState(t, changeB)
+
+	gateway := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: stateA, Title: "Gateway", DiagramID: &created.RootDiagramID,
 	}))
-	if !workerEnvelope.OK || workerEnvelope.Context.PendingGeneration == nil || *workerEnvelope.Context.PendingGeneration != 2 {
-		t.Fatalf("worker create = %+v", workerEnvelope)
+	if !gateway.OK {
+		t.Fatalf("create A Component: %+v", gateway)
 	}
-	workerID := resultMap(t, workerEnvelope)["component_id"].(string)
-	state.PendingGeneration = workerEnvelope.Context.PendingGeneration
+	stateA.Generation = uint64(resultMap(t, gateway)["generation"].(float64))
+	gatewayID := resultMap(t, gateway)["component_id"].(string)
 
-	invalid := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/add", agentapi.RelationshipAddRequest{
-		StatePreconditions: state, SourceID: gatewayID, TargetID: "", Label: "",
+	worker := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: stateB, Title: "Worker", DiagramID: &created.RootDiagramID,
+	}))
+	if !worker.OK {
+		t.Fatalf("create B Component: %+v", worker)
+	}
+	stateB.Generation = uint64(resultMap(t, worker)["generation"].(float64))
+	workerID := resultMap(t, worker)["component_id"].(string)
+
+	invalid := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/relationships/add", agentapi.RelationshipAddRequest{
+		StatePreconditions: stateB, SourceID: workerID, TargetID: "not-a-component-id", Label: "   ",
 	}))
 	if !invalid.OK || resultMap(t, invalid)["candidate_valid"] != false {
-		t.Fatalf("invalid raw relationship was not retained: %+v", invalid)
+		t.Fatalf("invalid raw row was not retained: %+v", invalid)
 	}
-	state.PendingGeneration = invalid.Context.PendingGeneration
+	stateB.Generation = uint64(resultMap(t, invalid)["generation"].(float64))
 
-	inspectedRequest := httptest.NewRequest(http.MethodGet, "/api/agent/v1/changes/inspect", nil)
-	inspectedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(inspectedResponse, inspectedRequest)
-	inspected := decodeAgentEnvelope(t, inspectedResponse)
-	components := resultMap(t, inspected)["components"].([]any)
-	firstRelationships := components[0].(map[string]any)["relationships"].([]any)
-	row := firstRelationships[0].(map[string]any)
-	if row["target_id"] != "" || row["label"] != "" {
-		t.Fatalf("raw invalid row lost fidelity: %#v", row)
+	listed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/list", agentapi.ChangeSetsListRequest{StoreID: created.StoreID}))
+	if !listed.OK || len(resultMap(t, listed)["change_sets"].([]any)) != 2 {
+		t.Fatalf("parallel list: %+v", listed)
 	}
 
-	repaired := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/edit", agentapi.RelationshipEditRequest{
-		StatePreconditions: state, SourceID: gatewayID, OldTargetID: "", OldLabel: "", Occurrence: 1, TargetID: workerID, Label: "calls",
+	_, restarted := newHandler("http://127.0.0.1:8080", uiDirectory, dataDirectory)
+	opened := decodeAgentEnvelope(t, postAgent(t, restarted, "/api/agent/v2/projects/open", agentapi.ProjectOpenRequest{Slug: created.ProjectSlug}))
+	if !opened.OK {
+		t.Fatalf("restart open: %+v", opened)
+	}
+	inspectedB := decodeAgentEnvelope(t, postAgent(t, restarted, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: created.StoreID, ChangeSetID: stateB.ChangeSetID}))
+	components := resultMap(t, inspectedB)["components"].([]any)
+	rows := components[0].(map[string]any)["relationships"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["target_id"] != "not-a-component-id" || rows[0].(map[string]any)["label"] != "   " || resultMap(t, inspectedB)["candidate"] != nil {
+		t.Fatalf("restart lost exact invalid state: %#v", resultMap(t, inspectedB))
+	}
+	inspectedA := decodeAgentEnvelope(t, postAgent(t, restarted, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: created.StoreID, ChangeSetID: stateA.ChangeSetID}))
+	if !inspectedA.OK || uint64(resultMap(t, inspectedA)["generation"].(float64)) != stateA.Generation || resultMap(t, inspectedA)["candidate"] == nil {
+		t.Fatalf("A changed while B was edited: %+v", inspectedA)
+	}
+
+	repaired := decodeAgentEnvelope(t, postAgent(t, restarted, "/api/agent/v2/relationships/edit", agentapi.RelationshipEditRequest{
+		StatePreconditions: stateB, SourceID: workerID, OldTargetID: "not-a-component-id", OldLabel: "   ", Occurrence: 1, TargetID: workerID, Label: "retries",
 	}))
 	if !repaired.OK || resultMap(t, repaired)["candidate_valid"] != true {
-		t.Fatalf("raw relationship repair = %+v", repaired)
+		t.Fatalf("exact raw repair: %+v", repaired)
 	}
-	state.PendingGeneration = repaired.Context.PendingGeneration
-
-	staleBrowser := postJSONRequest(t, handler, "/api/architecture/components/edit", componentMutationRequest{
-		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ExpectedRevision: created.Revision,
-		PendingGenerationObserved: true, ExpectedGeneration: nil,
-		ComponentID: gatewayID, Title: "Stale overwrite", TitleChanged: true,
-	})
-	if staleBrowser.Code != http.StatusConflict {
-		t.Fatalf("stale browser mutation status = %d, want conflict", staleBrowser.Code)
-	}
-
-	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-		StatePreconditions: state, Generation: *state.PendingGeneration,
-	}))
-	if !reviewed.OK {
-		t.Fatalf("review = %+v", reviewed)
-	}
-	reviewResult := resultMap(t, reviewed)
-	accepted := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
-		StoreID: created.StoreID, BaseRevision: reviewResult["base_revision"].(string), CandidateTree: reviewResult["candidate_tree"].(string), Generation: uint64(reviewResult["generation"].(float64)),
-	}))
-	if !accepted.OK || accepted.Context.PendingGeneration != nil || accepted.Context.AcceptedRevision == nil || *accepted.Context.AcceptedRevision == created.Revision {
-		t.Fatalf("acceptance = %+v", accepted)
-	}
-
-	browser := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": created.ProjectSlug}))
-	if browser.Revision != *accepted.Context.AcceptedRevision || len(browser.Components) != 2 || browser.Components[0].Relationships[0].TargetID != workerID {
-		t.Fatalf("browser did not observe agent acceptance: %+v", browser)
+	if gatewayID == workerID {
+		t.Fatal("independent change sets reused a Component identity")
 	}
 }
 
-func TestAgentProjectCatalogSelectionCloseAndRefreshUseRunningAuthority(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	status := getAgent(t, handler, "/api/agent/v1/status")
-	if !status.OK || status.Context.Project != nil || resultMap(t, status)["protocol"] != agentapi.Protocol {
-		t.Fatalf("initial status = %+v", status)
-	}
-	created := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/projects/create", agentapi.ProjectCreateRequest{Name: "Selection authority"}))
-	if !created.OK || created.Context.Project == nil || created.Context.AcceptedRevision == nil {
-		t.Fatalf("create = %+v", created)
-	}
-	storeID := created.Context.Project.StoreID
-	revision := *created.Context.AcceptedRevision
-	if current := getAgent(t, handler, "/api/agent/v1/projects/current"); !current.OK || current.Context.Project == nil || current.Context.Project.StoreID != storeID {
-		t.Fatalf("current = %+v", current)
-	}
-	listed := getAgent(t, handler, "/api/agent/v1/projects/list")
-	if !listed.OK || len(resultMap(t, listed)["projects"].([]any)) != 1 {
-		t.Fatalf("list = %+v", listed)
-	}
-	refreshed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/refresh", agentapi.ArchitectureRefreshRequest{StoreID: storeID, AcceptedRevision: revision}))
-	if !refreshed.OK || resultMap(t, refreshed)["classification"] != "unchanged" {
-		t.Fatalf("refresh = %+v", refreshed)
-	}
-	closed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/projects/close", agentapi.ProjectCloseRequest{StoreID: storeID}))
-	if !closed.OK || closed.Context.Project != nil {
-		t.Fatalf("close = %+v", closed)
-	}
-	closedAgain := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/projects/close", agentapi.ProjectCloseRequest{StoreID: storeID}))
-	if closedAgain.OK || closedAgain.Error == nil || closedAgain.Error.Code != "project_not_open" {
-		t.Fatalf("close without current project = %+v", closedAgain)
-	}
-	notOpen := getAgent(t, handler, "/api/agent/v1/architecture/inspect")
-	if notOpen.OK || notOpen.Error == nil || notOpen.Error.Code != "project_not_open" {
-		t.Fatalf("inspect without project = %+v", notOpen)
-	}
-	opened := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/projects/open", agentapi.ProjectOpenRequest{Slug: "selection-authority"}))
-	if !opened.OK || opened.Context.Project == nil || opened.Context.Project.StoreID != storeID || opened.Context.AcceptedRevision == nil || *opened.Context.AcceptedRevision != revision {
-		t.Fatalf("reopen = %+v", opened)
-	}
-}
-
-func TestAgentDistinguishesDefiniteAcceptanceWithReloadRequired(t *testing.T) {
+func TestAgentV2AcceptanceRetainsAppliedReceiptAndOtherOutOfDateProposal(t *testing.T) {
 	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Reload classification"}))
-	kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-		Title:              "Gateway", DiagramID: &created.RootDiagramID,
-	}))
-	generation := *kept.Context.PendingGeneration
-	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-		Generation:         generation,
-	}))
-	review := resultMap(t, reviewed)
-	state.publicationFailure = func() error { return errors.New("publication unavailable") }
-	updated := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
-		StoreID: created.StoreID, BaseRevision: review["base_revision"].(string), CandidateTree: review["candidate_tree"].(string), Generation: generation,
-	}))
-	if updated.OK || updated.Error == nil || updated.Error.Code != "accepted_reload_required" || updated.Context.PendingGeneration != nil ||
-		updated.Context.AcceptedRevision == nil || *updated.Context.AcceptedRevision == created.Revision {
-		t.Fatalf("reload-required classification = %+v", updated)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Acceptance isolation"}))
+	changeA := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Change A")
+	changeB := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Change B")
+	stateA, stateB := changeSetState(t, changeA), changeSetState(t, changeB)
+
+	mutate := func(state *agentapi.StatePreconditions, title string) string {
+		t.Helper()
+		result := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{StatePreconditions: *state, Title: title, DiagramID: &created.RootDiagramID}))
+		if !result.OK {
+			t.Fatalf("mutate %s: %+v", title, result)
+		}
+		state.Generation = uint64(resultMap(t, result)["generation"].(float64))
+		return resultMap(t, result)["component_id"].(string)
 	}
-}
-
-func TestAgentClassifiesOperationalCandidateFailureAndAcceptanceConflicts(t *testing.T) {
-	t.Run("candidate construction is operational failure", func(t *testing.T) {
-		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Operational failure"}))
-		state.candidateConstructionFailure = func() error { return errors.New("git unavailable") }
-		mutation := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-			Title:              "Gateway", DiagramID: &created.RootDiagramID,
-		}))
-		if mutation.OK || mutation.Error == nil || mutation.Error.Code != "operation_failed" || mutation.Context.PendingGeneration == nil {
-			t.Fatalf("mutation operational classification = %+v", mutation)
-		}
-		generation := *mutation.Context.PendingGeneration
-		state.stateMutex.Lock()
-		componentID := state.pending.changes[0].ID
-		state.stateMutex.Unlock()
-		for _, next := range []struct {
-			name string
-			path string
-			body any
-		}{
-			{name: "move home", path: "/api/agent/v1/components/move-home", body: agentapi.ComponentMoveHomeRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				ComponentID:        componentID, DiagramID: created.RootDiagramID,
-			}},
-			{name: "show component", path: "/api/agent/v1/diagrams/show-component", body: agentapi.DiagramComponentRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				ComponentID:        componentID, DiagramID: created.RootDiagramID,
-			}},
-			{name: "stop showing component", path: "/api/agent/v1/diagrams/stop-showing-component", body: agentapi.DiagramComponentRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				ComponentID:        componentID, DiagramID: created.RootDiagramID,
-			}},
-		} {
-			t.Run(next.name, func(t *testing.T) {
-				result := decodeAgentEnvelope(t, postAgent(t, handler, next.path, next.body))
-				if result.OK || result.Error == nil || result.Error.Code != "operation_failed" {
-					t.Fatalf("existing operational pending classification = %+v", result)
-				}
-			})
-		}
-		review := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-			Generation:         generation,
-		}))
-		if review.OK || review.Error == nil || review.Error.Code != "operation_failed" {
-			t.Fatalf("review operational classification = %+v", review)
-		}
-	})
-
-	for _, scenario := range []struct {
-		name string
-		want string
-		hook bool
-	}{
-		{name: "known non-current before update", want: "architecture_non_current"},
-		{name: "true final CAS conflict", want: "accepted_conflict", hook: true},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-			created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Acceptance classification"}))
-			kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-				Title:              "Gateway", DiagramID: &created.RootDiagramID,
-			}))
-			generation := *kept.Context.PendingGeneration
-			reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				Generation:         generation,
-			}))
-			review := resultMap(t, reviewed)
-			base := *state.loadedSnapshot
-			externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
-				DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "External"}},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			advanceExternal := func() {
-				revision, createErr := state.architecture.CreateSuccessor(context.Background(), base, externalCandidate)
-				if createErr != nil {
-					t.Fatal(createErr)
-				}
-				if advanceErr := state.architecture.AdvanceAccepted(context.Background(), base, revision); advanceErr != nil {
-					t.Fatal(advanceErr)
-				}
-			}
-			if scenario.hook {
-				state.beforeAcceptedCAS = func(string) { advanceExternal() }
-			} else {
-				advanceExternal()
-			}
-			updated := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
-				StoreID: created.StoreID, BaseRevision: review["base_revision"].(string), CandidateTree: review["candidate_tree"].(string), Generation: generation,
-			}))
-			if updated.OK || updated.Error == nil || updated.Error.Code != scenario.want {
-				t.Fatalf("update classification = %+v, want %q", updated, scenario.want)
-			}
-		})
+	mutate(&stateA, "Gateway")
+	componentB := mutate(&stateB, "Worker")
+	reviewA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateA}))
+	reviewB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateB}))
+	if !reviewA.OK || !reviewB.OK {
+		t.Fatalf("reviews A=%+v B=%+v", reviewA, reviewB)
 	}
-}
-
-func TestAgentRejectsUnexpectedOriginAndWrongGenerationWithoutMutation(t *testing.T) {
-	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Preconditions"}))
-
-	request := httptest.NewRequest(http.MethodPost, "/api/agent/v1/components/create", bytes.NewReader([]byte(`{}`)))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", "http://example.com")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if envelope := decodeAgentEnvelope(t, response); envelope.OK || envelope.Error.Code != "invalid_request" {
-		t.Fatalf("unexpected origin = %+v", envelope)
+	bindingA := resultMap(t, reviewA)
+	originalBindingB := resultMap(t, reviewB)
+	state.stateMutex.Lock()
+	bObjectBefore := state.changeSets[stateB.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	updatedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: stateA.ChangeSetID, BaseRevision: bindingA["base_revision"].(string), CandidateTree: bindingA["candidate_tree"].(string), Generation: stateA.Generation,
+	}))
+	if !updatedA.OK || updatedA.Context.AcceptedRevision == nil || *updatedA.Context.AcceptedRevision == created.Revision {
+		t.Fatalf("accept A: %+v", updatedA)
+	}
+	if resultMap(t, updatedA)["publication"] != "published" {
+		t.Fatalf("first acceptance classification: %+v", updatedA)
 	}
 
-	wrong := uint64(9)
-	response = postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &wrong},
-		Title:              "No mutation", DiagramID: &created.RootDiagramID,
-	})
-	envelope := decodeAgentEnvelope(t, response)
-	if envelope.OK || envelope.Error.Code != "pending_generation_mismatch" {
-		t.Fatalf("wrong generation = %+v", envelope)
+	appliedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: created.StoreID, ChangeSetID: stateA.ChangeSetID}))
+	activeB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: created.StoreID, ChangeSetID: stateB.ChangeSetID}))
+	if resultMap(t, appliedA)["lifecycle"] != "applied" || resultMap(t, appliedA)["applied_revision"] != *updatedA.Context.AcceptedRevision {
+		t.Fatalf("A receipt: %+v", appliedA)
+	}
+	if resultMap(t, appliedA)["out_of_date"] != false {
+		t.Fatalf("applied receipt was mislabeled out of date: %+v", appliedA)
+	}
+	activeBResult := resultMap(t, activeB)
+	activeBReview, _ := activeBResult["review"].(map[string]any)
+	if activeBResult["lifecycle"] != "active" || activeBResult["out_of_date"] != true || uint64(activeBResult["generation"].(float64)) != stateB.Generation ||
+		activeBResult["candidate_tree"] != originalBindingB["candidate_tree"] || activeBReview["base_revision"] != originalBindingB["base_revision"] ||
+		activeBReview["candidate_tree"] != originalBindingB["candidate_tree"] || activeBReview["generation"] != originalBindingB["generation"] {
+		t.Fatalf("B was not preserved: %+v", activeB)
 	}
 	state.stateMutex.Lock()
-	defer state.stateMutex.Unlock()
-	if state.pending != nil {
-		t.Fatalf("wrong generation created pending state: %+v", state.pending)
+	bObjectAfter := state.changeSets[stateB.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	if bObjectAfter != bObjectBefore {
+		t.Fatalf("accepting A rewrote B: before=%s after=%s", bObjectBefore, bObjectAfter)
+	}
+
+	editedB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/edit", agentapi.ComponentEditRequest{
+		StatePreconditions: stateB, ComponentID: componentB, Title: pointerTo("Worker v2"),
+	}))
+	if !editedB.OK {
+		t.Fatalf("out-of-date B must remain editable: %+v", editedB)
+	}
+	stateB.Generation = uint64(resultMap(t, editedB)["generation"].(float64))
+	reviewedB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateB}))
+	if !reviewedB.OK {
+		t.Fatalf("out-of-date B must remain reviewable: %+v", reviewedB)
+	}
+	bindingB := resultMap(t, reviewedB)
+	rejectedB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: stateB.ChangeSetID, BaseRevision: bindingB["base_revision"].(string), CandidateTree: bindingB["candidate_tree"].(string), Generation: stateB.Generation,
+	}))
+	if rejectedB.OK || rejectedB.Error == nil || rejectedB.Error.Code != "change_set_out_of_date" || rejectedB.Context.AcceptedRevision == nil || *rejectedB.Context.AcceptedRevision != *updatedA.Context.AcceptedRevision {
+		t.Fatalf("out-of-date update classification: %+v", rejectedB)
+	}
+
+	receiptRetry := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: stateA.ChangeSetID, BaseRevision: bindingA["base_revision"].(string), CandidateTree: bindingA["candidate_tree"].(string), Generation: stateA.Generation,
+	}))
+	if !receiptRetry.OK || receiptRetry.Context.AcceptedRevision == nil || *receiptRetry.Context.AcceptedRevision != *updatedA.Context.AcceptedRevision {
+		t.Fatalf("durable receipt retry: %+v", receiptRetry)
+	}
+	if resultMap(t, receiptRetry)["publication"] != "already_applied" {
+		t.Fatalf("receipt retry classification: %+v", receiptRetry)
+	}
+
+	changeC := createAgentChangeSet(t, handler, created.StoreID, *updatedA.Context.AcceptedRevision, "Change C")
+	stateC := changeSetState(t, changeC)
+	mutate(&stateC, "Scheduler")
+	reviewC := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateC}))
+	bindingC := resultMap(t, reviewC)
+	updatedC := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: stateC.ChangeSetID, BaseRevision: bindingC["base_revision"].(string), CandidateTree: bindingC["candidate_tree"].(string), Generation: stateC.Generation,
+	}))
+	if !updatedC.OK || updatedC.Context.AcceptedRevision == nil || *updatedC.Context.AcceptedRevision == *updatedA.Context.AcceptedRevision {
+		t.Fatalf("advance Accepted after A receipt: %+v", updatedC)
+	}
+	receiptAfterAdvance := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: stateA.ChangeSetID, BaseRevision: bindingA["base_revision"].(string), CandidateTree: bindingA["candidate_tree"].(string), Generation: stateA.Generation,
+	}))
+	if !receiptAfterAdvance.OK || receiptAfterAdvance.Context.AcceptedRevision == nil || *receiptAfterAdvance.Context.AcceptedRevision != *updatedC.Context.AcceptedRevision || resultMap(t, receiptAfterAdvance)["publication"] != "already_applied" {
+		t.Fatalf("receipt after later Accepted advancement: %+v", receiptAfterAdvance)
 	}
 }
 
-func TestAgentRefreshAndReviewDistinguishWrongRevisionFromWrongGeneration(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Distinct preconditions"}))
-	kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-		Title:              "Gateway", DiagramID: &created.RootDiagramID,
-	}))
-	generation := *kept.Context.PendingGeneration
-	wrongRevision := "0000000000000000000000000000000000000000"
-	refreshed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/architecture/refresh", agentapi.ArchitectureRefreshRequest{
-		StoreID: created.StoreID, AcceptedRevision: wrongRevision,
-	}))
-	if refreshed.OK || refreshed.Error == nil || refreshed.Error.Code != "architecture_non_current" {
-		t.Fatalf("wrong-revision Refresh = %+v", refreshed)
-	}
-	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: wrongRevision, PendingGeneration: &generation},
-		Generation:         generation,
-	}))
-	if reviewed.OK || reviewed.Error == nil || reviewed.Error.Code != "architecture_non_current" {
-		t.Fatalf("wrong-revision Review = %+v", reviewed)
-	}
-	wrongGeneration := generation + 1
-	generationMismatch := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &wrongGeneration},
-		Generation:         wrongGeneration,
-	}))
-	if generationMismatch.OK || generationMismatch.Error == nil || generationMismatch.Error.Code != "pending_generation_mismatch" {
-		t.Fatalf("wrong-generation Review = %+v", generationMismatch)
-	}
-}
+func TestAgentV2ConcurrentRecordsAndProjectBoundCreationRemainIndependent(t *testing.T) {
+	dataDirectory := t.TempDir()
+	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), dataDirectory)
+	projectA := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Concurrent A"}))
+	changeA := createAgentChangeSet(t, handler, projectA.StoreID, projectA.Revision, "Parallel A")
+	changeB := createAgentChangeSet(t, handler, projectA.StoreID, projectA.Revision, "Parallel B")
+	stateA, stateB := changeSetState(t, changeA), changeSetState(t, changeB)
 
-func TestAgentMutationRacingBrowserDiscardHasOneSerializedOutcome(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Serialized clients"}))
-	initial := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-		Title:              "Gateway", DiagramID: &created.RootDiagramID,
-	}))
-	componentID := resultMap(t, initial)["component_id"].(string)
-	generation := *initial.Context.PendingGeneration
-
-	editData, err := json.Marshal(agentapi.ComponentEditRequest{
-		StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-		ComponentID:        componentID, Title: pointerTo("Edited by agent"),
-	})
-	if err != nil {
-		t.Fatal(err)
+	type callResult struct {
+		name     string
+		response *httptest.ResponseRecorder
 	}
-	editRequest := httptest.NewRequest(http.MethodPost, "/api/agent/v1/components/edit", bytes.NewReader(editData))
-	editRequest.Header.Set("Content-Type", "application/json")
-	editResponse := httptest.NewRecorder()
-	discardData, err := json.Marshal(architectureActionRequest{
-		ProjectSlug: created.ProjectSlug, StoreID: created.StoreID,
-		ExpectedGeneration: &generation, PendingGenerationObserved: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	discardRequest := httptest.NewRequest(http.MethodPost, "/api/architecture/discard", bytes.NewReader(discardData))
-	discardRequest.Header.Set("Content-Type", "application/json")
-	discardRequest.Header.Set("Origin", "http://127.0.0.1:8080")
-	discardResponse := httptest.NewRecorder()
-
 	start := make(chan struct{})
-	done := make(chan struct{}, 2)
-	go func() { <-start; handler.ServeHTTP(editResponse, editRequest); done <- struct{}{} }()
-	go func() { <-start; handler.ServeHTTP(discardResponse, discardRequest); done <- struct{}{} }()
+	results := make(chan callResult, 2)
+	var wait sync.WaitGroup
+	for _, operation := range []struct {
+		name  string
+		state agentapi.StatePreconditions
+	}{
+		{name: "A", state: stateA},
+		{name: "B", state: stateB},
+	} {
+		body, err := json.Marshal(agentapi.ComponentCreateRequest{StatePreconditions: operation.state, Title: "Component " + operation.name, DiagramID: &projectA.RootDiagramID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(name string, body []byte) {
+			defer wait.Done()
+			<-start
+			request := httptest.NewRequest(http.MethodPost, "/api/agent/v2/components/create", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			results <- callResult{name: name, response: response}
+		}(operation.name, body)
+	}
 	close(start)
-	<-done
-	<-done
-
-	edit := decodeAgentEnvelope(t, editResponse)
-	inspectRequest := httptest.NewRequest(http.MethodGet, "/api/agent/v1/changes/inspect", nil)
-	inspectResponse := httptest.NewRecorder()
-	handler.ServeHTTP(inspectResponse, inspectRequest)
-	inspected := decodeAgentEnvelope(t, inspectResponse)
-	if edit.OK {
-		if discardResponse.Code != http.StatusConflict || inspected.Context.PendingGeneration == nil || *inspected.Context.PendingGeneration != generation+1 {
-			t.Fatalf("edit-first outcome mixed: edit=%+v discard=%d inspect=%+v", edit, discardResponse.Code, inspected)
+	wait.Wait()
+	close(results)
+	for result := range results {
+		envelope := decodeAgentEnvelope(t, result.response)
+		if !envelope.OK || resultMap(t, envelope)["generation"] != float64(1) {
+			t.Fatalf("concurrent %s mutation: %+v", result.name, envelope)
 		}
-		components := resultMap(t, inspected)["components"].([]any)
-		if components[0].(map[string]any)["title"] != "Edited by agent" {
-			t.Fatalf("agent edit missing after race: %#v", components)
-		}
-		return
 	}
-	if edit.Error == nil || edit.Error.Code != "pending_generation_mismatch" || discardResponse.Code != http.StatusOK || inspected.Context.PendingGeneration != nil || resultMap(t, inspected)["changes"] != nil {
-		t.Fatalf("discard-first outcome mixed: edit=%+v discard=%d inspect=%+v", edit, discardResponse.Code, inspected)
+	stateA.Generation, stateB.Generation = 1, 1
+	reviewA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateA}))
+	reviewB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: stateB}))
+	if !reviewA.OK || !reviewB.OK {
+		t.Fatalf("independent reviews A=%+v B=%+v", reviewA, reviewB)
+	}
+	bindingB := resultMap(t, reviewB)
+	proposal := "# Exact proposal\n\nOnly A changes.\n"
+	editedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/edit-proposal", agentapi.ChangeSetEditProposalRequest{StatePreconditions: stateA, ProposalMarkdown: proposal}))
+	if !editedA.OK || resultMap(t, editedA)["proposal_markdown"] != proposal || resultMap(t, editedA)["review"] != nil {
+		t.Fatalf("A proposal edit: %+v", editedA)
+	}
+	stateA.Generation = 2
+	unchangedB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: projectA.StoreID, ChangeSetID: stateB.ChangeSetID}))
+	unchangedBReview, _ := resultMap(t, unchangedB)["review"].(map[string]any)
+	if !unchangedB.OK || resultMap(t, unchangedB)["generation"] != float64(1) || unchangedBReview["base_revision"] != bindingB["base_revision"] ||
+		unchangedBReview["candidate_tree"] != bindingB["candidate_tree"] || unchangedBReview["generation"] != bindingB["generation"] {
+		t.Fatalf("A invalidated B: %+v", unchangedB)
+	}
+
+	conflict := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/rename", agentapi.ChangeSetRenameRequest{StatePreconditions: stateA, Name: "parallel b"}))
+	if conflict.OK || conflict.Error == nil || conflict.Error.Code != "change_set_name_conflict" {
+		t.Fatalf("active-name conflict: %+v", conflict)
+	}
+	renamedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/rename", agentapi.ChangeSetRenameRequest{StatePreconditions: stateA, Name: "Renamed A"}))
+	if !renamedA.OK || resultMap(t, renamedA)["generation"] != float64(3) {
+		t.Fatalf("rename A: %+v", renamedA)
+	}
+	staleDiscard := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/discard", agentapi.ChangeSetDiscardRequest{StatePreconditions: stateA}))
+	if staleDiscard.OK || staleDiscard.Error == nil || staleDiscard.Error.Code != "change_set_generation_mismatch" {
+		t.Fatalf("stale discard: %+v", staleDiscard)
+	}
+	stateA.Generation = 3
+	discardedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/discard", agentapi.ChangeSetDiscardRequest{StatePreconditions: stateA}))
+	if !discardedA.OK {
+		t.Fatalf("discard A: %+v", discardedA)
+	}
+	if keptB := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: projectA.StoreID, ChangeSetID: stateB.ChangeSetID})); !keptB.OK {
+		t.Fatalf("discard A removed B: %+v", keptB)
+	}
+
+	projectB := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Concurrent B"}))
+	late := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/create", agentapi.ChangeSetCreateRequest{StoreID: projectA.StoreID, AcceptedRevision: projectA.Revision}))
+	if late.OK || late.Error == nil || late.Error.Code != "project_mismatch" {
+		t.Fatalf("late Project A create while B current: %+v", late)
+	}
+	if projectB.StoreID == projectA.StoreID {
+		t.Fatal("projects reused a store identity")
+	}
+	openedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/projects/open", agentapi.ProjectOpenRequest{Slug: projectA.ProjectSlug}))
+	if !openedA.OK {
+		t.Fatalf("reopen A: %+v", openedA)
+	}
+	listedA := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/list", agentapi.ChangeSetsListRequest{StoreID: projectA.StoreID}))
+	if !listedA.OK || len(resultMap(t, listedA)["change_sets"].([]any)) != 1 {
+		t.Fatalf("late create changed A: %+v", listedA)
 	}
 }
 
-func TestAgentResultAndContextStayAtomicAcrossReviewAndAcceptanceRaces(t *testing.T) {
-	t.Run("review and mutation", func(t *testing.T) {
-		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Atomic review"}))
-		kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-			StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision},
-			Title:              "Gateway", DiagramID: &created.RootDiagramID,
-		}))
-		generation := *kept.Context.PendingGeneration
-		componentID := resultMap(t, kept)["component_id"].(string)
-		reached, release := make(chan struct{}), make(chan struct{})
-		state.beforeAgentResultCapture = func() {
-			state.beforeAgentResultCapture = nil
-			close(reached)
-			<-release
+func TestAgentV2NonCurrentAuthorityCannotMutateProposalRecords(t *testing.T) {
+	dataDirectory := t.TempDir()
+	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), dataDirectory)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Non-current"}))
+	change := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Retained")
+	exact := changeSetState(t, change)
+	storePath, err := state.architecture.StorePath(created.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, "--git-dir", storePath, "update-ref", "-d", "refs/heads/accepted", created.Revision)
+	refresh := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/refresh", agentapi.ArchitectureRefreshRequest{StoreID: created.StoreID, AcceptedRevision: created.Revision}))
+	if refresh.OK || refresh.Error == nil || refresh.Error.Code != "architecture_non_current" {
+		t.Fatalf("missing Accepted refresh: %+v", refresh)
+	}
+	state.stateMutex.Lock()
+	beforeObject := state.changeSets[exact.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	requests := []*httptest.ResponseRecorder{
+		postAgent(t, handler, "/api/agent/v2/change-sets/edit-proposal", agentapi.ChangeSetEditProposalRequest{StatePreconditions: exact, ProposalMarkdown: "must not persist"}),
+		postAgent(t, handler, "/api/agent/v2/change-sets/rename", agentapi.ChangeSetRenameRequest{StatePreconditions: exact, Name: "Must not persist"}),
+		postAgent(t, handler, "/api/agent/v2/change-sets/discard", agentapi.ChangeSetDiscardRequest{StatePreconditions: exact}),
+	}
+	for _, response := range requests {
+		envelope := decodeAgentEnvelope(t, response)
+		if envelope.OK || envelope.Error == nil || envelope.Error.Code != "architecture_non_current" {
+			t.Fatalf("non-current mutation: %+v", envelope)
 		}
-		reviewDone := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			reviewDone <- postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				Generation:         generation,
-			})
-		}()
-		<-reached
-		mutationDone := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			mutationDone <- postAgent(t, handler, "/api/agent/v1/components/edit", agentapi.ComponentEditRequest{
-				StatePreconditions: agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision, PendingGeneration: &generation},
-				ComponentID:        componentID, Title: pointerTo("After review"),
-			})
-		}()
-		select {
-		case <-mutationDone:
-			t.Fatal("mutation entered between review result and context capture")
-		case <-time.After(25 * time.Millisecond):
-		}
-		close(release)
-		reviewed := decodeAgentEnvelope(t, <-reviewDone)
-		mutated := decodeAgentEnvelope(t, <-mutationDone)
-		review := resultMap(t, reviewed)
-		if !reviewed.OK || review["generation"] != float64(generation) || reviewed.Context.PendingGeneration == nil || *reviewed.Context.PendingGeneration != generation {
-			t.Fatalf("review result/context mixed: %+v", reviewed)
-		}
-		if !mutated.OK || mutated.Context.PendingGeneration == nil || *mutated.Context.PendingGeneration != generation+1 {
-			t.Fatalf("serialized mutation = %+v", mutated)
-		}
+	}
+	state.stateMutex.Lock()
+	after := state.changeSets[exact.ChangeSetID]
+	state.stateMutex.Unlock()
+	if after == nil || after.refObject != beforeObject || after.name != "Retained" || after.proposal != "" || after.generation != 0 {
+		t.Fatalf("non-current authority mutated record: %+v", after)
+	}
+	if object := git(t, "--git-dir", filepath.Clean(storePath), "rev-parse", "refs/workbraid/change-sets/active/"+exact.ChangeSetID); object != beforeObject {
+		t.Fatalf("non-current authority changed ref: %s", object)
+	}
+	if inspected := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: created.StoreID, ChangeSetID: exact.ChangeSetID})); !inspected.OK || resultMap(t, inspected)["out_of_date"] != false {
+		t.Fatalf("read-only inspection mislabeled unknown authority: %+v", inspected)
+	}
+}
+
+func TestAgentV2AcceptanceCASRaceIsAnAcceptedConflict(t *testing.T) {
+	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Accepted race"}))
+	change := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Racing proposal")
+	exact := changeSetState(t, change)
+	mutated := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: exact, Title: "Proposed", DiagramID: &created.RootDiagramID,
+	}))
+	exact.Generation = uint64(resultMap(t, mutated)["generation"].(float64))
+	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: exact}))
+	binding := resultMap(t, reviewed)
+
+	state.stateMutex.Lock()
+	base := *state.loadedSnapshot
+	state.stateMutex.Unlock()
+	externalChange := state.architecture.NewComponentChange(base, nil, "External", "")
+	externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{externalChange}, architecture.CandidateComposition{
+		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: externalChange.ID, DiagramID: base.RootDiagramID()}},
 	})
-
-	t.Run("acceptance and project switch", func(t *testing.T) {
-		state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-		first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "First atomic"}))
-		second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Second atomic"}))
-		decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
-		kept := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-			StatePreconditions: agentapi.StatePreconditions{StoreID: first.StoreID, AcceptedRevision: first.Revision},
-			Title:              "Gateway", DiagramID: &first.RootDiagramID,
-		}))
-		generation := *kept.Context.PendingGeneration
-		reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/changes/review", agentapi.ChangesReviewRequest{
-			StatePreconditions: agentapi.StatePreconditions{StoreID: first.StoreID, AcceptedRevision: first.Revision, PendingGeneration: &generation},
-			Generation:         generation,
-		}))
-		review := resultMap(t, reviewed)
-		reached, release := make(chan struct{}), make(chan struct{})
-		state.beforeAgentResultCapture = func() {
-			state.beforeAgentResultCapture = nil
-			close(reached)
-			<-release
-		}
-		updateDone := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			updateDone <- postAgent(t, handler, "/api/agent/v1/architecture/update", agentapi.ArchitectureUpdateRequest{
-				StoreID: first.StoreID, BaseRevision: review["base_revision"].(string), CandidateTree: review["candidate_tree"].(string), Generation: generation,
-			})
-		}()
-		<-reached
-		openDone := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			openDone <- postAgent(t, handler, "/api/agent/v1/projects/open", agentapi.ProjectOpenRequest{Slug: second.ProjectSlug})
-		}()
-		select {
-		case <-openDone:
-			t.Fatal("project switch entered between acceptance result and context capture")
-		case <-time.After(25 * time.Millisecond):
-		}
-		close(release)
-		updated := decodeAgentEnvelope(t, <-updateDone)
-		opened := decodeAgentEnvelope(t, <-openDone)
-		result := resultMap(t, updated)
-		if !updated.OK || updated.Context.Project == nil || updated.Context.Project.StoreID != first.StoreID ||
-			updated.Context.AcceptedRevision == nil || result["accepted_revision"] != *updated.Context.AcceptedRevision || updated.Context.PendingGeneration != nil {
-			t.Fatalf("acceptance result/context mixed: %+v", updated)
-		}
-		if !opened.OK || opened.Context.Project == nil || opened.Context.Project.StoreID != second.StoreID {
-			t.Fatalf("serialized switch = %+v", opened)
-		}
-	})
-}
-
-func TestAgentRepairsAndRemovesEveryInvalidRawRelationshipSelector(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Raw selectors"}))
-	state := agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision}
-	source := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: state, Title: "Source", DiagramID: &created.RootDiagramID,
-	}))
-	sourceID := resultMap(t, source)["component_id"].(string)
-	state.PendingGeneration = source.Context.PendingGeneration
-	target := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-		StatePreconditions: state, Title: "Target", DiagramID: &created.RootDiagramID,
-	}))
-	targetID := resultMap(t, target)["component_id"].(string)
-	state.PendingGeneration = target.Context.PendingGeneration
-
-	add := func(targetValue, label string) agentapi.Envelope {
-		t.Helper()
-		result := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/add", agentapi.RelationshipAddRequest{
-			StatePreconditions: state, SourceID: sourceID, TargetID: targetValue, Label: label,
-		}))
-		if !result.OK {
-			t.Fatalf("add raw relationship: %+v", result)
-		}
-		state.PendingGeneration = result.Context.PendingGeneration
-		return result
+	if err != nil {
+		t.Fatal(err)
 	}
-	add("", "")
-	add("not-a-component-id", "   ")
-	unresolved := "00000000-0000-4000-8000-000000000099"
-	add(unresolved, "calls")
-
-	inspectedRequest := httptest.NewRequest(http.MethodGet, "/api/agent/v1/changes/inspect", nil)
-	inspectedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(inspectedResponse, inspectedRequest)
-	rows := resultMap(t, decodeAgentEnvelope(t, inspectedResponse))["components"].([]any)[0].(map[string]any)["relationships"].([]any)
-	if len(rows) != 3 || rows[0].(map[string]any)["target_id"] != "" || rows[0].(map[string]any)["label"] != "" ||
-		rows[1].(map[string]any)["target_id"] != "not-a-component-id" || rows[1].(map[string]any)["label"] != "   " ||
-		rows[2].(map[string]any)["target_id"] != unresolved {
-		t.Fatalf("raw pending rows lost fidelity: %#v", rows)
+	externalRevision, err := state.architecture.CreateSuccessor(context.Background(), base, externalCandidate)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	removedMalformed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/remove", agentapi.RelationshipRemoveRequest{
-		StatePreconditions: state, SourceID: sourceID, TargetID: "not-a-component-id", Label: "   ", Occurrence: 1,
-	}))
-	if !removedMalformed.OK {
-		t.Fatalf("remove malformed row: %+v", removedMalformed)
-	}
-	state.PendingGeneration = removedMalformed.Context.PendingGeneration
-	repairedEmpty := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/edit", agentapi.RelationshipEditRequest{
-		StatePreconditions: state, SourceID: sourceID, OldTargetID: "", OldLabel: "", Occurrence: 1, TargetID: targetID, Label: "recovers",
-	}))
-	if !repairedEmpty.OK {
-		t.Fatalf("repair empty row: %+v", repairedEmpty)
-	}
-	state.PendingGeneration = repairedEmpty.Context.PendingGeneration
-	repairedUnresolved := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/edit", agentapi.RelationshipEditRequest{
-		StatePreconditions: state, SourceID: sourceID, OldTargetID: unresolved, OldLabel: "calls", Occurrence: 1, TargetID: targetID, Label: "calls",
-	}))
-	if !repairedUnresolved.OK || resultMap(t, repairedUnresolved)["candidate_valid"] != true {
-		t.Fatalf("repair unresolved row: %+v", repairedUnresolved)
-	}
-	state.PendingGeneration = repairedUnresolved.Context.PendingGeneration
-	add(targetID, "duplicate")
-	add(targetID, "duplicate")
-	removedSecond := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/relationships/remove", agentapi.RelationshipRemoveRequest{
-		StatePreconditions: state, SourceID: sourceID, TargetID: targetID, Label: "duplicate", Occurrence: 2,
-	}))
-	if !removedSecond.OK {
-		t.Fatalf("remove duplicate occurrence: %+v", removedSecond)
-	}
-	state.PendingGeneration = removedSecond.Context.PendingGeneration
-
-	inspectedRequest = httptest.NewRequest(http.MethodGet, "/api/agent/v1/changes/inspect", nil)
-	inspectedResponse = httptest.NewRecorder()
-	handler.ServeHTTP(inspectedResponse, inspectedRequest)
-	rows = resultMap(t, decodeAgentEnvelope(t, inspectedResponse))["components"].([]any)[0].(map[string]any)["relationships"].([]any)
-	duplicateCount := 0
-	for _, rowValue := range rows {
-		row := rowValue.(map[string]any)
-		if row["target_id"] == targetID && row["label"] == "duplicate" {
-			duplicateCount++
+	state.beforeAcceptedCAS = func(string) {
+		if advanceErr := state.architecture.AdvanceAccepted(context.Background(), base, externalRevision); advanceErr != nil {
+			t.Error(advanceErr)
 		}
 	}
-	if duplicateCount != 1 {
-		t.Fatalf("occurrence selection removed wrong rows: %#v", rows)
+	result := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: exact.ChangeSetID, BaseRevision: binding["base_revision"].(string), CandidateTree: binding["candidate_tree"].(string), Generation: exact.Generation,
+	}))
+	if result.OK || result.Error == nil || result.Error.Code != "accepted_conflict" {
+		t.Fatalf("Accepted CAS race: %+v", result)
+	}
+	state.stateMutex.Lock()
+	retained := state.changeSets[exact.ChangeSetID]
+	state.stateMutex.Unlock()
+	if retained == nil || retained.lifecycle != "active" || retained.generation != exact.Generation || retained.review == nil {
+		t.Fatalf("CAS race did not retain exact proposal: %+v", retained)
 	}
 }
 
-func TestAgentUsesBrowserCompositionOperationsForNestedHomeAndReferenceChanges(t *testing.T) {
-	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
-	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Agent composition"}))
-	state := agentapi.StatePreconditions{StoreID: created.StoreID, AcceptedRevision: created.Revision}
-	create := func(title string) agentapi.Envelope {
-		t.Helper()
-		result := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/create", agentapi.ComponentCreateRequest{
-			StatePreconditions: state, Title: title, DiagramID: &created.RootDiagramID,
-		}))
-		state.PendingGeneration = result.Context.PendingGeneration
-		return result
+func TestAgentV2RejectsLegacyPathAndUsesExplicitGeneration(t *testing.T) {
+	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+	legacy := getAgent(t, handler, "/api/agent/v1/status")
+	if legacy.OK || legacy.Error == nil || legacy.Error.Code != "incompatible_server" {
+		t.Fatalf("legacy protocol response: %+v", legacy)
 	}
-	gateway := create("Gateway")
-	worker := create("Worker")
-	gatewayID := resultMap(t, gateway)["component_id"].(string)
-	workerID := resultMap(t, worker)["component_id"].(string)
-	detail := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/diagrams/create-detail", agentapi.DiagramCreateDetailRequest{
-		StatePreconditions: state, ComponentID: gatewayID, Title: "Gateway internals",
-	}))
-	if !detail.OK {
-		t.Fatalf("create detail: %+v", detail)
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Exact preconditions"}))
+	change := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Exact")
+	exact := changeSetState(t, change)
+	wrong := exact
+	wrong.Generation++
+	result := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{StatePreconditions: wrong, Title: "No write", DiagramID: &created.RootDiagramID}))
+	if result.OK || result.Error == nil || result.Error.Code != "change_set_generation_mismatch" {
+		t.Fatalf("wrong generation: %+v", result)
 	}
-	detailID := resultMap(t, detail)["diagram_id"].(string)
-	state.PendingGeneration = detail.Context.PendingGeneration
-	moved := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/components/move-home", agentapi.ComponentMoveHomeRequest{
-		StatePreconditions: state, ComponentID: workerID, DiagramID: detailID,
-	}))
-	if !moved.OK {
-		t.Fatalf("move home: %+v", moved)
-	}
-	state.PendingGeneration = moved.Context.PendingGeneration
-	shown := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/diagrams/show-component", agentapi.DiagramComponentRequest{
-		StatePreconditions: state, DiagramID: detailID, ComponentID: gatewayID,
-	}))
-	if !shown.OK {
-		t.Fatalf("show reference: %+v", shown)
-	}
-	state.PendingGeneration = shown.Context.PendingGeneration
-	renamed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/diagrams/edit-title", agentapi.DiagramEditTitleRequest{
-		StatePreconditions: state, DiagramID: detailID, Title: "Runtime internals",
-	}))
-	if !renamed.OK {
-		t.Fatalf("edit title: %+v", renamed)
-	}
-	state.PendingGeneration = renamed.Context.PendingGeneration
-	stopped := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v1/diagrams/stop-showing-component", agentapi.DiagramComponentRequest{
-		StatePreconditions: state, DiagramID: detailID, ComponentID: gatewayID,
-	}))
-	if !stopped.OK || resultMap(t, stopped)["candidate_valid"] != true {
-		t.Fatalf("stop reference: %+v", stopped)
+	state.stateMutex.Lock()
+	record := state.changeSets[exact.ChangeSetID]
+	state.stateMutex.Unlock()
+	if record == nil || record.generation != 0 || len(record.changes) != 0 {
+		t.Fatalf("wrong generation mutated record: %+v", record)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/api/agent/v1/changes/inspect", nil)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	changes := resultMap(t, decodeAgentEnvelope(t, response))
-	if len(changes["detail_diagrams"].([]any)) != 1 || len(changes["home_moves"].([]any)) != 1 || len(changes["references"].([]any)) != 2 {
-		t.Fatalf("composition projection incomplete: %#v", changes)
+	missing := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", map[string]any{
+		"store_id": exact.StoreID, "change_set_id": exact.ChangeSetID, "title": "No implicit zero", "diagram_id": created.RootDiagramID,
+	}))
+	if missing.OK || missing.Error == nil || missing.Error.Code != "invalid_request" {
+		t.Fatalf("missing generation: %+v", missing)
 	}
-	diagrams := changes["candidate"].(map[string]any)["diagrams"].([]any)
-	foundRuntime := false
-	for _, value := range diagrams {
-		diagram := value.(map[string]any)
-		if diagram["id"] == detailID && diagram["title"] == "Runtime internals" {
-			foundRuntime = true
-		}
+
+	createdComponent := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: exact, Title: "Stable", DiagramID: &created.RootDiagramID,
+	}))
+	componentID := resultMap(t, createdComponent)["component_id"].(string)
+	exact.Generation = uint64(resultMap(t, createdComponent)["generation"].(float64))
+	state.stateMutex.Lock()
+	beforeObject := state.changeSets[exact.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	noOp := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/edit", agentapi.ComponentEditRequest{
+		StatePreconditions: exact, ComponentID: componentID, Title: pointerTo("Stable"),
+	}))
+	if !noOp.OK || resultMap(t, noOp)["unchanged"] != true || uint64(resultMap(t, noOp)["generation"].(float64)) != exact.Generation {
+		t.Fatalf("component no-op: %+v", noOp)
 	}
-	if !foundRuntime {
-		t.Fatalf("candidate did not retain nested title: %#v", diagrams)
+	noOpDiagram := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/diagrams/edit-title", agentapi.DiagramEditTitleRequest{
+		StatePreconditions: exact, DiagramID: created.RootDiagramID, Title: "Exact preconditions",
+	}))
+	if !noOpDiagram.OK || resultMap(t, noOpDiagram)["unchanged"] != true || uint64(resultMap(t, noOpDiagram)["generation"].(float64)) != exact.Generation {
+		t.Fatalf("Diagram no-op: %+v", noOpDiagram)
+	}
+	state.stateMutex.Lock()
+	afterObject := state.changeSets[exact.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	if afterObject != beforeObject {
+		t.Fatalf("no-op rewrote durable state: before=%s after=%s", beforeObject, afterObject)
+	}
+	changedDiagram := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/diagrams/edit-title", agentapi.DiagramEditTitleRequest{
+		StatePreconditions: exact, DiagramID: created.RootDiagramID, Title: "Changed title",
+	}))
+	if !changedDiagram.OK || resultMap(t, changedDiagram)["generation"] != float64(exact.Generation+1) {
+		t.Fatalf("Diagram title change: %+v", changedDiagram)
+	}
+	exact.Generation++
+	revertedDiagram := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/diagrams/edit-title", agentapi.DiagramEditTitleRequest{
+		StatePreconditions: exact, DiagramID: created.RootDiagramID, Title: "Exact preconditions",
+	}))
+	if !revertedDiagram.OK || resultMap(t, revertedDiagram)["generation"] != float64(exact.Generation+1) || resultMap(t, revertedDiagram)["unchanged"] != nil {
+		t.Fatalf("Diagram title revert: %+v", revertedDiagram)
+	}
+	exact.Generation++
+	inspected := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/inspect", agentapi.ChangeSetInspectRequest{StoreID: exact.StoreID, ChangeSetID: exact.ChangeSetID}))
+	if titles := resultMap(t, inspected)["diagram_titles"].([]any); len(titles) != 0 {
+		t.Fatalf("reverted Diagram title left redundant facts: %+v", titles)
+	}
+	state.stateMutex.Lock()
+	revertedObject := state.changeSets[exact.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	repeatedRevert := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/diagrams/edit-title", agentapi.DiagramEditTitleRequest{
+		StatePreconditions: exact, DiagramID: created.RootDiagramID, Title: "Exact preconditions",
+	}))
+	if !repeatedRevert.OK || resultMap(t, repeatedRevert)["unchanged"] != true || resultMap(t, repeatedRevert)["generation"] != float64(exact.Generation) {
+		t.Fatalf("repeated Diagram revert: %+v", repeatedRevert)
+	}
+	state.stateMutex.Lock()
+	finalObject := state.changeSets[exact.ChangeSetID].refObject
+	state.stateMutex.Unlock()
+	if finalObject != revertedObject {
+		t.Fatalf("repeated Diagram revert rewrote state: before=%s after=%s", revertedObject, finalObject)
 	}
 }
 

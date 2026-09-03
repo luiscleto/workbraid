@@ -129,8 +129,9 @@ func TestEveryLoadedProjectActionRequiresStoreIdentityAsWellAsSlug(t *testing.T)
 	}
 	state.stateMutex.Lock()
 	defer state.stateMutex.Unlock()
-	if state.loadedProject.storeID != second.StoreID || state.pending == nil || len(state.pending.changes) != 1 {
-		t.Fatalf("stale action changed current state: project=%+v pending=%+v", state.loadedProject, state.pending)
+	active := testActiveChangeSet(state)
+	if state.loadedProject.storeID != second.StoreID || active == nil || len(active.changes) != 1 {
+		t.Fatalf("stale action changed current state: project=%+v active=%+v", state.loadedProject, active)
 	}
 }
 
@@ -214,136 +215,6 @@ func TestRefreshConflictScanPrecedesMandatoryFinalAcceptedObservation(t *testing
 	}
 }
 
-func TestStaleReopenCacheCannotOverrideConclusiveRefreshAuthority(t *testing.T) {
-	for _, scenario := range []string{"invalid", "unsupported", "missing", "third", "catalog conflict"} {
-		t.Run(scenario, func(t *testing.T) {
-			fixture := newNativeRefreshFixture(t, false)
-			decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
-				ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-			})))
-			baseSnapshot := *fixture.state.loadedSnapshot
-			cachedRevision := fixture.advanceTitle(t, baseSnapshot, "Cached current")
-			cachedSnapshot, err := fixture.state.architecture.LoadRevision(context.Background(), baseSnapshot, cachedRevision)
-			if err != nil {
-				t.Fatal(err)
-			}
-			reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": fixture.base.ProjectSlug}))
-			if !reopened.Stale || reopened.Changes == nil || !reopened.Changes.Stale || fixture.state.loadedProject.validatedCurrent == nil {
-				t.Fatalf("fixture did not retain stale base/current cache: %+v project=%+v", reopened, fixture.state.loadedProject)
-			}
-
-			switch scenario {
-			case "invalid":
-				replaceAcceptedManifest(t, fixture.storePath, cachedRevision, func(value string) string {
-					return strings.Replace(value, "slug: refresh-fixture", "slug: Invalid", 1)
-				})
-			case "unsupported":
-				replaceAcceptedManifest(t, fixture.storePath, cachedRevision, func(value string) string {
-					return strings.Replace(value, "version: 2", "version: 3", 1)
-				})
-			case "missing":
-				git(t, "--git-dir", fixture.storePath, "update-ref", "-d", "refs/heads/accepted", cachedRevision)
-			case "third":
-				candidate, constructErr := fixture.state.architecture.ConstructCandidate(context.Background(), cachedSnapshot, nil, architecture.CandidateComposition{
-					DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: cachedSnapshot.RootDiagramID(), Title: "Third"}},
-				})
-				if constructErr != nil {
-					t.Fatal(constructErr)
-				}
-				third, createErr := fixture.state.architecture.CreateSuccessor(context.Background(), cachedSnapshot, candidate)
-				if createErr != nil {
-					t.Fatal(createErr)
-				}
-				fixture.state.beforeRefreshReobserve = func(string) {
-					git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", third, cachedRevision)
-				}
-			case "catalog conflict":
-				other, createErr := fixture.state.architecture.CreateProject(context.Background(), "Other")
-				if createErr != nil {
-					t.Fatal(createErr)
-				}
-				otherPath, pathErr := fixture.state.architecture.StorePath(other.StoreID())
-				if pathErr != nil {
-					t.Fatal(pathErr)
-				}
-				replaceAcceptedManifest(t, otherPath, other.Revision(), func(value string) string {
-					return strings.Replace(value, "slug: other", "slug: refresh-fixture", 1)
-				})
-			}
-
-			response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action())
-			result := decodeArchitectureBody(t, response)
-			if response.Code < 400 || !result.Stale || result.Changes == nil || !result.Changes.Stale || fixture.state.loadedProject.validatedCurrent != nil {
-				t.Fatalf("conclusive %s retained cached authority: status=%d result=%+v project=%+v", scenario, response.Code, result, fixture.state.loadedProject)
-			}
-			discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", fixture.action()))
-			if discarded.Revision != fixture.base.Revision || !discarded.Stale || discarded.Changes != nil {
-				t.Fatalf("discard republished cached revision after %s: %+v", scenario, discarded)
-			}
-		})
-	}
-}
-
-func TestRefreshReturnToRetainedRevisionSynchronizesSlugAndClearsCache(t *testing.T) {
-	fixture := newNativeRefreshFixture(t, false)
-	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
-		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-	})))
-	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
-		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
-	})
-	reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": "moved-locator"}))
-	if reopened.ProjectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent == nil {
-		t.Fatalf("stale reopen did not retain changed locator: %+v project=%+v", reopened, fixture.state.loadedProject)
-	}
-	fixture.state.beforeRefreshReobserve = func(string) {
-		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
-	}
-	refreshed := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(reopened)))
-	if refreshed.Revision != fixture.base.Revision || refreshed.ProjectSlug != fixture.base.ProjectSlug || refreshed.Stale || refreshed.Changes == nil || !refreshed.Changes.Stale {
-		t.Fatalf("return-to-retained result=%+v", refreshed)
-	}
-	if fixture.state.loadedProject.projectSlug != fixture.base.ProjectSlug || fixture.state.loadedProject.validatedCurrent != nil {
-		t.Fatalf("retained authority did not synchronize project: %+v", fixture.state.loadedProject)
-	}
-	discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", fixture.action()))
-	if discarded.Revision != fixture.base.Revision || discarded.ProjectSlug != fixture.base.ProjectSlug || discarded.Stale || discarded.Changes != nil {
-		t.Fatalf("discard after retained return=%+v", discarded)
-	}
-}
-
-func TestRefreshReturnToRetainedRevisionRejectsAmbiguousRetainedSlug(t *testing.T) {
-	fixture := newNativeRefreshFixture(t, false)
-	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
-		ComponentID: fixture.component, Description: "Old pending.\n", DescriptionChanged: true,
-	})))
-	changedSlugRevision := replaceAcceptedManifest(t, fixture.storePath, fixture.base.Revision, func(value string) string {
-		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-locator", 1)
-	})
-	reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": "moved-locator"}))
-	if reopened.ProjectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent == nil {
-		t.Fatalf("stale reopen did not retain changed locator: %+v project=%+v", reopened, fixture.state.loadedProject)
-	}
-	other, err := fixture.state.architecture.CreateProject(context.Background(), "Refresh fixture")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if other.ProjectSlug() != fixture.base.ProjectSlug {
-		t.Fatalf("other slug=%q want retained slug=%q", other.ProjectSlug(), fixture.base.ProjectSlug)
-	}
-	fixture.state.beforeRefreshReobserve = func(string) {
-		git(t, "--git-dir", fixture.storePath, "update-ref", "refs/heads/accepted", fixture.base.Revision, changedSlugRevision)
-	}
-	response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", observedAction(reopened))
-	result := decodeArchitectureBody(t, response)
-	if response.Code != http.StatusConflict || result.ActionError != errorCatalogConflict || !result.Stale || result.ProjectSlug != "moved-locator" {
-		t.Fatalf("ambiguous retained locator was published: status=%d result=%+v", response.Code, result)
-	}
-	if fixture.state.loadedProject.projectSlug != "moved-locator" || fixture.state.loadedProject.validatedCurrent != nil {
-		t.Fatalf("ambiguous retained locator changed loaded project: %+v", fixture.state.loadedProject)
-	}
-}
-
 func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, false)
 	decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/components/edit", observedComponentMutation(fixture.base, componentMutationRequest{
@@ -353,9 +224,10 @@ func TestSlugChangingReopenKeepsCurrentRouteAndOldPendingUntilDiscard(t *testing
 		return strings.Replace(value, "slug: refresh-fixture", "slug: moved-project", 1)
 	})
 	reopened := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": "moved-project"}))
-	if reopened.ProjectSlug != "moved-project" || reopened.Revision != fixture.base.Revision || !reopened.Stale || reopened.Changes == nil || !reopened.Changes.Stale {
-		t.Fatalf("stale reopen lost route/base distinction: %+v", reopened)
+	if reopened.ProjectSlug != "moved-project" || reopened.Revision != newRevision || reopened.Stale || reopened.Changes != nil || len(reopened.ChangeSets) != 1 || !reopened.ChangeSets[0].OutOfDate {
+		t.Fatalf("open did not adopt the current route and preserve proposal context: %+v", reopened)
 	}
+	selectActiveChangeSetForTest(&reopened, reopened.ChangeSets[0].ID)
 	discarded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/discard", observedAction(reopened)))
 	if discarded.ProjectSlug != "moved-project" || discarded.Revision != newRevision || discarded.Stale || discarded.Changes != nil {
 		t.Fatalf("discard did not recover validated current snapshot: %+v", discarded)
@@ -393,21 +265,24 @@ func TestSameHomeMoveIsAnExactNoOp(t *testing.T) {
 
 func TestRefreshUnchangedPreservesExactReviewBinding(t *testing.T) {
 	fixture := newNativeRefreshFixture(t, true)
-	before := *fixture.state.pending.review
+	active := testActiveChangeSet(fixture.state)
+	before := *active.review
 	result := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action()))
+	selectActiveChangeSetForTest(&result, active.id)
 	if result.ActionError != "" || result.Stale || result.Changes == nil || result.Changes.Stale || result.Changes.Review == nil ||
-		!reflect.DeepEqual(*result.Changes.Review, reviewResponseForBinding(before, fixture.state.pending.baseSnapshot)) {
+		!reflect.DeepEqual(*result.Changes.Review, reviewResponseForBinding(active.id, before, active.baseSnapshot)) {
 		t.Fatalf("unchanged Refresh displaced review presentation: result=%+v", result.Changes)
 	}
-	if fixture.state.pending.review == nil || !reflect.DeepEqual(*fixture.state.pending.review, before) {
-		t.Fatalf("unchanged Refresh displaced binding: pending=%+v", fixture.state.pending.review)
+	current := testActiveChangeSet(fixture.state)
+	if current.review == nil || !reflect.DeepEqual(*current.review, before) {
+		t.Fatalf("unchanged Refresh displaced binding: review=%+v", current.review)
 	}
 }
 
-func reviewResponseForBinding(binding reviewBinding, base architecture.Snapshot) reviewResponse {
+func reviewResponseForBinding(changeSetID string, binding reviewBinding, base architecture.Snapshot) reviewResponse {
 	before, withChanges, comparison := captureReviewPresentation(base, binding.candidate.Snapshot())
 	return reviewResponse{
-		Diff: binding.diff, BaseRevision: binding.baseRevision, CandidateTree: binding.candidateTree, Generation: binding.generation,
+		ChangeSetID: changeSetID, Diff: binding.diff, BaseRevision: binding.baseRevision, CandidateTree: binding.candidateTree, Generation: binding.generation,
 		Before: before, WithChanges: withChanges, Comparison: comparison,
 	}
 }
@@ -443,21 +318,21 @@ func TestRefreshConclusiveAndIndeterminateFailuresRemainDistinct(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newNativeRefreshFixture(t, true)
-			binding := *fixture.state.pending.review
+			active := testActiveChangeSet(fixture.state)
+			binding := *active.review
 			test.arrange(t, fixture)
 			response := postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action())
 			if test.restore != nil {
 				test.restore(t, fixture)
 			}
 			result := decodeArchitectureBody(t, response)
+			selectActiveChangeSetForTest(&result, active.id)
 			if response.Code != test.wantStatus || result.ActionError != test.wantError || result.Stale != test.stale || result.Changes == nil || result.Changes.Stale != test.stale {
 				t.Fatalf("status=%d result=%+v", response.Code, result)
 			}
-			if test.stale && result.Changes.Review != nil {
-				t.Fatal("conclusive failure retained review")
-			}
-			if !test.stale && (fixture.state.pending.review == nil || !reflect.DeepEqual(*fixture.state.pending.review, binding)) {
-				t.Fatal("indeterminate failure invalidated review or invented staleness")
+			current := testActiveChangeSet(fixture.state)
+			if current.review == nil || !reflect.DeepEqual(*current.review, binding) || result.Changes.Review == nil {
+				t.Fatal("Refresh failure changed the durable review binding")
 			}
 		})
 	}
@@ -467,6 +342,7 @@ func TestRefreshFinalObservationRaceClassifications(t *testing.T) {
 	for _, scenario := range []string{"retained", "third", "missing", "indeterminate"} {
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newNativeRefreshFixture(t, true)
+			active := testActiveChangeSet(fixture.state)
 			baseSnapshot := *fixture.state.loadedSnapshot
 			observed := fixture.advanceTitle(t, baseSnapshot, "Observed")
 			observedSnapshot, err := fixture.state.architecture.LoadRevision(context.Background(), baseSnapshot, observed)
@@ -503,6 +379,7 @@ func TestRefreshFinalObservationRaceClassifications(t *testing.T) {
 				}
 			}
 			result := decodeArchitectureBody(t, response)
+			selectActiveChangeSetForTest(&result, active.id)
 			switch scenario {
 			case "retained":
 				if response.Code != http.StatusOK || result.Revision != fixture.base.Revision || result.Stale || result.Changes == nil || result.Changes.Review == nil {
@@ -571,13 +448,14 @@ func TestRefreshAdoptsNonLinearRevisionAndSerializesMutation(t *testing.T) {
 func TestStalePreObservationCreatesNoSuccessorAndInvalidReviewSurvivesReload(t *testing.T) {
 	t.Run("stale confirmation", func(t *testing.T) {
 		fixture := newNativeRefreshFixture(t, true)
-		review := *fixture.state.pending.review
+		active := testActiveChangeSet(fixture.state)
+		review := *active.review
 		base := *fixture.state.loadedSnapshot
 		fixture.advanceTitle(t, base, "External")
 		createdSuccessor := false
 		fixture.state.beforeAcceptedCAS = func(string) { createdSuccessor = true }
 		response := postJSONRequest(t, fixture.handler, "/api/architecture/accept", acceptChangesRequest{
-			ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, BaseRevision: review.baseRevision,
+			ProjectSlug: fixture.base.ProjectSlug, StoreID: fixture.base.StoreID, ChangeSetID: active.id, BaseRevision: review.baseRevision,
 			CandidateTree: review.candidateTree, Generation: review.generation,
 		})
 		result := decodeArchitectureBody(t, response)
@@ -593,12 +471,13 @@ func TestStalePreObservationCreatesNoSuccessorAndInvalidReviewSurvivesReload(t *
 		if kept.Changes == nil || kept.Changes.Valid {
 			t.Fatalf("invalid=%+v", kept.Changes)
 		}
-		blockedResponse := postJSONRequest(t, fixture.handler, "/api/architecture/review", fixture.action())
+		blockedResponse := postJSONRequest(t, fixture.handler, "/api/architecture/review", observedAction(kept))
 		blocked := decodeArchitectureBody(t, blockedResponse)
 		if blockedResponse.Code != http.StatusUnprocessableEntity || blocked.Changes == nil || blocked.Changes.ReviewBlocker != "title_required" {
 			t.Fatalf("blocked=%+v", blocked)
 		}
 		reloaded := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/projects/open", map[string]any{"project_slug": fixture.base.ProjectSlug}))
+		selectActiveChangeSetForTest(&reloaded, kept.Changes.ID)
 		if reloaded.Changes == nil || reloaded.Changes.ReviewBlocker != "title_required" || reloaded.Revision != fixture.base.Revision {
 			t.Fatalf("reload=%+v", reloaded)
 		}

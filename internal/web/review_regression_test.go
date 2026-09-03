@@ -107,13 +107,14 @@ func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testi
 				t.Fatalf("captured response mixed generations: %+v", review)
 			}
 			state.stateMutex.Lock()
-			current := state.pending != nil && state.pending.review != nil && state.pending.review.generation == state.pending.generation
+			active := testActiveChangeSet(state)
+			current := active != nil && active.review != nil && active.review.generation == active.generation
 			state.stateMutex.Unlock()
 			if current {
 				t.Fatalf("%s retained the invalidated binding", action)
 			}
 			confirmation := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
-				ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, BaseRevision: review.BaseRevision,
+				ProjectSlug: base.ProjectSlug, StoreID: base.StoreID, ChangeSetID: review.ChangeSetID, BaseRevision: review.BaseRevision,
 				CandidateTree: review.CandidateTree, Generation: review.Generation,
 			})
 			if confirmation.Code != http.StatusConflict {

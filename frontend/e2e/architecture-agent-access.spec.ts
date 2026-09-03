@@ -11,14 +11,15 @@ const repositoryRoot = resolve(frontendRoot, '..')
 
 type RunningWorkBraid = { child: ChildProcess; origin: string; logFD: number }
 type AgentEnvelope = {
+  protocol: string
   ok: boolean
-  context: { project?: { store_id: string; slug: string }; accepted_revision?: string; pending_generation?: number | null }
+  context: { project?: { store_id: string; slug: string }; accepted_revision?: string }
   result?: Record<string, any>
   error?: { code: string }
 }
 
-test('agent work stays coherent with the production browser across stale submission, review, acceptance, and restart', async ({ page }) => {
-  const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-agent-access-'))
+test('built browser and Agent v2 preserve independent active/applied proposals across restart', async ({ page }) => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-change-sets-'))
   const dataRoot = join(runtimeRoot, 'app-data')
   const binary = join(runtimeRoot, 'workbraid')
   let application: RunningWorkBraid | undefined
@@ -30,89 +31,137 @@ test('agent work stays coherent with the production browser across stale submiss
     application = await startWorkBraid(binary, dataRoot, port, runtimeRoot)
 
     await page.goto(application.origin)
-    await page.getByLabel('New project').fill('Agent shared system')
+    await page.getByLabel('New project').fill('Change set evidence')
     await page.getByRole('button', { name: 'Create project' }).click()
-    await expect(page).toHaveURL(`${application.origin}/projects/agent-shared-system`)
+    await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)
 
-    const accepted = agent(binary, application.origin, ['architecture', 'inspect'])
-    const storeID = accepted.context.project!.store_id
-    const revision = accepted.context.accepted_revision!
-    const rootDiagramID = accepted.result!.root_diagram_id as string
+    const acceptedR0 = agent(binary, application.origin, ['architecture', 'inspect'])
+    const storeID = acceptedR0.context.project!.store_id
+    const revisionR0 = acceptedR0.context.accepted_revision!
 
-    // Hold an editor based on generation null while the agent advances the
-    // one backend-owned pending set. The stale browser submission must lose.
-    await page.getByRole('button', { name: 'Add component' }).click()
-    await page.getByLabel('Title').fill('Stale browser component')
-    await page.getByLabel('Description').fill('Must not overwrite agent work.\n')
-    const gateway = agent(binary, application.origin, [
-      'component', 'create', '--store-id', storeID, '--accepted-revision', revision, '--generation', 'none',
-      '--diagram-id', rootDiagramID, '--title', 'Agent gateway', '--description', 'Routes requests.\n',
-    ])
-    expect(gateway.context.pending_generation).toBe(1)
-    await page.getByRole('button', { name: 'Keep change' }).click()
-    await expect(page.getByRole('alert')).toHaveText('Changes are already in progress for another architecture.')
-    const afterStale = agent(binary, application.origin, ['changes', 'inspect'])
-    expect(afterStale.context.pending_generation).toBe(1)
-    expect((afterStale.result!.components as Array<{ title: string }>).map((component) => component.title)).toEqual(['Agent gateway'])
+    await createBrowserChangeSet(page, 'Change A')
+    await page.getByLabel('Proposal Markdown').fill('# Change A\n\nRoute requests through a durable gateway.\n')
+    await page.getByRole('button', { name: 'Keep proposal' }).click()
+    await addBrowserComponent(page, 'Gateway', 'Routes requests.\n')
 
-    await page.reload()
-    await expect(page.getByRole('heading', { name: 'Changes in progress' })).toBeVisible()
-    await expect(page.locator('.changes-in-progress > ul > li').filter({ hasText: 'Agent gateway' })).toBeVisible()
+    await createBrowserChangeSet(page, 'Change B')
+    await page.getByLabel('Proposal Markdown').fill('# Change B\n\nAdd an independent worker.\n')
+    await page.getByRole('button', { name: 'Keep proposal' }).click()
+    await addBrowserComponent(page, 'Worker', 'Processes work.\n')
 
-    const gatewayID = gateway.result!.component_id as string
-    const worker = agent(binary, application.origin, [
-      'component', 'create', '--store-id', storeID, '--accepted-revision', revision, '--generation', '1',
-      '--diagram-id', rootDiagramID, '--title', 'Agent worker', '--description', 'Processes work.\n',
-    ])
-    const workerID = worker.result!.component_id as string
-    const relationship = agent(binary, application.origin, [
-      'relationship', 'add', '--store-id', storeID, '--accepted-revision', revision, '--generation', '2',
-      '--source-id', gatewayID, '--target-id', workerID, '--label', 'dispatches',
-    ])
-    const detail = agent(binary, application.origin, [
-      'diagram', 'create-detail', '--store-id', storeID, '--accepted-revision', revision,
-      '--generation', String(relationship.context.pending_generation), '--component-id', gatewayID, '--title', 'Gateway internals',
-    ])
-    expect(detail.context.pending_generation).toBe(4)
-    const reviewed = agent(binary, application.origin, [
-      'changes', 'review', '--store-id', storeID, '--accepted-revision', revision, '--generation', '4',
-    ])
-    expect(reviewed.result!.candidate_tree).toMatch(/^[0-9a-f]{40}$/)
+    const listed = agent(binary, application.origin, ['change-set', 'list', '--store-id', storeID])
+    const records = listed.result!.change_sets as Array<Record<string, any>>
+    const changeA = records.find((record) => record.name === 'Change A')!
+    const changeB = records.find((record) => record.name === 'Change B')!
+    expect(changeA.id).not.toBe(changeB.id)
+    expect(changeA.base_revision).toBe(revisionR0)
+    expect(changeB.base_revision).toBe(revisionR0)
 
-    await page.reload()
-    await expect(page.locator('.review-workspace-pane')).toBeVisible()
-    await expect(page.getByTestId('raw-diff')).toContainText('Agent gateway')
-    await expect(page.getByTestId('raw-diff')).toContainText('dispatches')
+    const workerID = (changeB.components as Array<Record<string, any>>)[0].id as string
+    const invalidB = agent(binary, application.origin, [
+      'relationship', 'add', '--store-id', storeID, '--change-set-id', changeB.id, '--generation', String(changeB.generation),
+      '--source-id', workerID, '--target-id', 'not-a-uuid', '--label', '   ',
+    ])
+    expect(invalidB.result!.candidate_valid).toBe(false)
+
+    await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(page.getByRole('heading', { name: 'Needs correction' })).toBeVisible()
+    await expect(page.getByTestId('architecture-map')).toHaveCount(0)
+
+    await page.getByLabel('Architecture context').selectOption(changeA.id)
+    await page.getByRole('button', { name: 'Change set', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Proposed: Change A' })).toBeVisible()
+    await page.getByRole('button', { name: 'Review changes' }).click()
+    await expect(page.getByTestId('raw-diff')).toContainText('Gateway')
     await page.getByRole('button', { name: 'Update architecture' }).click()
-    await expect(page.locator('.review-workspace-pane')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Applied: Change A' })).toBeVisible()
+    await expect(page.getByLabel('Change-set name')).toHaveCount(0)
+    await expect(page.getByText(/Out of date with Accepted/)).toHaveCount(0)
+    const revisionR1 = agent(binary, application.origin, ['architecture', 'inspect']).context.accepted_revision!
+    expect(revisionR1).not.toBe(revisionR0)
 
-    const agentAccepted = agent(binary, application.origin, ['architecture', 'inspect'])
-    expect(agentAccepted.context.accepted_revision).not.toBe(revision)
-    expect(agentAccepted.context.pending_generation).toBeNull()
-    const acceptedComponents = agentAccepted.result!.components as Array<{ id: string; title: string; relationships: Array<{ target_id: string; label: string }> }>
-    expect(acceptedComponents.find((component) => component.id === gatewayID)?.relationships).toEqual([{ target_id: workerID, label: 'dispatches' }])
-    expect((agentAccepted.result!.diagrams as Array<{ id: string; title: string }>).some((diagram) => diagram.title === 'Gateway internals')).toBe(true)
+    await page.getByLabel('Architecture context').selectOption(changeB.id)
+    await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Needs correction' })).toBeVisible()
+    const inspectedInvalidB = agent(binary, application.origin, ['change-set', 'inspect', '--store-id', storeID, '--change-set-id', changeB.id])
+    const repairedB = agent(binary, application.origin, [
+      'relationship', 'edit', '--store-id', storeID, '--change-set-id', changeB.id, '--generation', String(inspectedInvalidB.result!.generation),
+      '--source-id', workerID, '--old-target-id', 'not-a-uuid', '--old-label', '   ', '--target-id', workerID, '--label', 'retries',
+    ])
+    expect(repairedB.result!.candidate_valid).toBe(true)
+    const reviewedB = agent(binary, application.origin, [
+      'change-set', 'review', '--store-id', storeID, '--change-set-id', changeB.id, '--generation', String(repairedB.result!.generation),
+    ])
+    const rejectedB = agentFailure(binary, application.origin, [
+      'architecture', 'update', '--store-id', storeID, '--change-set-id', changeB.id,
+      '--base-revision', reviewedB.result!.base_revision, '--candidate-tree', reviewedB.result!.candidate_tree,
+      '--generation', String(reviewedB.result!.generation),
+    ])
+    expect(rejectedB.error?.code).toBe('change_set_out_of_date')
+    expect(rejectedB.context.accepted_revision).toBe(revisionR1)
+
+    await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(page.getByRole('button', { name: 'With changes' })).toBeVisible()
+    await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
+    await expect(page.getByText('Processes work.', { exact: true })).toBeVisible()
 
     await stopWorkBraid(application)
     application = undefined
     application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'restart.log')
-    await page.goto(`${application.origin}/projects/agent-shared-system`)
-    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByText('Agent gateway', { exact: true })).toBeVisible()
-    await expect(page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Gateway internals' })).toBeVisible()
-    expect(await displayedRevision(page)).toBe(agentAccepted.context.accepted_revision)
-    const reconstructed = agent(binary, application.origin, ['architecture', 'inspect'])
-    expect(reconstructed.result).toEqual(agentAccepted.result)
+    await page.goto(`${application.origin}/projects/change-set-evidence`)
+    expect(await displayedRevision(page)).toBe(revisionR1)
+    await page.getByLabel('Architecture context').selectOption(changeA.id)
+    await page.getByRole('button', { name: 'Applied proposal' }).click()
+    await expect(page.getByRole('heading', { name: 'Applied: Change A' })).toBeVisible()
+    await expect(page.getByText('Route requests through a durable gateway.')).toBeVisible()
+    await page.getByLabel('Architecture context').selectOption(changeB.id)
+    await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
+    await expect(page.getByText('Add an independent worker.', { exact: true })).toBeVisible()
+
+    const afterRestart = agent(binary, application.origin, ['change-set', 'list', '--store-id', storeID])
+    const restartedRecords = afterRestart.result!.change_sets as Array<Record<string, any>>
+    expect(restartedRecords.find((record) => record.id === changeA.id)?.lifecycle).toBe('applied')
+    expect(restartedRecords.find((record) => record.id === changeB.id)?.out_of_date).toBe(true)
   } finally {
     if (application) await stopWorkBraid(application)
     rmSync(runtimeRoot, { recursive: true, force: true })
   }
 })
 
+async function createBrowserChangeSet(page: Page, name: string) {
+  await page.getByRole('button', { name: 'New changes' }).click()
+  const form = page.locator('form.new-change-set')
+  await form.getByLabel('Change-set name').fill(name)
+  await form.getByRole('button', { name: 'Create change set' }).click()
+  await expect(page.getByRole('heading', { name: `Proposed: ${name}` })).toBeVisible()
+}
+
+async function addBrowserComponent(page: Page, title: string, description: string) {
+  await page.locator('.pending-diagram-row').first().getByRole('button', { name: 'Add component' }).click()
+  await page.getByLabel('Title').fill(title)
+  await page.getByLabel('Description').fill(description)
+  await page.getByRole('button', { name: 'Keep change' }).click()
+}
+
 function agent(binary: string, origin: string, arguments_: string[]): AgentEnvelope {
-  const output = run(binary, ['--server', origin, '--json', ...arguments_], repositoryRoot)
-  const envelope = JSON.parse(output) as AgentEnvelope
+  const envelope = runAgent(binary, origin, arguments_)
+  expect(envelope.protocol).toBe('workbraid-agent-v2')
   expect(envelope.ok, `${arguments_.join(' ')} failed: ${JSON.stringify(envelope.error)}`).toBe(true)
   return envelope
+}
+
+function agentFailure(binary: string, origin: string, arguments_: string[]): AgentEnvelope {
+  const result = spawnSync(binary, ['--server', origin, '--json', ...arguments_], { cwd: repositoryRoot, encoding: 'utf8' })
+  expect(result.status).toBe(1)
+  const envelope = JSON.parse(result.stdout) as AgentEnvelope
+  expect(envelope.protocol).toBe('workbraid-agent-v2')
+  expect(envelope.ok).toBe(false)
+  return envelope
+}
+
+function runAgent(binary: string, origin: string, arguments_: string[]) {
+  return JSON.parse(run(binary, ['--server', origin, '--json', ...arguments_], repositoryRoot)) as AgentEnvelope
 }
 
 async function displayedRevision(page: Page) {

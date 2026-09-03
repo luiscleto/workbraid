@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const Protocol = "workbraid-agent-v1"
+const Protocol = "workbraid-agent-v2"
 
 type ProjectContext struct {
 	StoreID string `json:"store_id"`
@@ -26,10 +26,9 @@ type ProjectContext struct {
 }
 
 type Context struct {
-	Project           *ProjectContext `json:"project"`
-	AcceptedRevision  *string         `json:"accepted_revision"`
-	AuthorityState    string          `json:"authority_state"`
-	PendingGeneration *uint64         `json:"pending_generation"`
+	Project          *ProjectContext `json:"project"`
+	AcceptedRevision *string         `json:"accepted_revision"`
+	AuthorityState   string          `json:"authority_state"`
 }
 
 type Error struct {
@@ -47,9 +46,38 @@ type Envelope struct {
 }
 
 type StatePreconditions struct {
-	StoreID           string  `json:"store_id" jsonschema:"Exact store UUID returned by the current WorkBraid server."`
-	AcceptedRevision  string  `json:"accepted_revision" jsonschema:"Exact loaded accepted revision the caller inspected."`
-	PendingGeneration *uint64 `json:"pending_generation" jsonschema:"Exact inspected pending generation, or null when no pending set existed."`
+	StoreID     string `json:"store_id" jsonschema:"Exact store UUID returned by the current WorkBraid server."`
+	ChangeSetID string `json:"change_set_id" jsonschema:"Exact active change-set UUID returned by WorkBraid."`
+	Generation  uint64 `json:"generation" jsonschema:"Exact generation inspected for that change set."`
+}
+
+// RequiresExactGeneration marks requests whose generation field must be
+// present even when its valid value is zero.
+func (StatePreconditions) RequiresExactGeneration() {}
+
+type ChangeSetsListRequest struct {
+	StoreID string `json:"store_id" jsonschema:"Exact store UUID whose active, applied, and unavailable change sets will be listed."`
+}
+
+type ChangeSetCreateRequest struct {
+	StoreID          string  `json:"store_id" jsonschema:"Exact current store UUID."`
+	AcceptedRevision string  `json:"accepted_revision" jsonschema:"Exact current Accepted revision inspected before creation."`
+	Name             *string `json:"name,omitempty" jsonschema:"Optional human-readable active name; omit to generate one."`
+}
+
+type ChangeSetInspectRequest struct {
+	StoreID     string `json:"store_id" jsonschema:"Exact current store UUID."`
+	ChangeSetID string `json:"change_set_id" jsonschema:"Exact active or applied change-set UUID."`
+}
+
+type ChangeSetRenameRequest struct {
+	StatePreconditions
+	Name string `json:"name" jsonschema:"New trimmed, non-empty, single-line active name."`
+}
+
+type ChangeSetEditProposalRequest struct {
+	StatePreconditions
+	ProposalMarkdown string `json:"proposal_markdown" jsonschema:"Exact UTF-8 Markdown proposal document, which may be empty."`
 }
 
 type ProjectCreateRequest struct {
@@ -71,19 +99,20 @@ type ArchitectureRefreshRequest struct {
 
 type ArchitectureUpdateRequest struct {
 	StoreID       string `json:"store_id" jsonschema:"Exact current store UUID."`
-	BaseRevision  string `json:"base_revision" jsonschema:"Exact base commit returned by changes_review."`
-	CandidateTree string `json:"candidate_tree" jsonschema:"Exact candidate tree returned by changes_review."`
-	Generation    uint64 `json:"generation" jsonschema:"Exact pending generation returned by changes_review."`
+	ChangeSetID   string `json:"change_set_id" jsonschema:"Exact reviewed active change-set UUID."`
+	BaseRevision  string `json:"base_revision" jsonschema:"Exact base commit returned by change_set_review."`
+	CandidateTree string `json:"candidate_tree" jsonschema:"Exact candidate tree returned by change_set_review."`
+	Generation    uint64 `json:"generation" jsonschema:"Exact change-set generation returned by change_set_review."`
 }
 
-type ChangesReviewRequest struct {
+func (ArchitectureUpdateRequest) RequiresExactGeneration() {}
+
+type ChangeSetReviewRequest struct {
 	StatePreconditions
-	Generation uint64 `json:"generation" jsonschema:"Exact numeric generation being reviewed; must match pending_generation."`
 }
 
-type ChangesDiscardRequest struct {
-	StoreID    string `json:"store_id" jsonschema:"Exact current store UUID."`
-	Generation uint64 `json:"generation" jsonschema:"Exact pending generation whose complete change set will be discarded."`
+type ChangeSetDiscardRequest struct {
+	StatePreconditions
 }
 
 type ComponentCreateRequest struct {
@@ -150,28 +179,32 @@ type DiagramComponentRequest struct {
 }
 
 var operationPaths = map[string]string{
-	"status":                         "/api/agent/v1/status",
-	"projects_list":                  "/api/agent/v1/projects/list",
-	"project_current":                "/api/agent/v1/projects/current",
-	"project_create":                 "/api/agent/v1/projects/create",
-	"project_open":                   "/api/agent/v1/projects/open",
-	"project_close":                  "/api/agent/v1/projects/close",
-	"architecture_inspect":           "/api/agent/v1/architecture/inspect",
-	"architecture_refresh":           "/api/agent/v1/architecture/refresh",
-	"architecture_update":            "/api/agent/v1/architecture/update",
-	"changes_inspect":                "/api/agent/v1/changes/inspect",
-	"changes_review":                 "/api/agent/v1/changes/review",
-	"changes_discard":                "/api/agent/v1/changes/discard",
-	"component_create":               "/api/agent/v1/components/create",
-	"component_edit":                 "/api/agent/v1/components/edit",
-	"component_move_home":            "/api/agent/v1/components/move-home",
-	"relationship_add":               "/api/agent/v1/relationships/add",
-	"relationship_edit":              "/api/agent/v1/relationships/edit",
-	"relationship_remove":            "/api/agent/v1/relationships/remove",
-	"diagram_create_detail":          "/api/agent/v1/diagrams/create-detail",
-	"diagram_edit_title":             "/api/agent/v1/diagrams/edit-title",
-	"diagram_show_component":         "/api/agent/v1/diagrams/show-component",
-	"diagram_stop_showing_component": "/api/agent/v1/diagrams/stop-showing-component",
+	"status":                         "/api/agent/v2/status",
+	"projects_list":                  "/api/agent/v2/projects/list",
+	"project_current":                "/api/agent/v2/projects/current",
+	"project_create":                 "/api/agent/v2/projects/create",
+	"project_open":                   "/api/agent/v2/projects/open",
+	"project_close":                  "/api/agent/v2/projects/close",
+	"architecture_inspect":           "/api/agent/v2/architecture/inspect",
+	"architecture_refresh":           "/api/agent/v2/architecture/refresh",
+	"architecture_update":            "/api/agent/v2/architecture/update",
+	"change_sets_list":               "/api/agent/v2/change-sets/list",
+	"change_set_create":              "/api/agent/v2/change-sets/create",
+	"change_set_inspect":             "/api/agent/v2/change-sets/inspect",
+	"change_set_rename":              "/api/agent/v2/change-sets/rename",
+	"change_set_edit_proposal":       "/api/agent/v2/change-sets/edit-proposal",
+	"change_set_review":              "/api/agent/v2/change-sets/review",
+	"change_set_discard":             "/api/agent/v2/change-sets/discard",
+	"component_create":               "/api/agent/v2/components/create",
+	"component_edit":                 "/api/agent/v2/components/edit",
+	"component_move_home":            "/api/agent/v2/components/move-home",
+	"relationship_add":               "/api/agent/v2/relationships/add",
+	"relationship_edit":              "/api/agent/v2/relationships/edit",
+	"relationship_remove":            "/api/agent/v2/relationships/remove",
+	"diagram_create_detail":          "/api/agent/v2/diagrams/create-detail",
+	"diagram_edit_title":             "/api/agent/v2/diagrams/edit-title",
+	"diagram_show_component":         "/api/agent/v2/diagrams/show-component",
+	"diagram_stop_showing_component": "/api/agent/v2/diagrams/stop-showing-component",
 }
 
 type Client struct {
@@ -217,7 +250,7 @@ func (client *Client) call(ctx context.Context, operation string, input any) Env
 	}
 	method := http.MethodPost
 	var body io.Reader
-	if operation == "status" || operation == "projects_list" || operation == "project_current" || operation == "architecture_inspect" || operation == "changes_inspect" {
+	if operation == "status" || operation == "projects_list" || operation == "project_current" || operation == "architecture_inspect" {
 		method = http.MethodGet
 	} else {
 		encoded, err := json.Marshal(input)

@@ -12,8 +12,8 @@ Architecture remains the only WorkBraid vertical in scope here. Agent Control is
 
 - Architecture Components and Relationships remain semantic Architecture facts with their existing identities and documentation.
 - A first-class Diagram owns composition and presentation rather than replacing those facts with a generic node/edge domain.
-- The normal Architecture workspace continues to project exact accepted state.
-- Candidate-only topology belongs in the deliberate Review changes task, derived from its exact immutable reviewed candidate.
+- Each Architecture workspace context projects one exact coherent snapshot: **Accepted** shows exact accepted state, while a selected durable proposal shows only its own complete proposed state. They are never overlaid.
+- Comparative change visualization belongs in the deliberate Review changes task and derives from its exact immutable reviewed candidate. A durable proposal workspace may show one complete proposed snapshot, but never an Accepted/proposal overlay.
 - Exact canonical diff review and accepted-ref authority remain intact as richer visual review and diagram presentation are added.
 - Optional renderers may present approved diagram state differently without creating another canonical Architecture representation.
 
@@ -29,7 +29,7 @@ Improve the then-existing Architecture review workflow without introducing Diagr
 - deterministic non-canonical review layout;
 - review-specific validation, fix, clear/deselect, and basic diff-readability polish.
 
-The normal workspace map remains accepted-only. Persisted pending state, normal-map pending overlays, semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
+At Phase 1 completion the normal workspace map remained accepted-only. Change Sets 1 later proposes an explicit whole-proposal workspace context rather than an overlay; semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
 
 ## Phase 2 — First-class Architecture Diagrams and nested navigation — complete
 
@@ -53,7 +53,7 @@ The smallest useful product slice includes slug-native catalog/create/open/reloa
 
 Phase 2 is complete at completion record `8cd9ce145980fbc57377e729975940b9e2f0b8b6`.
 
-## Architecture Agent Access 1 — next stage before Phase 3
+## Architecture Agent Access 1 — complete
 
 Add local agent interfaces over the completed Architecture product before investing in rich diagram presentation:
 
@@ -67,9 +67,50 @@ Add local agent interfaces over the completed Architecture product before invest
 
 This is an interface layer over Architecture, not another vertical or authority. It adds no raw Git/YAML agent path, per-agent pending state, remote exposure, multi-user collaboration, autonomous agent runtime, or generic command/tool framework. `docs/architecture-agent-access-v0.md` contains the approved contract.
 
-## Phase 3 — Durable rich diagram editing
+Architecture Agent Access 1 is complete at completion record `540724919165ea95c9ee3088aca084d91eb8e1c3`, with final implementation `0a82c89d2a214896fe6b7020fe312cdd109beaeb`.
 
-After Diagram identity and composition exist, add deliberately authored diagram presentation such as manual layout, sizing, routing and bend points, shapes, and any approved annotations. Decide project-scoped persisted pending-state semantics before substantial manual visual editing so valuable work is not limited to one backend process lifetime.
+## Architecture Change Sets 1 — next stage
+
+Replace the one anonymous process-lifetime pending set with durable named parallel Architecture proposals:
+
+- multiple independently identified change sets per project over one singular Accepted Architecture;
+- private-Git persistence for exact base, structured proposed state, proposal Markdown, generation, candidate, and review binding;
+- Accepted/proposal workspace selection without mixing snapshots;
+- independent structured editing and exact review/acceptance through the existing candidate, validation, diff, and CAS authorities;
+- proposals which remain exact and editable against their original base when another proposal advances Accepted; and
+- browser, CLI, embedded skill, and MCP parity through explicit change-set IDs and generations.
+
+Change Sets 1 adds neither review comments nor reconciliation. `docs/architecture-change-sets-v0.md` contains the proposed contract.
+
+## Architecture Reviews 1 — later utility stage
+
+Add durable review submissions against one exact change-set revision. A review may contain comments anchored to:
+
+- the whole proposal;
+- a proposal-Markdown line or range;
+- a Component;
+- a Component Markdown line or range;
+- a Diagram;
+- one home/reference composition fact; or
+- one exact Relationship fact occurrence.
+
+A submission may carry the lightweight verdict **Comment**, **Approve**, or **Request changes**. These verdicts do not gate editing or acceptance in this stage. CLI and MCP can read reviews so agents can iterate the same change set. Comments remain bound to the exact reviewed base, candidate tree, and generation; later edits must not silently present an old comment as feedback on new content.
+
+This roadmap records the stage only. Anchor schema, comment lifecycle, author identity, resolution behavior, and durable representation require their own product decision.
+
+## Architecture Reconciliation 1 — later utility stage
+
+Add deliberate reconciliation for an out-of-date change set using three exact inputs retained by Change Sets 1:
+
+- its original base;
+- current Accepted; and
+- its exact proposal candidate.
+
+Reconciliation may automatically combine non-conflicting work and must surface real conflicts for explicit **Use Accepted**, **Use proposed**, or structured/manual resolution. It never silently overwrites Accepted or accepts the result. Conflict taxonomy, candidate lifecycle, review interaction, and durable representation require their own product decision.
+
+## Phase 3 — Durable rich diagram editing — deferred until after the utility stages
+
+After Change Sets 1, Reviews 1, and Reconciliation 1, add deliberately authored diagram presentation such as manual layout, sizing, routing and bend points, shapes, and any approved annotations. Durable named proposals will already keep valuable proposed work across process restarts; the separate product decisions for spatial editing, review, and reconciliation must still be made before adding canonical presentation fields.
 
 This phase must preserve the distinction between Architecture semantic identity and diagram-presentation identity. It does not imply relationship domain IDs or a generic diagram-node model.
 
@@ -91,6 +132,6 @@ Phases 4A and 4B are not ordered relative to each other. Either may follow Phase
 - multiple detail Diagrams per anchor;
 - canonical layout, routing, shape, and annotation fields;
 - Diagram-local presentation identity needed by later routing or repeated visual facts;
-- project-scoped persisted pending state for substantial spatial editing;
+- interaction between durable change sets and substantial spatial editing;
 - Diagram kinds and kind-specific semantic models;
 - any renderer-specific persisted presentation.

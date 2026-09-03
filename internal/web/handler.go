@@ -57,6 +57,9 @@ type Handler struct {
 	// candidateConstructionFailure is a focused test seam for operational
 	// ConstructCandidate failure classification. Production never sets it.
 	candidateConstructionFailure func() error
+	// changeSetLoadFailure is a focused test seam for transient private-Git
+	// change-set recovery failure. Production never sets it.
+	changeSetLoadFailure func() error
 }
 
 type loadedProject struct {
@@ -759,17 +762,24 @@ func (h *Handler) publishSnapshotLocked(ctx context.Context, snapshot architectu
 	if !keepAcceptedDiff {
 		h.acceptedDiff = ""
 	}
-	h.loadChangeSetsLocked(ctx, snapshot)
+	if err := h.loadChangeSetsLocked(ctx, snapshot); err != nil {
+		h.changeSets = make(map[string]*pendingChangeSet)
+		h.unavailableChangeSets = []architecture.UnavailableChangeSet{{Reason: "Change sets could not be read."}}
+	}
 }
 
-func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architecture.Snapshot) {
-	records, unavailable, err := h.architecture.LoadChangeSets(ctx, snapshot.StoreID())
-	h.changeSets = make(map[string]*pendingChangeSet, len(records))
-	h.unavailableChangeSets = unavailable
-	if err != nil {
-		h.unavailableChangeSets = append(h.unavailableChangeSets, architecture.UnavailableChangeSet{Reason: "Change sets could not be read."})
-		return
+func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architecture.Snapshot) error {
+	if h.changeSetLoadFailure != nil {
+		if err := h.changeSetLoadFailure(); err != nil {
+			return err
+		}
 	}
+	records, unavailable, err := h.architecture.LoadChangeSets(ctx, snapshot.StoreID())
+	if err != nil {
+		return err
+	}
+	nextRecords := make(map[string]*pendingChangeSet, len(records))
+	nextUnavailable := append([]architecture.UnavailableChangeSet(nil), unavailable...)
 	for _, durable := range records {
 		record := &pendingChangeSet{
 			id: durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
@@ -789,13 +799,16 @@ func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architectur
 		if durable.Review != nil && durable.Candidate != nil {
 			diff, diffErr := h.architecture.CandidateDiff(ctx, durable.BaseSnapshot, *durable.Candidate)
 			if diffErr != nil {
-				h.unavailableChangeSets = append(h.unavailableChangeSets, architecture.UnavailableChangeSet{ID: durable.ID, Name: durable.Name, Lifecycle: durable.Lifecycle, Reason: "Review comparison could not be reconstructed."})
+				nextUnavailable = append(nextUnavailable, architecture.UnavailableChangeSet{ID: durable.ID, Name: durable.Name, Lifecycle: durable.Lifecycle, Reason: "Review comparison could not be reconstructed."})
 				continue
 			}
 			record.review = &reviewBinding{baseRevision: durable.Review.BaseRevision, candidateTree: durable.Review.CandidateTree, generation: durable.Review.Generation, diff: string(diff), candidate: *durable.Candidate}
 		}
-		h.changeSets[record.id] = record
+		nextRecords[record.id] = record
 	}
+	h.changeSets = nextRecords
+	h.unavailableChangeSets = nextUnavailable
+	return nil
 }
 
 func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.ChangeSet {
@@ -995,7 +1008,10 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
 	h.acceptedDiff = ""
-	h.loadChangeSetsLocked(ctx, replacement)
+	if err := h.loadChangeSetsLocked(ctx, replacement); err != nil {
+		h.loadedStale = true
+		return h.refreshResultLocked(errorRefreshFailed, http.StatusServiceUnavailable)
+	}
 	return h.currentArchitectureResponseLocked(), "", http.StatusOK
 }
 
@@ -2120,13 +2136,14 @@ func (h *Handler) acceptChangesLocked(payload acceptChangesRequest) (architectur
 					if loadErr == nil {
 						h.loadedSnapshot = &recoveredAccepted
 						h.loadedStale = false
-						h.loadChangeSetsLocked(observationContext, recoveredAccepted)
-						receipt := h.changeSets[payload.ChangeSetID]
-						result := h.responseForLoadedProjectLocked(recoveredAccepted, receipt, false, h.acceptedDiff)
-						result.ActionChangeSetID = payload.ChangeSetID
-						result.AlreadyApplied = true
-						cancelObservation()
-						return result, "", http.StatusOK, false
+						if h.loadChangeSetsLocked(observationContext, recoveredAccepted) == nil {
+							receipt := h.changeSets[payload.ChangeSetID]
+							result := h.responseForLoadedProjectLocked(recoveredAccepted, receipt, false, h.acceptedDiff)
+							result.ActionChangeSetID = payload.ChangeSetID
+							result.AlreadyApplied = true
+							cancelObservation()
+							return result, "", http.StatusOK, false
+						}
 					}
 				}
 			}
@@ -2162,14 +2179,16 @@ func (h *Handler) acceptChangesLocked(payload acceptChangesRequest) (architectur
 		if err := h.publicationFailure(); err != nil {
 			recoveryContext, cancelRecovery := context.WithTimeout(context.Background(), architectureTransitionTimeout)
 			recovered, loadErr := h.architecture.LoadAccepted(recoveryContext, snapshot.StoreID())
-			cancelRecovery()
 			if loadErr == nil {
 				h.loadedSnapshot = &recovered
-				h.loadedStale = false
-				h.loadChangeSetsLocked(recoveryContext, recovered)
+				h.loadedProject.projectName = recovered.ProjectName()
+				h.loadedProject.projectSlug = recovered.ProjectSlug()
+				h.loadedProject.validatedCurrent = nil
+				h.loadedStale = h.loadChangeSetsLocked(recoveryContext, recovered) != nil
 			} else {
 				h.loadedStale = true
 			}
+			cancelRecovery()
 			result := h.responseForLoadedProjectLocked(*h.loadedSnapshot, h.changeSets[payload.ChangeSetID], h.loadedStale, h.acceptedDiff)
 			result.ActionError = errorUpdatedReload
 			return result, errorUpdatedReload, http.StatusInternalServerError, false

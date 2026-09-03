@@ -563,23 +563,54 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		}
 	})
 
-	t.Run("post-CAS publication failure reloads the accepted successor", func(t *testing.T) {
+	t.Run("post-CAS load failure retains receipts and Refresh recovers every record", func(t *testing.T) {
 		state, handler := newHandler(testOrigin, testUI(t), t.TempDir())
 		created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Publication"}))
+		changeB := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/change-sets/create", changeSetCreateRequest{
+			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, AcceptedRevision: created.Revision, Name: "Independent B",
+		}))
+		changeBID := changeB.ActionChangeSetID
 		kept := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(created, componentMutationRequest{DiagramID: created.RootDiagramID, Title: "Worker"})))
 		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(kept)))
 		state.publicationFailure = func() error { return errors.New("publication lost") }
+		failLoad := true
+		state.changeSetLoadFailure = func() error {
+			if failLoad {
+				failLoad = false
+				return errors.New("change-set load lost")
+			}
+			return nil
+		}
 		response := postJSONRequest(t, handler, "/api/architecture/accept", acceptChangesRequest{
 			ProjectSlug: created.ProjectSlug, StoreID: created.StoreID, ChangeSetID: reviewed.Changes.ID, BaseRevision: reviewed.Changes.Review.BaseRevision,
 			CandidateTree: reviewed.Changes.Review.CandidateTree, Generation: reviewed.Changes.Review.Generation,
 		})
 		value := decodeArchitectureBody(t, response)
-		if response.Code != http.StatusInternalServerError || value.ActionError != errorUpdatedReload || value.Revision == created.Revision || testActiveChangeSet(state) != nil {
-			t.Fatalf("response=%d value=%+v active=%+v", response.Code, value, testActiveChangeSet(state))
+		if response.Code != http.StatusInternalServerError || value.ActionError != errorUpdatedReload || value.Revision == created.Revision || !value.Stale {
+			t.Fatalf("response=%d value=%+v", response.Code, value)
+		}
+		appliedSeen, activeSeen := false, false
+		for _, record := range value.ChangeSets {
+			appliedSeen = appliedSeen || record.ID == reviewed.Changes.ID && record.Lifecycle == "applied"
+			activeSeen = activeSeen || record.ID == changeBID && record.Lifecycle == "active"
+		}
+		if !appliedSeen || !activeSeen || len(state.changeSets) != 2 {
+			t.Fatalf("post-CAS records disappeared: applied=%t active=%t state=%+v", appliedSeen, activeSeen, state.changeSets)
 		}
 		accepted, present, err := state.architecture.AcceptedRevision(context.Background(), *state.loadedSnapshot)
 		if err != nil || !present || accepted != value.Revision {
 			t.Fatalf("accepted=%q present=%t err=%v response=%q", accepted, present, err, value.Revision)
+		}
+		refreshedResponse := postJSONRequest(t, handler, "/api/architecture/refresh", architectureActionRequest{
+			ProjectSlug: value.ProjectSlug, StoreID: value.StoreID, ExpectedRevision: value.Revision,
+		})
+		refreshed := decodeArchitectureBody(t, refreshedResponse)
+		if refreshedResponse.Code != http.StatusOK || refreshed.Stale || len(refreshed.ChangeSets) != 2 {
+			t.Fatalf("Refresh did not complete recovery: status=%d result=%+v", refreshedResponse.Code, refreshed)
+		}
+		records, unavailable, err := state.architecture.LoadChangeSets(context.Background(), created.StoreID)
+		if err != nil || len(unavailable) != 0 || len(records) != 2 {
+			t.Fatalf("durable records after recovery: records=%+v unavailable=%+v err=%v", records, unavailable, err)
 		}
 	})
 

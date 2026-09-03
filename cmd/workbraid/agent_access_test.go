@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -75,6 +76,23 @@ func runRealCLIError(t *testing.T, binary, origin string, arguments ...string) a
 
 func mcpEnvelope(t *testing.T, result *mcp.CallToolResult) agentapi.Envelope {
 	t.Helper()
+	if len(result.Content) != 1 {
+		t.Fatalf("MCP content count=%d want=1", len(result.Content))
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("MCP content type=%T want text", result.Content[0])
+	}
+	var textEnvelope agentapi.Envelope
+	if err := json.Unmarshal([]byte(textContent.Text), &textEnvelope); err != nil {
+		t.Fatalf("decode MCP text envelope: %v\n%s", err, textContent.Text)
+	}
+	if err := textEnvelope.Validate(); err != nil {
+		t.Fatalf("invalid MCP text envelope: %v\n%s", err, textContent.Text)
+	}
+	if result.StructuredContent == nil {
+		return textEnvelope
+	}
 	data, err := json.Marshal(result.StructuredContent)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +104,47 @@ func mcpEnvelope(t *testing.T, result *mcp.CallToolResult) agentapi.Envelope {
 	if err := envelope.Validate(); err != nil {
 		t.Fatalf("invalid MCP envelope: %v\n%s", err, data)
 	}
+	if !reflect.DeepEqual(textEnvelope, envelope) {
+		t.Fatalf("MCP text/structured mismatch:\ntext=%+v\nstructured=%+v", textEnvelope, envelope)
+	}
 	return envelope
+}
+
+func runRealMCP(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, arguments map[string]any) agentapi.Envelope {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("MCP %s: result=%+v err=%v", name, result, err)
+	}
+	envelope := mcpEnvelope(t, result)
+	if result.IsError {
+		t.Fatalf("MCP %s: %+v", name, envelope)
+	}
+	return envelope
+}
+
+func runRealMCPError(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, arguments map[string]any) agentapi.Envelope {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("MCP %s error: result=%+v err=%v", name, result, err)
+	}
+	envelope := mcpEnvelope(t, result)
+	if !result.IsError {
+		t.Fatalf("MCP %s expected error: %+v", name, envelope)
+	}
+	return envelope
+}
+
+func runBareGit(t *testing.T, storePath string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"--git-dir", storePath}, arguments...)...)
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", arguments, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func connectRealMCP(t *testing.T, ctx context.Context, binary, origin string) *mcp.ClientSession {
@@ -195,50 +253,171 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if err != nil || len(tools.Tools) != 26 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
-	createdBResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "change_set_create", Arguments: map[string]any{"store_id": storeID, "accepted_revision": revision, "name": "MCP proposal"}})
-	if err != nil || createdBResult.IsError {
-		t.Fatalf("MCP create: result=%+v err=%v", createdBResult, err)
+	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
+		t.Fatalf("MCP protocol: %+v", status)
 	}
-	changeB := mcpEnvelope(t, createdBResult)
+	runRealMCP(t, ctx, session, "projects_list", map[string]any{})
+	runRealMCP(t, ctx, session, "project_current", map[string]any{})
+	runRealMCP(t, ctx, session, "architecture_inspect", map[string]any{})
+	refreshed := runRealCLI(t, binary, origin, "architecture", "refresh", "--store-id", storeID, "--accepted-revision", revision)
+	if refreshed.Result.(map[string]any)["classification"] != "unchanged" {
+		t.Fatalf("CLI Refresh: %+v", refreshed)
+	}
+
+	changeB := runRealMCP(t, ctx, session, "change_set_create", map[string]any{"store_id": storeID, "accepted_revision": revision, "name": "MCP proposal"})
 	idB := changeB.Result.(map[string]any)["id"].(string)
 	proposalB := "# MCP proposal\n\nIndependent exact body.\n"
-	editedBResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "change_set_edit_proposal", Arguments: map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 0, "proposal_markdown": proposalB}})
-	if err != nil || editedBResult.IsError || mcpEnvelope(t, editedBResult).Result.(map[string]any)["proposal_markdown"] != proposalB {
-		t.Fatalf("MCP proposal: result=%+v err=%v", editedBResult, err)
+	editedB := runRealMCP(t, ctx, session, "change_set_edit_proposal", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 0, "proposal_markdown": proposalB})
+	if editedB.Result.(map[string]any)["proposal_markdown"] != proposalB {
+		t.Fatalf("MCP proposal: %+v", editedB)
 	}
 
 	componentA := runRealCLI(t, binary, origin, "component", "create", "--store-id", storeID, "--change-set-id", idA, "--generation", "1", "--diagram-id", rootID, "--title", "Gateway")
 	if componentA.Result.(map[string]any)["generation"] != float64(2) {
 		t.Fatalf("CLI mutation: %+v", componentA)
 	}
-	componentBResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "component_create", Arguments: map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 1, "diagram_id": rootID, "title": "Worker", "description": ""}})
-	if err != nil || componentBResult.IsError || mcpEnvelope(t, componentBResult).Result.(map[string]any)["generation"] != float64(2) {
-		t.Fatalf("MCP mutation: result=%+v err=%v", componentBResult, err)
+	gatewayID := componentA.Result.(map[string]any)["component_id"].(string)
+	workerA := runRealMCP(t, ctx, session, "component_create", map[string]any{"store_id": storeID, "change_set_id": idA, "generation": 2, "diagram_id": rootID, "title": "Worker", "description": "Does work.\n"})
+	workerAID := workerA.Result.(map[string]any)["component_id"].(string)
+	invalid := runRealMCP(t, ctx, session, "relationship_add", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 3, "source_id": gatewayID, "target_id": "not-a-component-id", "label": "   ",
+	})
+	if invalid.Result.(map[string]any)["candidate_valid"] != false || invalid.Result.(map[string]any)["generation"] != float64(4) {
+		t.Fatalf("invalid raw Relationship was not retained: %+v", invalid)
+	}
+	invalidInspect := runRealCLI(t, binary, origin, "change-set", "inspect", "--store-id", storeID, "--change-set-id", idA)
+	invalidRows := invalidInspect.Result.(map[string]any)["components"].([]any)[0].(map[string]any)["relationships"].([]any)
+	if len(invalidRows) != 1 || invalidRows[0].(map[string]any)["target_id"] != "not-a-component-id" || invalidRows[0].(map[string]any)["label"] != "   " {
+		t.Fatalf("invalid raw selector changed: %+v", invalidInspect)
+	}
+	repaired := runRealCLI(t, binary, origin, "relationship", "edit", "--store-id", storeID, "--change-set-id", idA, "--generation", "4", "--source-id", gatewayID, "--old-target-id", "not-a-component-id", "--old-label", "   ", "--occurrence", "1", "--target-id", workerAID, "--label", "calls")
+	if repaired.Result.(map[string]any)["candidate_valid"] != true {
+		t.Fatalf("raw Relationship repair failed: %+v", repaired)
+	}
+	runRealMCP(t, ctx, session, "relationship_add", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 5, "source_id": gatewayID, "target_id": workerAID, "label": "calls",
+	})
+	duplicateEdited := runRealCLI(t, binary, origin, "relationship", "edit", "--store-id", storeID, "--change-set-id", idA, "--generation", "6", "--source-id", gatewayID, "--old-target-id", workerAID, "--old-label", "calls", "--occurrence", "2", "--target-id", workerAID, "--label", "calls async")
+	if duplicateEdited.Result.(map[string]any)["generation"] != float64(7) {
+		t.Fatalf("duplicate occurrence edit: %+v", duplicateEdited)
+	}
+	runRealMCP(t, ctx, session, "relationship_remove", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 7, "source_id": gatewayID, "target_id": workerAID, "label": "calls", "occurrence": 1,
+	})
+	runRealMCP(t, ctx, session, "component_edit", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 8, "component_id": gatewayID, "title": "Gateway", "description": "Routes requests.\n",
+	})
+	detailCreated := runRealCLI(t, binary, origin, "diagram", "create-detail", "--store-id", storeID, "--change-set-id", idA, "--generation", "9", "--component-id", gatewayID, "--title", "Gateway internals")
+	detailID := detailCreated.Result.(map[string]any)["diagram_id"].(string)
+	runRealMCP(t, ctx, session, "component_move_home", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 10, "component_id": workerAID, "diagram_id": detailID,
+	})
+	shown := runRealCLI(t, binary, origin, "diagram", "show-component", "--store-id", storeID, "--change-set-id", idA, "--generation", "11", "--diagram-id", detailID, "--component-id", gatewayID)
+	if shown.Result.(map[string]any)["present"] != true {
+		t.Fatalf("show Component: %+v", shown)
+	}
+	stopped := runRealMCP(t, ctx, session, "diagram_stop_showing_component", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 12, "diagram_id": detailID, "component_id": gatewayID,
+	})
+	if stopped.Result.(map[string]any)["present"] != false {
+		t.Fatalf("stop showing Component: %+v", stopped)
+	}
+	runRealCLI(t, binary, origin, "diagram", "edit-title", "--store-id", storeID, "--change-set-id", idA, "--generation", "13", "--diagram-id", detailID, "--title", "Gateway runtime")
+	renamedA := runRealMCP(t, ctx, session, "change_set_rename", map[string]any{
+		"store_id": storeID, "change_set_id": idA, "generation": 14, "name": "CLI and MCP proposal",
+	})
+	if renamedA.Result.(map[string]any)["generation"] != float64(15) {
+		t.Fatalf("rename generation: %+v", renamedA)
+	}
+	finalA := runRealCLI(t, binary, origin, "change-set", "inspect", "--store-id", storeID, "--change-set-id", idA).Result.(map[string]any)
+	if finalA["generation"] != float64(15) || len(finalA["detail_diagrams"].([]any)) != 1 || len(finalA["home_moves"].([]any)) != 1 {
+		t.Fatalf("structured parity projection: %+v", finalA)
+	}
+	stoppedReferenceSeen := false
+	for _, value := range finalA["references"].([]any) {
+		reference := value.(map[string]any)
+		stoppedReferenceSeen = stoppedReferenceSeen || reference["diagram_id"] == detailID && reference["component_id"] == gatewayID && reference["present"] == false
+	}
+	if !stoppedReferenceSeen {
+		t.Fatalf("stopped reference fact missing: %+v", finalA["references"])
+	}
+	finalRelationships := finalA["components"].([]any)[0].(map[string]any)["relationships"].([]any)
+	if len(finalRelationships) != 1 || finalRelationships[0].(map[string]any)["label"] != "calls async" {
+		t.Fatalf("Relationship occurrence parity: %+v", finalRelationships)
 	}
 
-	reviewA := runRealCLI(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", idA, "--generation", "2")
-	bindingA := reviewA.Result.(map[string]any)
-	reviewBResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "change_set_review", Arguments: map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2}})
-	if err != nil || reviewBResult.IsError {
-		t.Fatalf("MCP review B: result=%+v err=%v", reviewBResult, err)
+	componentB := runRealMCP(t, ctx, session, "component_create", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 1, "diagram_id": rootID, "title": "Independent", "description": ""})
+	if componentB.Result.(map[string]any)["generation"] != float64(2) {
+		t.Fatalf("MCP independent mutation: %+v", componentB)
 	}
-	bindingB := mcpEnvelope(t, reviewBResult).Result.(map[string]any)
-	updatedA := runRealCLI(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idA, "--base-revision", bindingA["base_revision"].(string), "--candidate-tree", bindingA["candidate_tree"].(string), "--generation", "2")
+
+	reviewA := runRealCLI(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", idA, "--generation", "15")
+	bindingA := reviewA.Result.(map[string]any)
+	runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2})
+	updatedA := runRealCLI(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idA, "--base-revision", bindingA["base_revision"].(string), "--candidate-tree", bindingA["candidate_tree"].(string), "--generation", "15")
 	if !updatedA.OK || updatedA.Context.AcceptedRevision == nil || *updatedA.Context.AcceptedRevision == revision {
 		t.Fatalf("CLI update A: %+v", updatedA)
 	}
+	acceptedRevision := *updatedA.Context.AcceptedRevision
 
-	inspectBResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "change_set_inspect", Arguments: map[string]any{"store_id": storeID, "change_set_id": idB}})
-	if err != nil || inspectBResult.IsError || mcpEnvelope(t, inspectBResult).Result.(map[string]any)["out_of_date"] != true {
-		t.Fatalf("MCP inspect preserved B: result=%+v err=%v", inspectBResult, err)
+	inspectB := runRealMCP(t, ctx, session, "change_set_inspect", map[string]any{"store_id": storeID, "change_set_id": idB})
+	if inspectB.Result.(map[string]any)["out_of_date"] != true {
+		t.Fatalf("MCP inspect preserved B: %+v", inspectB)
 	}
-	rejected := runRealCLIError(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idB, "--base-revision", bindingB["base_revision"].(string), "--candidate-tree", bindingB["candidate_tree"].(string), "--generation", "2")
+	editedOutOfDate := runRealMCP(t, ctx, session, "change_set_edit_proposal", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2, "proposal_markdown": proposalB + "Still editable.\n"})
+	if editedOutOfDate.Result.(map[string]any)["out_of_date"] != true || editedOutOfDate.Result.(map[string]any)["generation"] != float64(3) {
+		t.Fatalf("out-of-date edit: %+v", editedOutOfDate)
+	}
+	bindingB := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 3}).Result.(map[string]any)
+	rejected := runRealCLIError(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idB, "--base-revision", bindingB["base_revision"].(string), "--candidate-tree", bindingB["candidate_tree"].(string), "--generation", "3")
 	if rejected.Error == nil || rejected.Error.Code != "change_set_out_of_date" {
 		t.Fatalf("out-of-date B update: %+v", rejected)
+	}
+	appliedReview := runRealCLIError(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", idA, "--generation", "999")
+	if appliedReview.Error == nil || appliedReview.Error.Code != "change_set_not_editable" {
+		t.Fatalf("applied CLI review: %+v", appliedReview)
+	}
+	appliedDiscard := runRealMCPError(t, ctx, session, "change_set_discard", map[string]any{"store_id": storeID, "change_set_id": idA, "generation": 999})
+	if appliedDiscard.Error == nil || appliedDiscard.Error.Code != "change_set_not_editable" {
+		t.Fatalf("applied MCP discard: %+v", appliedDiscard)
+	}
+
+	discardable := runRealMCP(t, ctx, session, "change_set_create", map[string]any{"store_id": storeID, "accepted_revision": acceptedRevision, "name": "Discard me"})
+	discardID := discardable.Result.(map[string]any)["id"].(string)
+	runRealCLI(t, binary, origin, "change-set", "discard", "--store-id", storeID, "--change-set-id", discardID, "--generation", "0")
+	discardedInspect := runRealCLIError(t, binary, origin, "change-set", "inspect", "--store-id", storeID, "--change-set-id", discardID)
+	if discardedInspect.Error == nil || discardedInspect.Error.Code != "change_set_not_found" {
+		t.Fatalf("discarded inspect: %+v", discardedInspect)
+	}
+
+	malformed := runRealCLI(t, binary, origin, "change-set", "create", "--store-id", storeID, "--accepted-revision", acceptedRevision, "--name", "Malformed record")
+	malformedID := malformed.Result.(map[string]any)["id"].(string)
+	storePath := filepath.Join(dataDirectory, "architecture", storeID+".git")
+	malformedRef := "refs/workbraid/change-sets/active/" + malformedID
+	malformedObject := runBareGit(t, storePath, "rev-parse", malformedRef)
+	runBareGit(t, storePath, "update-ref", malformedRef, acceptedRevision, malformedObject)
+	runRealMCP(t, ctx, session, "project_open", map[string]any{"slug": "bridge-authority"})
+	unavailableInspect := runRealCLIError(t, binary, origin, "change-set", "inspect", "--store-id", storeID, "--change-set-id", malformedID)
+	if unavailableInspect.Error == nil || unavailableInspect.Error.Code != "change_set_unavailable" {
+		t.Fatalf("unavailable CLI inspect: %+v", unavailableInspect)
+	}
+	unavailableMutation := runRealMCPError(t, ctx, session, "diagram_edit_title", map[string]any{
+		"store_id": storeID, "change_set_id": malformedID, "generation": 999, "diagram_id": rootID, "title": "No",
+	})
+	if unavailableMutation.Error == nil || unavailableMutation.Error.Code != "change_set_unavailable" {
+		t.Fatalf("unavailable MCP mutation: %+v", unavailableMutation)
 	}
 	listed := runRealCLI(t, binary, origin, "change-set", "list", "--store-id", storeID)
 	if len(listed.Result.(map[string]any)["change_sets"].([]any)) != 2 {
 		t.Fatalf("parallel lifecycle list: %+v", listed)
+	}
+	if len(listed.Result.(map[string]any)["unavailable"].([]any)) != 1 {
+		t.Fatalf("unavailable lifecycle list: %+v", listed)
+	}
+	runRealMCP(t, ctx, session, "project_close", map[string]any{"store_id": storeID})
+	reopened := runRealCLI(t, binary, origin, "project", "open", "--slug", "bridge-authority")
+	if reopened.Context.Project == nil || reopened.Context.Project.StoreID != storeID {
+		t.Fatalf("reopened project: %+v", reopened)
 	}
 }
 

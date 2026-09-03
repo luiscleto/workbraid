@@ -34,6 +34,8 @@ const root = '11111111-1111-4111-8111-111111111111'
 const worker = '22222222-2222-4222-8222-222222222222'
 const external = '33333333-3333-4333-8333-333333333333'
 const detail = '44444444-4444-4444-8444-444444444444'
+const candidateDetail = '55555555-5555-4555-8555-555555555555'
+const candidateComponent = '66666666-6666-4666-8666-666666666666'
 
 function response(value: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }))
@@ -551,6 +553,55 @@ describe('change-set workspace contexts', () => {
     expect(screen.queryByTestId('architecture-map')).not.toBeInTheDocument()
     expect(screen.queryByText('Does work.')).not.toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('navigates candidate-only and modified Diagrams from one proposal snapshot', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const validID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const accepted = architecture()
+    const acceptedDiagrams = accepted.diagrams as Array<Record<string, any>>
+    const candidate = architecture({
+      component_count: 3,
+      component_titles: ['Worker', 'External', 'Candidate service'],
+      components: [
+        ...(accepted.components as Array<Record<string, unknown>>),
+        { id: candidateComponent, title: 'Candidate service', description: 'Exists only in the proposal.\n', filename: 'candidate-service.md', relationships: [] },
+      ],
+      diagrams: [
+        acceptedDiagrams[0],
+        {
+          ...acceptedDiagrams[1],
+          appearances: [{ component_id: worker, role: 'reference' }],
+          boundaries: [], relationships: [],
+        },
+        {
+          id: candidateDetail, title: 'Candidate nested', filename: 'candidate-nested.yaml', depth: 1,
+          parent_diagram_id: root, parent_anchor_component_id: worker,
+          breadcrumbs: [{ id: root, title: 'System' }, { id: candidateDetail, title: 'Candidate nested' }],
+          appearances: [{ component_id: candidateComponent, role: 'home' }], boundaries: [], relationships: [],
+        },
+      ],
+    })
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(validID, 'Unified proposal', { candidate })] }))))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.selectOptions(await screen.findByLabelText('Architecture context'), validID)
+    const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigation).getByRole('button', { name: 'Candidate nested' }))
+    expect(await screen.findByText('Exists only in the proposal.')).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Candidate service' })).toHaveAttribute('aria-current', 'page')
+    await waitFor(() => expect(graphHarness.calls.at(-1)?.elements?.some((element) => element.data.id === candidateComponent)).toBe(true))
+
+    await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
+    expect(await screen.findByText('Does work.')).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Worker, Included here · Lives in System' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).queryByRole('button', { name: 'External' })).not.toBeInTheDocument()
+    await waitFor(() => {
+      const elements = graphHarness.calls.at(-1)?.elements ?? []
+      expect(elements.some((element) => element.data.id === worker)).toBe(true)
+      expect(elements.some((element) => element.data.id === external)).toBe(false)
+    })
   })
 
   it('protects unsaved proposal Markdown before switching contexts and renders it inertly', async () => {

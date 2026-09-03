@@ -839,7 +839,8 @@ export function App() {
       return
     }
     if (intent.kind === 'diagram') {
-      const projection = state.kind === 'ready' ? state.value : undefined
+      const result = state.kind === 'ready' ? state.value : undefined
+      const projection = result?.changes ? result.changes.candidate : result
       const diagram = projection?.diagrams?.find((candidate) => candidate.id === intent.id)
       setSelectedDiagramID(intent.id)
       setSelectedComponentID(intent.focusComponentID && diagram?.appearances.some((appearance) => appearance.component_id === intent.focusComponentID)

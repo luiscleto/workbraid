@@ -84,6 +84,16 @@ func createAgentChangeSet(t *testing.T, handler http.Handler, storeID, revision,
 	return envelope
 }
 
+func requireAgentErrorCode(t *testing.T, response *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	envelope := decodeAgentEnvelope(t, response)
+	if envelope.OK || envelope.Error == nil || envelope.Error.Code != code {
+		t.Fatalf("error=%+v want=%q", envelope, code)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestAgentV2ParallelChangeSetsPreserveInvalidRawStateAcrossRestart(t *testing.T) {
 	dataDirectory := t.TempDir()
 	uiDirectory := t.TempDir()
@@ -258,6 +268,59 @@ func TestAgentV2AcceptanceRetainsAppliedReceiptAndOtherOutOfDateProposal(t *test
 	if !receiptAfterAdvance.OK || receiptAfterAdvance.Context.AcceptedRevision == nil || *receiptAfterAdvance.Context.AcceptedRevision != *updatedC.Context.AcceptedRevision || resultMap(t, receiptAfterAdvance)["publication"] != "already_applied" {
 		t.Fatalf("receipt after later Accepted advancement: %+v", receiptAfterAdvance)
 	}
+}
+
+func TestAgentV2LifecycleErrorsAreTruthfulBeforeGenerationChecks(t *testing.T) {
+	state, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Lifecycle errors"}))
+	change := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Applied record")
+	exact := changeSetState(t, change)
+	component := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: exact, Title: "Worker", DiagramID: &created.RootDiagramID,
+	}))
+	componentID := resultMap(t, component)["component_id"].(string)
+	exact.Generation = uint64(resultMap(t, component)["generation"].(float64))
+	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: exact}))
+	binding := resultMap(t, reviewed)
+	accepted := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: exact.ChangeSetID, BaseRevision: binding["base_revision"].(string), CandidateTree: binding["candidate_tree"].(string), Generation: exact.Generation,
+	}))
+	if !accepted.OK || accepted.Context.AcceptedRevision == nil {
+		t.Fatalf("accept: %+v", accepted)
+	}
+	wrongApplied := exact
+	wrongApplied.Generation += 100
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: wrongApplied}), "change_set_not_editable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/change-sets/discard", agentapi.ChangeSetDiscardRequest{StatePreconditions: wrongApplied}), "change_set_not_editable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/components/edit", agentapi.ComponentEditRequest{StatePreconditions: wrongApplied, ComponentID: componentID, Title: stringPointer("No")}), "change_set_not_editable")
+
+	unavailable := createAgentChangeSet(t, handler, created.StoreID, *accepted.Context.AcceptedRevision, "Unavailable record")
+	unavailableState := changeSetState(t, unavailable)
+	storePath, err := state.architecture.StorePath(created.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeRef := "refs/workbraid/change-sets/active/" + unavailableState.ChangeSetID
+	activeObject := git(t, "--git-dir", storePath, "rev-parse", activeRef)
+	git(t, "--git-dir", storePath, "update-ref", activeRef, *accepted.Context.AcceptedRevision, activeObject)
+	opened := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/projects/open", agentapi.ProjectOpenRequest{Slug: created.ProjectSlug}))
+	if !opened.OK {
+		t.Fatalf("reload malformed record: %+v", opened)
+	}
+	listed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/list", agentapi.ChangeSetsListRequest{StoreID: created.StoreID}))
+	unavailableRows := resultMap(t, listed)["unavailable"].([]any)
+	if len(unavailableRows) != 1 || unavailableRows[0].(map[string]any)["id"] != unavailableState.ChangeSetID {
+		t.Fatalf("listed unavailable=%+v", unavailableRows)
+	}
+	wrongUnavailable := unavailableState
+	wrongUnavailable.Generation += 100
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/change-sets/rename", agentapi.ChangeSetRenameRequest{StatePreconditions: wrongUnavailable, Name: "No"}), "change_set_unavailable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: wrongUnavailable}), "change_set_unavailable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/change-sets/discard", agentapi.ChangeSetDiscardRequest{StatePreconditions: wrongUnavailable}), "change_set_unavailable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{StatePreconditions: wrongUnavailable, Title: "No", DiagramID: &created.RootDiagramID}), "change_set_unavailable")
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/architecture/update", agentapi.ArchitectureUpdateRequest{
+		StoreID: created.StoreID, ChangeSetID: wrongUnavailable.ChangeSetID, BaseRevision: *accepted.Context.AcceptedRevision, CandidateTree: binding["candidate_tree"].(string), Generation: wrongUnavailable.Generation,
+	}), "change_set_unavailable")
 }
 
 func TestAgentV2ConcurrentRecordsAndProjectBoundCreationRemainIndependent(t *testing.T) {

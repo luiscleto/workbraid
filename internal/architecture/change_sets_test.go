@@ -377,6 +377,58 @@ func TestChangeSetLoaderIsolatesClosedSchemaAndIdentityConflicts(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed metadata retains its readable active name for collision detection", func(t *testing.T) {
+		ctx := context.Background()
+		manager := NewManager(t.TempDir())
+		base, first, object, storePath := changeSetFixture(t, manager, ctx, "Reserved Name")
+		entries, err := manager.git.directTreeEntries(ctx, storePath, object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byPath := make(map[string]treeEntry, len(entries))
+		for _, entry := range entries {
+			byPath[entry.Path] = entry
+		}
+		metadata, err := manager.git.readBlob(ctx, storePath, byPath["change-set.yaml"].Object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadataBlob, err := manager.git.writeBlob(ctx, storePath, []byte(strings.Replace(string(metadata), "version: 1", "version: invalid", 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadataEntry := byPath["change-set.yaml"]
+		metadataEntry.Object = metadataBlob
+		byPath["change-set.yaml"] = metadataEntry
+		malformed := replaceChangeSetEnvelope(t, manager, ctx, storePath, base.Revision(), byPath)
+		if err := manager.git.updateRef(ctx, storePath, activeChangeSetPrefix+first.ID, malformed, object); err != nil {
+			t.Fatal(err)
+		}
+
+		secondID, secondName, err := manager.NewChangeSet(nil, "reserved name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := ChangeSet{ID: secondID, Name: secondName, Lifecycle: "active", BaseRevision: base.Revision(), BaseSnapshot: base, Candidate: &candidate}
+		if _, err := manager.WriteActiveChangeSet(ctx, base.StoreID(), second, ""); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, unavailable, err := manager.LoadChangeSets(ctx, base.StoreID())
+		if err != nil || len(loaded) != 0 || len(unavailable) != 2 {
+			t.Fatalf("loaded=%+v unavailable=%+v err=%v", loaded, unavailable, err)
+		}
+		for _, record := range unavailable {
+			if !strings.EqualFold(record.Name, "Reserved Name") {
+				t.Fatalf("unavailable record lost reserved name: %+v", record)
+			}
+		}
+	})
+
 	t.Run("duplicate lifecycle UUID is never selected", func(t *testing.T) {
 		ctx := context.Background()
 		manager := NewManager(t.TempDir())

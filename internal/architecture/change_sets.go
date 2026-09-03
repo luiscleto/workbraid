@@ -305,6 +305,7 @@ func (manager *Manager) loadChangeSet(ctx context.Context, storePath, storeID, l
 	if err != nil {
 		return record, errors.New("read change-set metadata")
 	}
+	record.Name = readableChangeSetName(metadataBytes)
 	metadata, err := parseChangeSetMetadata(metadataBytes)
 	if err != nil {
 		return record, err
@@ -660,6 +661,28 @@ func parseChangeSetMetadata(contents []byte) (changeSetMetadata, error) {
 		return metadata, errors.New("applied revision is invalid")
 	}
 	return metadata, nil
+}
+
+// readableChangeSetName extracts only an unambiguous valid display name from
+// an otherwise malformed metadata mapping. It reserves no meaning from the
+// malformed record beyond the approved active-name collision rule.
+func readableChangeSetName(contents []byte) string {
+	root, err := oneYAMLMapping(contents, "change-set.yaml")
+	if err != nil {
+		return ""
+	}
+	name := ""
+	for index := 0; index < len(root.Content); index += 2 {
+		key, value := root.Content[index], root.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" || key.Value != "name" {
+			continue
+		}
+		if name != "" || value.Kind != yaml.ScalarNode || value.ShortTag() != "!!str" || ValidateChangeSetName(value.Value) != nil {
+			return ""
+		}
+		name = value.Value
+	}
+	return name
 }
 
 func oneYAMLMapping(contents []byte, name string) (*yaml.Node, error) {

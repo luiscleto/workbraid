@@ -450,17 +450,29 @@ func (h *Handler) checkAgentStateLocked(expected agentapi.StatePreconditions) (a
 	if h.loadedStale {
 		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{"loaded_revision": snapshot.Revision()}}
 	}
-	record := h.changeSets[expected.ChangeSetID]
-	if record == nil {
-		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_not_found", Message: agentMessage("change_set_not_found"), Details: map[string]any{"change_set_id": expected.ChangeSetID}}
-	}
-	if record.lifecycle != "active" {
-		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_not_editable", Message: agentMessage("change_set_not_editable"), Details: map[string]any{"change_set_id": expected.ChangeSetID, "lifecycle": record.lifecycle}}
+	record, lifecycleErr := h.editableAgentChangeSetLocked(expected.ChangeSetID)
+	if lifecycleErr != nil {
+		return architecture.Snapshot{}, nil, lifecycleErr
 	}
 	if record.generation != expected.Generation {
 		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "change_set_generation_mismatch", Message: agentMessage("change_set_generation_mismatch"), Details: map[string]any{"change_set_id": expected.ChangeSetID, "expected_generation": expected.Generation, "current_generation": record.generation}}
 	}
 	return record.baseSnapshot, clonePending(record), nil
+}
+
+func (h *Handler) editableAgentChangeSetLocked(id string) (*pendingChangeSet, *agentapi.Error) {
+	if record := h.changeSets[id]; record != nil {
+		if record.lifecycle != "active" {
+			return record, &agentapi.Error{Code: "change_set_not_editable", Message: agentMessage("change_set_not_editable"), Details: map[string]any{"change_set_id": id, "lifecycle": record.lifecycle}}
+		}
+		return record, nil
+	}
+	for _, unavailable := range h.unavailableChangeSets {
+		if unavailable.ID == id {
+			return nil, &agentapi.Error{Code: "change_set_unavailable", Message: agentMessage("change_set_unavailable"), Details: map[string]any{"change_set_id": id, "reason": unavailable.Reason}}
+		}
+	}
+	return nil, &agentapi.Error{Code: "change_set_not_found", Message: agentMessage("change_set_not_found"), Details: map[string]any{"change_set_id": id}}
 }
 
 func (h *Handler) writeAgentDomainErrorLocked(response http.ResponseWriter, status int, err *agentapi.Error) {
@@ -806,6 +818,13 @@ func (h *Handler) agentChangeSetReview(response http.ResponseWriter, request *ht
 	}
 	generation := payload.Generation
 	h.stateMutex.Lock()
+	if _, _, stateErr := h.checkAgentStateLocked(payload.StatePreconditions); stateErr != nil {
+		status := agentDomainErrorStatus(stateErr)
+		envelope := h.agentErrorEnvelopeLocked(stateErr.Code, stateErr.Message, stateErr.Details)
+		h.stateMutex.Unlock()
+		writeJSON(response, status, envelope)
+		return
+	}
 	slug := ""
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
@@ -845,6 +864,13 @@ func (h *Handler) agentChangeSetDiscard(response http.ResponseWriter, request *h
 	}
 	generation := payload.Generation
 	h.stateMutex.Lock()
+	if _, _, stateErr := h.checkAgentStateLocked(payload.StatePreconditions); stateErr != nil {
+		status := agentDomainErrorStatus(stateErr)
+		envelope := h.agentErrorEnvelopeLocked(stateErr.Code, stateErr.Message, stateErr.Details)
+		h.stateMutex.Unlock()
+		writeJSON(response, status, envelope)
+		return
+	}
 	slug := ""
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
@@ -878,6 +904,18 @@ func (h *Handler) agentArchitectureUpdate(response http.ResponseWriter, request 
 	slug := ""
 	if h.loadedProject != nil {
 		slug = h.loadedProject.projectSlug
+	}
+	if h.loadedSnapshot != nil && h.loadedProject != nil && payload.StoreID == h.loadedProject.storeID && !h.loadedStale {
+		record, lifecycleErr := h.editableAgentChangeSetLocked(payload.ChangeSetID)
+		if lifecycleErr != nil && !(record != nil && record.lifecycle == "applied" && appliedReceiptMatches(record, acceptChangesRequest{
+			ChangeSetID: payload.ChangeSetID, BaseRevision: payload.BaseRevision, CandidateTree: payload.CandidateTree, Generation: payload.Generation,
+		})) {
+			status := agentDomainErrorStatus(lifecycleErr)
+			envelope := h.agentErrorEnvelopeLocked(lifecycleErr.Code, lifecycleErr.Message, lifecycleErr.Details)
+			h.stateMutex.Unlock()
+			writeJSON(response, status, envelope)
+			return
+		}
 	}
 	wasOutOfDate := false
 	if record := h.changeSets[payload.ChangeSetID]; record != nil && h.loadedSnapshot != nil {

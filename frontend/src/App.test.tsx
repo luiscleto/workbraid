@@ -80,8 +80,17 @@ function requestBody(mock: ReturnType<typeof vi.fn>, index: number) {
   return JSON.parse(String(mock.mock.calls[index][1]?.body))
 }
 
+async function selectShowing(user: ReturnType<typeof userEvent.setup>, optionName: string) {
+  const trigger = await screen.findByRole('button', { name: /^Showing / })
+  await user.click(trigger)
+  expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await user.click(screen.getByRole('option', { name: optionName }))
+  expect(trigger).toHaveAttribute('aria-expanded', 'false')
+}
+
 async function selectProposal(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(await screen.findByLabelText('Architecture context'), 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+  await selectShowing(user, 'Steady lantern')
+  await user.click(await screen.findByRole('button', { name: 'Return to review' }))
 }
 
 function changeSet(id: string, name: string, overrides: Record<string, unknown> = {}) {
@@ -241,7 +250,7 @@ describe('slug workspace and reusable references', () => {
     const picker = (await screen.findAllByLabelText('Show component here'))[0]
     await user.selectOptions(picker, external)
     expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), pending_generation_observed: true, expected_pending_generation: null, diagram_id: root, component_id: external })
-    expect(await screen.findByRole('heading', { name: 'Proposed: Steady lantern' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
   })
 
   it('offers Stop showing here only for a canonical reference', async () => {
@@ -495,12 +504,12 @@ describe('candidate review regressions', () => {
     expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()
-    expect(screen.queryByRole('button', { name: 'Delete change set' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete proposal' })).not.toBeInTheDocument()
   })
 })
 
-describe('change-set workspace contexts', () => {
-  it('creates a generated change set from the exact Accepted context', async () => {
+describe('proposal workspace contexts', () => {
+  it('creates a generated proposal from the right-pane New changes task', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const generatedID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
     const generated = changeSet(generatedID, 'quiet-harbor')
@@ -512,11 +521,39 @@ describe('change-set workspace contexts', () => {
     render(<App />)
 
     await user.click(await screen.findByRole('button', { name: 'New changes' }))
-    await user.click(screen.getByRole('button', { name: 'Create change set' }))
+    const task = screen.getByRole('heading', { name: 'New changes' }).closest('form')
+    expect(task).not.toBeNull()
+    expect(task!.closest('.working-pane')).not.toBeNull()
+    expect(within(task!).getByText('Starts from current Accepted.')).toBeInTheDocument()
+    expect(within(task!).getByText('Leave blank to generate a name.')).toBeInTheDocument()
+    expect(within(task!).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    await user.click(within(task!).getByRole('button', { name: 'Create' }))
     expect(requestBody(fetchMock, 1)).toEqual({
       project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', accepted_revision: 'a'.repeat(40),
     })
-    expect(await screen.findByRole('heading', { name: 'Proposed: quiet-harbor' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'quiet-harbor' })).toBeInTheDocument()
+    expect(screen.getByText('These changes have not updated Architecture yet.')).toBeInTheDocument()
+  })
+
+  it('cancels New changes back to the previous task and resets pane scroll', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const fetchMock = vi.fn(() => response(architecture({ change_sets: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+
+    expect(await screen.findByText('Does work.')).toBeInTheDocument()
+    const pane = container.querySelector<HTMLElement>('.working-pane')!
+    pane.scrollTop = 140
+    await user.click(screen.getByRole('button', { name: 'New changes' }))
+    expect(pane.scrollTop).toBe(0)
+    await user.type(screen.getByLabelText('Name'), 'Not created')
+    pane.scrollTop = 90
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Does work.')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'New changes' })).not.toBeInTheDocument()
+    expect(pane.scrollTop).toBe(0)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('switches Accepted, valid, and invalid contexts locally without overlaying snapshots', async () => {
@@ -540,15 +577,20 @@ describe('change-set workspace contexts', () => {
     ] })))
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
-    render(<App />)
+    const { container } = render(<App />)
 
     expect(await screen.findByText('Does work.')).toBeInTheDocument()
-    await user.selectOptions(screen.getByLabelText('Architecture context'), validID)
+    const pane = container.querySelector<HTMLElement>('.working-pane')!
+    pane.scrollTop = 120
+    await selectShowing(user, 'Steady lantern')
+    expect(screen.getByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(screen.getByText('These changes have not updated Architecture yet.')).toBeInTheDocument()
+    expect(pane.scrollTop).toBe(0)
     await user.click(within(screen.getByRole('navigation', { name: 'Diagrams and components' })).getByRole('button', { name: 'Proposed worker' }))
     expect(await screen.findByText('Only in the proposal.')).toBeInTheDocument()
     expect(screen.queryByText('Does work.')).not.toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('Architecture context'), invalidID)
+    await selectShowing(user, 'Broken compass')
     expect(await screen.findByRole('heading', { name: 'Needs correction' })).toBeInTheDocument()
     expect(screen.queryByTestId('architecture-map')).not.toBeInTheDocument()
     expect(screen.queryByText('Does work.')).not.toBeInTheDocument()
@@ -586,7 +628,7 @@ describe('change-set workspace contexts', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.selectOptions(await screen.findByLabelText('Architecture context'), validID)
+    await selectShowing(user, 'Unified proposal')
     const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
     await user.click(within(navigation).getByRole('button', { name: 'Candidate nested' }))
     expect(await screen.findByText('Exists only in the proposal.')).toBeInTheDocument()
@@ -615,14 +657,13 @@ describe('change-set workspace contexts', () => {
     const user = userEvent.setup()
     const { container } = render(<App />)
 
-    await user.selectOptions(await screen.findByLabelText('Architecture context'), firstID)
-    await user.click(await screen.findByRole('button', { name: 'Change set' }))
+    await selectShowing(user, 'Steady lantern')
     expect(screen.getByRole('heading', { name: 'Plan' })).toBeInTheDocument()
     expect(container.querySelector('script')).toBeNull()
-    await user.type(screen.getByLabelText('Proposal Markdown'), '\nUnsent')
-    await user.selectOptions(screen.getByLabelText('Architecture context'), secondID)
+    await user.type(screen.getByRole('textbox', { name: 'Proposal' }), '\nUnsent')
+    await selectShowing(user, 'Quiet harbor')
     expect(screen.getByRole('dialog', { name: 'Leave without keeping?' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Proposed: Steady lantern' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
   })
 
   it('keeps an out-of-date proposal editable and reviewable but unable to update Accepted', async () => {
@@ -631,45 +672,70 @@ describe('change-set workspace contexts', () => {
     const proposal = (reviewed as unknown as { changes: Record<string, unknown> }).changes
     vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [{ ...proposal, out_of_date: true }] }))))
     const user = userEvent.setup()
-    render(<App />)
+    const { container } = render(<App />)
 
-    await selectProposal(user)
-    expect(await screen.findByText(/Out of date with Accepted/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Change-set name')).toBeEnabled()
+    await selectShowing(user, 'Steady lantern · Out of date')
+    expect(await screen.findByText('Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
+    const pane = container.querySelector<HTMLElement>('.working-pane')!
+    pane.scrollTop = 100
+    await user.click(screen.getByRole('button', { name: 'Return to review' }))
+    expect(pane.scrollTop).toBe(0)
     expect(screen.getByRole('button', { name: 'With changes' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
   })
 
-  it('shows applied proposal evidence read-only', async () => {
+  it('shows an accepted proposal read-only when selected', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const appliedID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(appliedID, 'Shipped bridge', {
-      lifecycle: 'applied', read_only: true, proposal_markdown: '## Why\n\nDurable evidence.', applied_revision: 'b'.repeat(40),
+      lifecycle: 'applied', read_only: true, proposal_markdown: '## Why\n\nDurable rationale.', applied_revision: 'b'.repeat(40),
     })] }))))
     const user = userEvent.setup()
     render(<App />)
 
-    await user.selectOptions(await screen.findByLabelText('Architecture context'), appliedID)
-    await user.click(await screen.findByRole('button', { name: 'Applied proposal' }))
-    expect(screen.getByRole('heading', { name: 'Applied: Shipped bridge' })).toBeInTheDocument()
-    expect(screen.getByText('Durable evidence.')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Change-set name')).not.toBeInTheDocument()
+    await selectShowing(user, 'Shipped bridge')
+    expect(screen.getByText('Accepted proposal')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Shipped bridge' })).toBeInTheDocument()
+    expect(screen.getByText('This is the proposal that updated Architecture. It cannot be changed.')).toBeInTheDocument()
+    expect(screen.getByText('Durable rationale.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Review changes' })).not.toBeInTheDocument()
+    expect(screen.getByText('Technical details').closest('details')).not.toHaveAttribute('open')
   })
 
-  it('disambiguates duplicate applied names by stable identity', async () => {
+  it('groups Showing choices and disambiguates duplicate visible names by stable identity', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const firstID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     const secondID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const activeID = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+    const staleID = '99999999-9999-4999-8999-999999999999'
     vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [
+      changeSet(activeID, 'Open work'),
+      changeSet(staleID, 'Older work', { out_of_date: true }),
       changeSet(firstID, 'Reusable', { lifecycle: 'applied', read_only: true, applied_revision: 'b'.repeat(40) }),
       changeSet(secondID, 'Reusable', { lifecycle: 'applied', read_only: true, applied_revision: 'c'.repeat(40) }),
     ] }))))
+    const user = userEvent.setup()
     render(<App />)
 
-    const selector = await screen.findByLabelText('Architecture context')
-    expect(within(selector).getByRole('option', { name: `Applied: Reusable — ${firstID.slice(0, 8)}` })).toBeInTheDocument()
-    expect(within(selector).getByRole('option', { name: `Applied: Reusable — ${secondID.slice(0, 8)}` })).toBeInTheDocument()
+    const trigger = await screen.findByRole('button', { name: 'Showing Accepted' })
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox')
+    await user.click(trigger)
+    const listbox = screen.getByRole('listbox', { name: 'Showing' })
+    expect(listbox).toHaveAttribute('aria-activedescendant')
+    expect(within(listbox).getByRole('option', { name: 'Accepted' })).toHaveAttribute('aria-selected', 'true')
+    const open = within(listbox).getByRole('group', { name: 'Open proposals' })
+    expect(within(open).getByRole('option', { name: 'Open work' })).toBeInTheDocument()
+    expect(within(open).getByRole('option', { name: 'Older work · Out of date' })).toBeInTheDocument()
+    const accepted = within(listbox).getByRole('group', { name: 'Accepted proposals' })
+    expect(within(accepted).getByRole('option', { name: `Reusable · ${firstID.slice(0, 8)}` })).toBeInTheDocument()
+    expect(within(accepted).getByRole('option', { name: `Reusable · ${secondID.slice(0, 8)}` })).toBeInTheDocument()
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(trigger).toHaveAccessibleName('Showing Open work')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('heading', { name: 'Open work' })).toBeInTheDocument()
   })
 
   it('explains an empty review without offering an Accepted update', async () => {

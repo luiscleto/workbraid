@@ -39,14 +39,23 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     const storeID = acceptedR0.context.project!.store_id
     const revisionR0 = acceptedR0.context.accepted_revision!
 
+    await page.getByRole('button', { name: 'New changes' }).click()
+    const canceledTask = page.locator('form.new-changes-task')
+    await expect(canceledTask).toBeVisible()
+    await expect(canceledTask.locator('xpath=ancestor::*[contains(@class, "working-pane")]')).toBeVisible()
+    await canceledTask.getByLabel('Name').fill('Not created')
+    await canceledTask.getByRole('button', { name: 'Cancel' }).click()
+    await expect(canceledTask).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
+
     await createBrowserChangeSet(page, 'Change A')
-    await page.getByLabel('Proposal Markdown').fill('# Change A\n\nRoute requests through a durable gateway.\n')
-    await page.getByRole('button', { name: 'Keep proposal' }).click()
+    await page.getByRole('textbox', { name: 'Proposal' }).fill('# Change A\n\nRoute requests through a durable gateway.\n\n- Preserve retry state\n\n| Decision | Owner |\n| --- | --- |\n| Durable routing | Gateway |\n')
+    await page.getByRole('button', { name: 'Save proposal' }).click()
     await addBrowserComponent(page, 'Gateway', 'Routes requests.\n')
 
     await createBrowserChangeSet(page, 'Change B')
-    await page.getByLabel('Proposal Markdown').fill('# Change B\n\nAdd an independent worker.\n')
-    await page.getByRole('button', { name: 'Keep proposal' }).click()
+    await page.getByRole('textbox', { name: 'Proposal' }).fill('# Change B\n\nAdd an independent worker.\n')
+    await page.getByRole('button', { name: 'Save proposal' }).click()
     await addBrowserComponent(page, 'Worker', 'Processes work.\n')
 
     const listed = agent(binary, application.origin, ['change-set', 'list', '--store-id', storeID])
@@ -68,20 +77,32 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByRole('heading', { name: 'Needs correction' })).toBeVisible()
     await expect(page.getByTestId('architecture-map')).toHaveCount(0)
 
-    await page.getByLabel('Architecture context').selectOption(changeA.id)
-    await page.getByRole('button', { name: 'Change set', exact: true }).click()
-    await expect(page.getByRole('heading', { name: 'Proposed: Change A' })).toBeVisible()
+    await openShowing(page)
+    await expect(page.getByRole('group', { name: 'Open proposals' }).getByRole('option', { name: 'Change A' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Open proposals' }).getByRole('option', { name: 'Change B' })).toBeVisible()
+    await page.getByRole('option', { name: 'Change A' }).click()
+    await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
+    await expect(page.getByText('These changes have not updated Architecture yet.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'With changes' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Review changes' }).click()
     await expect(page.getByTestId('raw-diff')).toContainText('Gateway')
     await page.getByRole('button', { name: 'Update architecture' }).click()
-    await expect(page.getByRole('heading', { name: 'Applied: Change A' })).toBeVisible()
-    await expect(page.getByLabel('Change-set name')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
+    await expect(page.getByText('Accepted proposal')).toBeVisible()
+    await expect(page.getByText('This is the proposal that updated Architecture. It cannot be changed.')).toBeVisible()
+    const acceptedMarkdown = page.locator('.proposal-document .markdown-body')
+    await expect(acceptedMarkdown.locator('li')).toContainText('Preserve retry state')
+    await expect(acceptedMarkdown.locator('table')).toBeVisible()
+    expect(await acceptedMarkdown.locator('li').evaluate((item) => getComputedStyle(item).display)).toBe('list-item')
+    expect(await acceptedMarkdown.locator('table').evaluate((table) => getComputedStyle(table).display)).toBe('table')
+    await expect(acceptedMarkdown.locator('table').locator('xpath=..')).toHaveClass(/markdown-table-scroll/)
+    await expect(page.getByLabel('Name')).toHaveCount(0)
     await expect(page.getByText(/Out of date with Accepted/)).toHaveCount(0)
     const revisionR1 = agent(binary, application.origin, ['architecture', 'inspect']).context.accepted_revision!
     expect(revisionR1).not.toBe(revisionR0)
 
-    await page.getByLabel('Architecture context').selectOption(changeB.id)
-    await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
+    await selectShowing(page, 'Change B · Out of date')
+    await expect(page.getByText('Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Needs correction' })).toBeVisible()
     const inspectedInvalidB = agent(binary, application.origin, ['change-set', 'inspect', '--store-id', storeID, '--change-set-id', changeB.id])
     const repairedB = agent(binary, application.origin, [
@@ -101,6 +122,8 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     expect(rejectedB.context.accepted_revision).toBe(revisionR1)
 
     await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(page.getByRole('heading', { name: 'Change B', level: 2 })).toBeVisible()
+    await page.getByRole('button', { name: 'Return to review' }).click()
     await expect(page.getByRole('button', { name: 'With changes' })).toBeVisible()
     await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
     await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
@@ -111,11 +134,11 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'restart.log')
     await page.goto(`${application.origin}/projects/change-set-evidence`)
     expect(await displayedRevision(page)).toBe(revisionR1)
-    await page.getByLabel('Architecture context').selectOption(changeA.id)
-    await page.getByRole('button', { name: 'Applied proposal' }).click()
-    await expect(page.getByRole('heading', { name: 'Applied: Change A' })).toBeVisible()
+    await selectShowing(page, 'Change A')
+    await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
+    await expect(page.getByText('Accepted proposal')).toBeVisible()
     await expect(page.getByText('Route requests through a durable gateway.')).toBeVisible()
-    await page.getByLabel('Architecture context').selectOption(changeB.id)
+    await selectShowing(page, 'Change B · Out of date')
     await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
     await expect(page.getByText('Add an independent worker.', { exact: true })).toBeVisible()
 
@@ -131,10 +154,26 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
 
 async function createBrowserChangeSet(page: Page, name: string) {
   await page.getByRole('button', { name: 'New changes' }).click()
-  const form = page.locator('form.new-change-set')
-  await form.getByLabel('Change-set name').fill(name)
-  await form.getByRole('button', { name: 'Create change set' }).click()
-  await expect(page.getByRole('heading', { name: `Proposed: ${name}` })).toBeVisible()
+  const form = page.locator('form.new-changes-task')
+  await expect(form.locator('xpath=ancestor::*[contains(@class, "working-pane")]')).toBeVisible()
+  await form.getByLabel('Name').fill(name)
+  await form.getByRole('button', { name: 'Create' }).click()
+  await expect(page.getByRole('heading', { name, level: 2 })).toBeVisible()
+  await expect(page.getByText('Open proposal')).toBeVisible()
+}
+
+async function openShowing(page: Page) {
+  const trigger = page.getByRole('button', { name: /^Showing / })
+  await trigger.click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('listbox', { name: 'Showing' })).toBeVisible()
+}
+
+async function selectShowing(page: Page, name: string) {
+  const trigger = page.getByRole('button', { name: /^Showing / })
+  await openShowing(page)
+  await page.getByRole('option', { name, exact: true }).click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
 }
 
 async function addBrowserComponent(page: Page, title: string, description: string) {

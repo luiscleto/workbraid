@@ -47,20 +47,22 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     ])
 
     const acceptedIndex = page.getByRole('navigation', { name: 'Diagrams and components' })
-    const contextSelector = page.getByLabel('Architecture context')
     await expect(page.locator('form.component-editor')).toHaveCount(0)
-    const proposalID = await contextSelector.inputValue()
-    await contextSelector.selectOption('accepted')
+    const proposalName = (await page.getByRole('button', { name: /^Showing / }).locator('span').first().textContent())?.trim()
+    expect(proposalName).toBeTruthy()
+    expect(proposalName).not.toBe('Accepted')
+    await selectShowing(page, 'Accepted')
     const leaveGuard = page.getByRole('dialog', { name: 'Leave without keeping?' })
     if (await leaveGuard.isVisible()) await leaveGuard.getByRole('button', { name: 'Leave without keeping' }).click()
-    await expect(contextSelector).toHaveValue('accepted')
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
     await expect(acceptedIndex.getByText('No components', { exact: true })).toBeVisible()
-    await contextSelector.selectOption(proposalID)
+    await selectShowing(page, proposalName!)
+    await expect(page.getByRole('heading', { name: proposalName! })).toBeVisible()
     await reviewAndAccept(page)
+    await selectShowing(page, 'Accepted')
     const firstAccepted = await displayedRevision(page)
     expect(firstAccepted).not.toBe(bootstrap)
-    await contextSelector.selectOption('accepted')
-    await expect(contextSelector).toHaveValue('accepted')
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
 
     await acceptedIndex.getByText('Gateway', { exact: true }).click()
     await page.getByRole('button', { name: 'Edit component' }).click()
@@ -91,9 +93,9 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     await expect(review.getByTestId('raw-diff')).toContainText('dispatches')
     await page.getByRole('button', { name: 'With changes' }).click()
     await page.getByRole('button', { name: 'Update architecture' }).click()
+    await selectShowing(page, 'Accepted')
     const secondAccepted = await displayedRevision(page)
-    await contextSelector.selectOption('accepted')
-    await expect(contextSelector).toHaveValue('accepted')
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
 
     await page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Gateway internals' }).click()
     const diagramIndex = page.getByRole('navigation', { name: 'Diagrams and components' })
@@ -107,11 +109,11 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     await page.getByRole('button', { name: 'Review changes' }).click()
     await expect(page.getByTestId('raw-diff')).toContainText('role: reference')
     await page.getByRole('button', { name: 'Update architecture' }).click()
+    await selectShowing(page, 'Accepted')
     const finalAccepted = await displayedRevision(page)
     expect(finalAccepted).not.toBe(secondAccepted)
     expect(gitBare(storePath, ['rev-parse', 'refs/heads/accepted'])).toBe(finalAccepted)
-    await contextSelector.selectOption('accepted')
-    await expect(contextSelector).toHaveValue('accepted')
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
 
     await page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Gateway internals' }).click()
     await expect(page.getByRole('navigation', { name: 'Components that live elsewhere' }).getByRole('button', { name: /Gateway.*Lives in Platform/ })).toBeVisible()
@@ -215,6 +217,14 @@ async function reviewAndAccept(page: Page) {
   await page.getByRole('button', { name: 'Review changes' }).click()
   await expect(page.locator('.review-workspace-pane')).toBeVisible()
   await page.getByRole('button', { name: 'Update architecture' }).click()
+}
+
+async function selectShowing(page: Page, name: string) {
+  const trigger = page.getByRole('button', { name: /^Showing / })
+  await trigger.click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await page.getByRole('option', { name, exact: true }).click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
 }
 
 async function displayedRevision(page: Page) {

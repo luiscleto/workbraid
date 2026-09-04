@@ -13,8 +13,13 @@ it('renders the approved Markdown features without changing source', () => {
   const { container } = render(<MarkdownBody source={source} />)
 
   expect(screen.getByRole('heading', { name: 'Notes' })).toBeInTheDocument()
-  expect(screen.getByRole('table')).toBeInTheDocument()
-  expect(screen.getByRole('checkbox')).toBeChecked()
+  const markdown = container.querySelector<HTMLElement>('.markdown-body')!
+  const table = screen.getByRole('table')
+  const checkbox = screen.getByRole('checkbox')
+  expect(markdown).toContainElement(table)
+  expect(table.parentElement).toHaveClass('markdown-table-scroll')
+  expect(markdown.querySelector('ul')).toContainElement(checkbox)
+  expect(checkbox).toBeChecked()
   expect(container.querySelector('del')).toHaveTextContent('old')
   expect(screen.getByRole('link', { name: 'https://example.test' })).toBeInTheDocument()
   expect(screen.getByText('graph TD')).toBeInTheDocument()

@@ -17,6 +17,7 @@ export function MarkdownBody({ source }: { source: string }) {
         components={{
           a: ({ href, children }) => safeLink(href) ? <a href={href}>{children}</a> : <span>{children}</span>,
           img: ({ alt }) => <span className="inert-resource">[Image: {alt || 'untitled'}]</span>,
+          table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>,
         }}
       >
         {source}

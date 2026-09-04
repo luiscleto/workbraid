@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   ArchitectureMap,
   MapComponent,
@@ -186,6 +186,7 @@ type NavigationIntent =
   | { kind: 'diagram'; id: string; focusComponentID?: string }
   | { kind: 'changes' }
   | { kind: 'context'; id: string }
+  | { kind: 'new-changes' }
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
   | { kind: 'open-another' }
@@ -337,6 +338,145 @@ function relationshipStatusText(status: Extract<ReviewFocus, { kind: 'relationsh
   return status === 'added' ? 'Added' : 'Removed'
 }
 
+function ShowingMenu({
+  changeSets,
+  selectedID,
+  onSelect,
+}: {
+  changeSets: ChangesInProgress[]
+  selectedID: string
+  onSelect: (id: string) => void
+}) {
+  const labelID = useId()
+  const triggerID = useId()
+  const listboxID = useId()
+  const openGroupID = useId()
+  const acceptedGroupID = useId()
+  const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const listboxRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const active = changeSets.filter((changeSet) => changeSet.lifecycle === 'active')
+  const applied = changeSets.filter((changeSet) => changeSet.lifecycle === 'applied')
+  const nameCounts = new Map<string, number>()
+  for (const changeSet of changeSets) nameCounts.set(changeSet.name, (nameCounts.get(changeSet.name) ?? 0) + 1)
+  const proposalLabel = (changeSet: ChangesInProgress) => `${changeSet.name}${(nameCounts.get(changeSet.name) ?? 0) > 1 ? ` · ${changeSet.id.slice(0, 8)}` : ''}${changeSet.out_of_date ? ' · Out of date' : ''}`
+  const options = [
+    { id: 'accepted', label: 'Accepted' },
+    ...active.map((changeSet) => ({ id: changeSet.id, label: proposalLabel(changeSet) })),
+    ...applied.map((changeSet) => ({ id: changeSet.id, label: proposalLabel(changeSet) })),
+  ]
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.id === selectedID))
+  const [activeIndex, setActiveIndex] = useState(selectedIndex)
+
+  useEffect(() => {
+    if (!open) return
+    setActiveIndex(selectedIndex)
+    listboxRef.current?.focus()
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
+  }, [open, selectedIndex])
+
+  const showMenu = (index = selectedIndex) => {
+    setActiveIndex(index)
+    setOpen(true)
+  }
+  const choose = (id: string) => {
+    setOpen(false)
+    if (id !== selectedID) onSelect(id)
+    triggerRef.current?.focus()
+  }
+  const move = (offset: number) => setActiveIndex((current) => (current + offset + options.length) % options.length)
+  const onTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      showMenu(event.key === 'ArrowDown' ? selectedIndex : (selectedIndex - 1 + options.length) % options.length)
+    }
+  }
+  const onListboxKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      move(event.key === 'ArrowDown' ? 1 : -1)
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault()
+      setActiveIndex(event.key === 'Home' ? 0 : options.length - 1)
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      choose(options[activeIndex].id)
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+      triggerRef.current?.focus()
+    } else if (event.key === 'Tab') {
+      setOpen(false)
+    }
+  }
+  const option = ({ id, label }: { id: string; label: string }, index: number) => (
+    <button
+      id={`${listboxID}-option-${index}`}
+      key={id}
+      type="button"
+      role="option"
+      aria-selected={id === selectedID}
+      className={index === activeIndex ? 'active' : undefined}
+      onMouseEnter={() => setActiveIndex(index)}
+      onClick={() => choose(id)}
+    >
+      <span>{label}</span>
+      {id === selectedID && <span aria-hidden="true">✓</span>}
+    </button>
+  )
+
+  return (
+    <div className="showing-menu" ref={rootRef}>
+      <span className="showing-label" id={labelID}>Showing</span>
+      <button
+        className="showing-trigger"
+        id={triggerID}
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxID : undefined}
+        aria-labelledby={`${labelID} ${triggerID}`}
+        onClick={() => open ? setOpen(false) : showMenu()}
+        onKeyDown={onTriggerKeyDown}
+      >
+        <span>{options[selectedIndex].label}</span><span className="showing-chevron" aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div
+          className="showing-listbox"
+          id={listboxID}
+          ref={listboxRef}
+          role="listbox"
+          tabIndex={-1}
+          aria-labelledby={labelID}
+          aria-activedescendant={`${listboxID}-option-${activeIndex}`}
+          onKeyDown={onListboxKeyDown}
+        >
+          {option(options[0], 0)}
+          {active.length > 0 && (
+            <div className="showing-group" role="group" aria-labelledby={openGroupID}>
+              <div className="showing-group-label" id={openGroupID}>Open proposals</div>
+              {active.map((changeSet, index) => option({ id: changeSet.id, label: proposalLabel(changeSet) }, index + 1))}
+            </div>
+          )}
+          {applied.length > 0 && (
+            <div className="showing-group" role="group" aria-labelledby={acceptedGroupID}>
+              <div className="showing-group-label" id={acceptedGroupID}>Accepted proposals</div>
+              {applied.map((changeSet, index) => option({ id: changeSet.id, label: proposalLabel(changeSet) }, index + active.length + 1))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function App() {
   const [projectName, setProjectName] = useState('')
   const [state, setState] = useState<ViewState>({ kind: 'looking' })
@@ -359,8 +499,12 @@ export function App() {
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
   const [creatingChangeSet, setCreatingChangeSet] = useState(false)
   const [newChangeSetName, setNewChangeSetName] = useState('')
+  const workingPaneRef = useRef<HTMLElement>(null)
   const selectedContextIDRef = useRef(selectedContextID)
   selectedContextIDRef.current = selectedContextID
+  const resetWorkingPaneScroll = useCallback(() => {
+    if (workingPaneRef.current) workingPaneRef.current.scrollTop = 0
+  }, [])
 
   const enterWorkspace = useCallback((incoming: ArchitectureResult, task?: WorkspaceTask, requestedContextID?: string) => {
     const changeSets = incoming.change_sets ?? (incoming.changes ? [incoming.changes] : [])
@@ -411,7 +555,6 @@ export function App() {
     setReviewSide('with')
     setReviewFocus(null)
     setReviewSelectionCleared(false)
-    setReviewVisible(true)
     const initialDiagram = currentReview.with_changes.format_version === 2
       ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
         ?? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
@@ -648,6 +791,8 @@ export function App() {
           setNavigationIntent({ kind: 'review-result', result: payload })
         } else {
           enterWorkspace(payload, 'changes')
+          setReviewVisible(Boolean(payload.changes?.review))
+          resetWorkingPaneScroll()
         }
       } else {
         setArchitectureNotice(messageForArchitectureAction('code' in payload ? payload.code : undefined))
@@ -765,14 +910,19 @@ export function App() {
       })
       const payload = await response.json() as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
-        setArchitectureNotice("WorkBraid couldn't create that change set. Choose a different active name or Refresh.")
+        setArchitectureNotice("WorkBraid couldn't create that proposal. Choose a different open proposal name or Refresh.")
         return
       }
       setCreatingChangeSet(false)
       setNewChangeSetName('')
+      setEditor(null)
+      setDiagramEditor(null)
+      setReviewVisible(false)
+      setDiscardConfirming(false)
       enterWorkspace(payload, 'changes', payload.action_change_set_id)
+      resetWorkingPaneScroll()
     } catch {
-      setArchitectureNotice("WorkBraid couldn't create that change set. Try again.")
+      setArchitectureNotice("WorkBraid couldn't create that proposal. Try again.")
     } finally {
       setArchitectureBusy(false)
     }
@@ -805,13 +955,13 @@ export function App() {
       })
       const payload = await response.json() as ArchitectureResult | ErrorPayload
       if (!response.ok || !('state' in payload)) {
-        setArchitectureNotice("WorkBraid couldn't keep that change-set change. Inspect it and try again.")
+        setArchitectureNotice("WorkBraid couldn't save that proposal change. Inspect it and try again.")
         return
       }
       setChangeSetTextDirty(false)
       enterWorkspace(payload, 'changes', changes.id)
     } catch {
-      setArchitectureNotice("WorkBraid couldn't keep that change-set change. Try again.")
+      setArchitectureNotice("WorkBraid couldn't save that proposal change. Try again.")
     } finally {
       setArchitectureBusy(false)
     }
@@ -829,8 +979,22 @@ export function App() {
 
   async function performNavigation(intent: NavigationIntent) {
     setNavigationIntent(null)
+    if (intent.kind === 'new-changes') {
+      if (editorDirtyRef.current) {
+        setEditor(null)
+        setDiagramEditor(null)
+        setChangeSetTextDirty(false)
+      }
+      setArchitectureNotice('')
+      setCreatingChangeSet(true)
+      setNewChangeSetName('')
+      resetWorkingPaneScroll()
+      return
+    }
     setEditor(null)
     setDiagramEditor(null)
+    setCreatingChangeSet(false)
+    setNewChangeSetName('')
     setAuthoringError('')
     setArchitectureNotice('')
     if (intent.kind === 'component') {
@@ -861,6 +1025,8 @@ export function App() {
       setReviewVisible(false)
       setDiscardConfirming(false)
       setChangeSetTextDirty(false)
+      setCreatingChangeSet(false)
+      resetWorkingPaneScroll()
       return
     }
     if (intent.kind === 'clear') {
@@ -880,6 +1046,8 @@ export function App() {
     if (intent.kind === 'review-result') {
       setAcceptanceUnknown(false)
       enterWorkspace(intent.result, 'changes')
+      setReviewVisible(Boolean(intent.result.changes?.review))
+      resetWorkingPaneScroll()
       return
     }
     if (intent.kind === 'route') {
@@ -1167,9 +1335,6 @@ export function App() {
         ))}
       </nav>
     ) : undefined
-    const nameCounts = new Map<string, number>()
-    for (const changeSet of result.change_sets) nameCounts.set(changeSet.name, (nameCounts.get(changeSet.name) ?? 0) + 1)
-    const changeSetLabel = (changeSet: ChangesInProgress) => `${changeSet.lifecycle === 'applied' ? 'Applied' : 'Proposed'}: ${changeSet.name}${(nameCounts.get(changeSet.name) ?? 0) > 1 ? ` — ${changeSet.id.slice(0, 8)}` : ''}${changeSet.out_of_date ? ' — Out of date' : ''}`
     return (
       <main className="workspace-shell">
         <header className="application-frame">
@@ -1178,23 +1343,8 @@ export function App() {
             <p className="workspace-context"><strong>{result.project_name}</strong><span>Architecture</span></p>
           </div>
           <div className="frame-actions">
-            <label className="context-selector">Context
-              <select aria-label="Architecture context" value={selectedContextID} onChange={(event) => requestNavigation({ kind: 'context', id: event.target.value })}>
-                <option value="accepted">Accepted</option>
-                {result.change_sets.some((changeSet) => changeSet.lifecycle === 'active') && (
-                  <optgroup label="Active change sets">
-                    {result.change_sets.filter((changeSet) => changeSet.lifecycle === 'active').map((changeSet) => <option key={changeSet.id} value={changeSet.id}>{changeSetLabel(changeSet)}</option>)}
-                  </optgroup>
-                )}
-                {result.change_sets.some((changeSet) => changeSet.lifecycle === 'applied') && (
-                  <optgroup label="Applied change sets">
-                    {result.change_sets.filter((changeSet) => changeSet.lifecycle === 'applied').map((changeSet) => <option key={changeSet.id} value={changeSet.id}>{changeSetLabel(changeSet)}</option>)}
-                  </optgroup>
-                )}
-              </select>
-            </label>
-            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale} onClick={() => setCreatingChangeSet(true)}>New changes</button>
-            {result.changes ? <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'changes' })}>{result.changes.lifecycle === 'applied' ? 'Applied proposal' : 'Change set'}</button> : null}
+            <ShowingMenu changeSets={result.change_sets} selectedID={selectedContextID} onSelect={(id) => requestNavigation({ kind: 'context', id })} />
+            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale} onClick={() => requestNavigation({ kind: 'new-changes' })}>New changes</button>
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'refresh' })}>
               Refresh
             </button>
@@ -1203,15 +1353,7 @@ export function App() {
             </button>
           </div>
         </header>
-        {creatingChangeSet && (
-          <form className="new-change-set" onSubmit={(event) => { event.preventDefault(); void createChangeSet(result) }}>
-            <label>Change-set name <input autoFocus value={newChangeSetName} onChange={(event) => setNewChangeSetName(event.target.value)} placeholder="Optional generated name" /></label>
-            <button className="inline-action" type="submit" disabled={architectureBusy}>Create change set</button>
-            <button className="text-action" type="button" onClick={() => { setCreatingChangeSet(false); setNewChangeSetName('') }}>Cancel</button>
-          </form>
-        )}
-        {result.unavailable_change_sets?.length ? <div className="stale-banner" role="alert">{result.unavailable_change_sets.length} change set{result.unavailable_change_sets.length === 1 ? '' : 's'} unavailable. Accepted and other change sets remain available.</div> : null}
-        {result.changes?.out_of_date && <div className="stale-banner proposal-stale" role="status">Out of date with Accepted. This change set remains editable and reviewable, but cannot update Architecture.</div>}
+        {result.unavailable_change_sets?.length ? <div className="stale-banner" role="alert">{result.unavailable_change_sets.length} proposal{result.unavailable_change_sets.length === 1 ? '' : 's'} unavailable. Accepted and other proposals remain available.</div> : null}
         {result.stale && <div className="stale-banner" role="alert">The current architecture could not be loaded. This earlier view is read-only.</div>}
         {architectureNotice && (
           <div className="workspace-notice" role="alert">
@@ -1335,8 +1477,20 @@ export function App() {
               />
             )}
           </section>
-          <aside className="working-pane" aria-label="Architecture task">
-            {review && result.changes ? (
+          <aside className="working-pane" aria-label="Architecture task" ref={workingPaneRef}>
+            {creatingChangeSet ? (
+              <NewChangesTask
+                name={newChangeSetName}
+                busy={architectureBusy}
+                onName={setNewChangeSetName}
+                onCreate={() => createChangeSet(result)}
+                onCancel={() => {
+                  setCreatingChangeSet(false)
+                  setNewChangeSetName('')
+                  resetWorkingPaneScroll()
+                }}
+              />
+            ) : review && result.changes ? (
               <ChangesTask
                 result={result}
                 busy={architectureBusy}
@@ -1349,6 +1503,7 @@ export function App() {
                 onContinueEditing={() => {
                   setReviewVisible(false)
                   setWorkspaceTask('changes')
+                  resetWorkingPaneScroll()
                 }}
                 onClearReviewFocus={() => {
                   setReviewSelectionCleared(true)
@@ -1399,7 +1554,10 @@ export function App() {
                 busy={architectureBusy}
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
-                onReturnToReview={currentReview && !acceptanceUnknown ? () => setReviewVisible(true) : undefined}
+                onReturnToReview={currentReview && !acceptanceUnknown ? () => {
+                  setReviewVisible(true)
+                  resetWorkingPaneScroll()
+                } : undefined}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
@@ -1454,11 +1612,13 @@ export function App() {
             ) : (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Start with a component</h2><p>Add the first part of this architecture to begin the map.</p></div>
             )}
-            <details className="technical-details">
-              <summary>Technical details</summary>
-              <dl><dt>Project slug</dt><dd>{result.project_slug}</dd><dt>Revision</dt><dd>{result.revision}</dd></dl>
-              {result.parent_diff && <div className="accepted-diff"><h3>Parent diff</h3><pre>{result.parent_diff}</pre></div>}
-            </details>
+            {!creatingChangeSet && !(workspaceTask === 'changes' && result.changes) && !review && (
+              <details className="technical-details">
+                <summary>Technical details</summary>
+                <dl><dt>Project slug</dt><dd>{result.project_slug}</dd><dt>Revision</dt><dd>{result.revision}</dd></dl>
+                {result.parent_diff && <div className="accepted-diff"><h3>Parent diff</h3><pre>{result.parent_diff}</pre></div>}
+              </details>
+            )}
           </aside>
         </div>
         {navigationIntent && (
@@ -1700,6 +1860,37 @@ function DiagramEditorForm({
   )
 }
 
+function NewChangesTask({
+  name,
+  busy,
+  onName,
+  onCreate,
+  onCancel,
+}: {
+  name: string
+  busy: boolean
+  onName: (name: string) => void
+  onCreate: () => Promise<void>
+  onCancel: () => void
+}) {
+  return (
+    <form className="new-changes-task" onSubmit={(event) => { event.preventDefault(); void onCreate() }}>
+      <div className="pane-heading">
+        <p className="eyebrow">Architecture</p>
+        <h2>New changes</h2>
+      </div>
+      <p className="new-changes-introduction">Starts from current Accepted.</p>
+      <label htmlFor="new-proposal-name">Name</label>
+      <input id="new-proposal-name" autoFocus value={name} onChange={(event) => onName(event.target.value)} />
+      <p className="field-hint">Leave blank to generate a name.</p>
+      <div className="button-group new-changes-actions">
+        <button className="inline-action" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create'}</button>
+        <button className="secondary-action" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  )
+}
+
 function ChangesTask({
   result,
   busy,
@@ -1773,12 +1964,11 @@ function ChangesTask({
     : undefined
   const compositionComponents = changes.candidate?.components ?? result.components
   const discardAction = !acceptanceUnknown && !readOnly && changes.lifecycle === 'active'
-    ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Delete change set</button>
+    ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Delete proposal</button>
     : null
   if (changes.review && !readOnly && reviewSide && onReviewSide && onClearReviewFocus) {
     return (
       <section className="changes-in-progress review-workspace-pane" aria-labelledby="review-heading">
-        <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
         <div className="review-heading-row">
           <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="review-heading">Review changes</h2></div>
           <div className="review-side-toggle" role="group" aria-label="Review side">
@@ -1786,6 +1976,7 @@ function ChangesTask({
             <button type="button" aria-pressed={reviewSide === 'before'} onClick={() => onReviewSide('before')}>Before changes</button>
           </div>
         </div>
+        <p className="review-proposal-name"><span>Open proposal</span><strong>{changes.name}</strong></p>
         <p className="review-introduction">Inspect the visual change and complete exact diff before updating the architecture.</p>
         {(changes.review.comparison.diagrams?.length || changes.review.comparison.appearances?.length) ? (
           <section className="diagram-review-summary" aria-label="Diagram changes">
@@ -1820,14 +2011,6 @@ function ChangesTask({
             focusToken={reviewFocus?.key}
           />
         </section>
-        <details className="review-details">
-          <summary>Review details</summary>
-          <dl>
-            <dt>Base revision</dt><dd>{changes.review.base_revision}</dd>
-            <dt>Candidate tree</dt><dd>{changes.review.candidate_tree}</dd>
-            <dt>Change version</dt><dd>{changes.review.generation}</dd>
-          </dl>
-        </details>
         <div className="change-actions">
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
           {!changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
@@ -1835,14 +2018,28 @@ function ChangesTask({
           {discardAction}
         </div>
         {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
+        <details className="review-details technical-details">
+          <summary>Technical details</summary>
+          <dl className="change-set-binding">
+            <dt>ID</dt><dd>{changes.id}</dd>
+            <dt>Based on</dt><dd>{changes.review.base_revision}</dd>
+            <dt>Reviewed tree</dt><dd>{changes.review.candidate_tree}</dd>
+            <dt>Change version</dt><dd>{changes.review.generation}</dd>
+          </dl>
+        </details>
       </section>
     )
   }
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
-      <div className="pane-heading"><p className="eyebrow">Architecture change set</p><h2 id="changes-heading">{changes.lifecycle === 'applied' ? 'Applied' : 'Proposed'}: {changes.name}</h2></div>
-      <p>{changes.lifecycle === 'applied' ? 'Read-only evidence of the proposal that updated Architecture.' : changes.out_of_date ? 'This proposal keeps its original base and remains editable and reviewable.' : 'This change set has not updated the architecture yet.'}</p>
+      <div className="pane-heading"><p className="eyebrow">{changes.lifecycle === 'applied' ? 'Accepted proposal' : 'Open proposal'}</p><h2 id="changes-heading">{changes.name}</h2></div>
+      <p className="proposal-status">{changes.lifecycle === 'applied'
+        ? 'This is the proposal that updated Architecture. It cannot be changed.'
+        : changes.out_of_date
+          ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
+          : 'These changes have not updated Architecture yet.'}</p>
       <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
+      <h3 className="proposal-work-heading">Architecture work in this proposal</h3>
       <ul>
         {changes.components.map((component) => {
           const ownsReviewBlocker = Boolean(changes.review_blocker && changes.validation_item === component.id)
@@ -1947,6 +2144,15 @@ function ChangesTask({
         </div>
       )}
       {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
+      <details className="technical-details">
+        <summary>Technical details</summary>
+        <dl className="change-set-binding">
+          <dt>ID</dt><dd>{changes.id}</dd>
+          <dt>Based on</dt><dd>{changes.base_revision}</dd>
+          <dt>Change version</dt><dd>{changes.generation}</dd>
+          {changes.applied_revision && <><dt>Accepted as</dt><dd>{changes.applied_revision}</dd></>}
+        </dl>
+      </details>
     </section>
   )
 }
@@ -1968,32 +2174,30 @@ function ChangeSetContextEditor({
 }) {
   const [name, setName] = useState(changes.name)
   const [proposal, setProposal] = useState(changes.proposal_markdown)
-  const dirty = name !== changes.name || proposal !== changes.proposal_markdown
+  const nameDirty = name !== changes.name
+  const proposalDirty = proposal !== changes.proposal_markdown
+  const dirty = nameDirty || proposalDirty
   useEffect(() => {
     onDirty(dirty)
     return () => onDirty(false)
   }, [dirty, onDirty])
   return (
-    <section className="change-set-context" aria-label="Change-set context">
-      <dl className="change-set-binding">
-        <dt>Change-set ID</dt><dd>{changes.id}</dd>
-        <dt>Base revision</dt><dd>{changes.base_revision}</dd>
-        <dt>Generation</dt><dd>{changes.generation}</dd>
-        {changes.applied_revision && <><dt>Applied revision</dt><dd>{changes.applied_revision}</dd></>}
-      </dl>
+    <section className="proposal-content" aria-label="Proposal">
       {readOnly ? (
         <section className="proposal-document"><h3>Proposal</h3><MarkdownBody source={changes.proposal_markdown} /></section>
       ) : (
         <>
           <form className="change-set-name-form" onSubmit={(event) => { event.preventDefault(); onRename(name) }}>
-            <label>Change-set name <input value={name} onChange={(event) => setName(event.target.value)} /></label>
-            <button className="secondary-action" type="submit" disabled={busy || name === changes.name}>Rename</button>
+            <label htmlFor={`proposal-name-${changes.id}`}>Name</label>
+            <input id={`proposal-name-${changes.id}`} value={name} onChange={(event) => setName(event.target.value)} />
+            {nameDirty && <button className="text-action proposal-save-action" type="submit" disabled={busy}>Save name</button>}
           </form>
           <form className="proposal-editor" onSubmit={(event) => { event.preventDefault(); onSaveProposal(proposal) }}>
-            <label>Proposal Markdown <textarea rows={8} value={proposal} onChange={(event) => setProposal(event.target.value)} /></label>
-            <button className="secondary-action" type="submit" disabled={busy || proposal === changes.proposal_markdown}>Keep proposal</button>
+            <label htmlFor={`proposal-document-${changes.id}`}>Proposal</label>
+            <textarea id={`proposal-document-${changes.id}`} rows={8} value={proposal} onChange={(event) => setProposal(event.target.value)} />
+            {proposalDirty && <button className="secondary-action proposal-save-action" type="submit" disabled={busy}>Save proposal</button>}
           </form>
-          <section className="proposal-document"><h3>Proposal preview</h3><MarkdownBody source={proposal} /></section>
+          <section className="proposal-document proposal-preview"><h3>Preview</h3>{proposal ? <MarkdownBody source={proposal} /> : <p className="proposal-empty">Nothing written yet.</p>}</section>
         </>
       )}
     </section>
@@ -2079,11 +2283,11 @@ function DiscardChangesDialog({ busy, onCancel, onDiscard }: { busy: boolean; on
   return (
     <div className="navigation-guard" role="dialog" aria-modal="true" aria-labelledby="discard-heading">
       <div className="discard-confirmation">
-        <h2 id="discard-heading">Delete this change set?</h2>
-        <p>This permanently removes this whole active proposal. Accepted Architecture and every other change set stay as they are.</p>
+        <h2 id="discard-heading">Delete this proposal?</h2>
+        <p>This permanently removes this whole open proposal. Accepted Architecture and every other proposal stay as they are.</p>
         <div className="button-group">
-          <button className="secondary-action" type="button" onClick={onCancel}>Keep change set</button>
-          <button className="destructive-action" type="button" disabled={busy} onClick={onDiscard}>Delete change set</button>
+          <button className="secondary-action" type="button" onClick={onCancel}>Keep proposal</button>
+          <button className="destructive-action" type="button" disabled={busy} onClick={onDiscard}>Delete proposal</button>
         </div>
       </div>
     </div>

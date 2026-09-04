@@ -424,10 +424,10 @@ describe('candidate review regressions', () => {
 
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
     expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/review`)
-    const proposal = screen.getByText('Proposal').closest('details')
+    const proposal = screen.getByRole('group', { name: 'Proposal' })
     expect(proposal).toHaveAttribute('open')
-    expect(within(proposal!).getByRole('heading', { name: 'Review direction' })).toBeInTheDocument()
-    expect(within(proposal!).getByText('Keep the boundary.')).toBeInTheDocument()
+    expect(within(proposal).getByRole('heading', { name: 'Review direction' })).toBeInTheDocument()
+    expect(within(proposal).getByText('Keep the boundary.')).toBeInTheDocument()
     expect(container.querySelector('script')).toBeNull()
 
     await user.click(screen.getByRole('button', { name: 'Continue editing' }))

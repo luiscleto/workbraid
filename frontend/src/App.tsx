@@ -2056,7 +2056,7 @@ function ChangesTask({
           : readOnly
             ? 'Inspect the visual change and complete exact diff.'
             : 'Inspect the visual change and complete exact diff before updating the architecture.'}</p>
-        <details className="review-proposal-document" open>
+        <details className="review-proposal-document" aria-label="Proposal" open>
           <summary>Proposal</summary>
           {changes.proposal_markdown
             ? <MarkdownBody source={changes.proposal_markdown} />

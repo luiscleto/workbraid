@@ -112,6 +112,11 @@ func (gitRunner) makeStateCommit(ctx context.Context, repository, tree, parent s
 	return strings.TrimSpace(string(output)), err
 }
 
+func (gitRunner) makeReviewCommit(ctx context.Context, repository, tree, parent string) (string, error) {
+	output, err := runGit(ctx, []byte("Record Architecture review\n"), "--git-dir", repository, "commit-tree", tree, "-p", parent)
+	return strings.TrimSpace(string(output)), err
+}
+
 func (gitRunner) createRef(ctx context.Context, repository, ref, object string) error {
 	_, err := runGit(ctx, nil, "--git-dir", repository, "update-ref", ref, object, zeroObject)
 	return err
@@ -133,6 +138,19 @@ func (gitRunner) acceptChangeSet(ctx context.Context, repository, accepted, succ
 		"update " + acceptedRef + " " + successor + " " + accepted,
 		"delete " + activeRef + " " + activeObject,
 		"create " + appliedRef + " " + appliedObject,
+		"prepare",
+		"commit",
+		"",
+	}, "\n")
+	_, err := runGit(ctx, []byte(input), "--git-dir", repository, "update-ref", "--stdin")
+	return err
+}
+
+func (gitRunner) createReview(ctx context.Context, repository, activeRef, activeObject, reviewRef, reviewObject string) error {
+	input := strings.Join([]string{
+		"start",
+		"verify " + activeRef + " " + activeObject,
+		"create " + reviewRef + " " + reviewObject,
 		"prepare",
 		"commit",
 		"",

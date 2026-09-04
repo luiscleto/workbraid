@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"io"
+	"reflect"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"workbraid/internal/agentapi"
@@ -11,7 +13,7 @@ import (
 
 type noToolInput struct{}
 
-const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. List or create change sets, then address every edit by exact change_set_id and generation. Review that same change set, give its returned review_url to the reviewer, and Update only with its exact returned binding."
+const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. Address proposed work by exact change_set_id and generation. Prepare change_set_review for exact acceptance evidence and its review_url. Review submissions are separate immutable informational feedback: list, inspect, or submit them against the exact reviewed_state and binding. They never accept Architecture."
 
 type nopWriteCloser struct{ io.Writer }
 
@@ -46,11 +48,57 @@ func mutationAnnotations(title string, destructive, idempotent bool) *mcp.ToolAn
 }
 
 func addMCPTool[Input any](server *mcp.Server, client *agentapi.Client, name, title, description string, annotations *mcp.ToolAnnotations) {
-	mcp.AddTool(server, &mcp.Tool{Name: name, Title: title, Description: description, Annotations: annotations},
+	addMCPToolWithSchema[Input](server, client, name, title, description, annotations, nil)
+}
+
+func addMCPToolWithSchema[Input any](server *mcp.Server, client *agentapi.Client, name, title, description string, annotations *mcp.ToolAnnotations, inputSchema any) {
+	mcp.AddTool(server, &mcp.Tool{Name: name, Title: title, Description: description, Annotations: annotations, InputSchema: inputSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input Input) (*mcp.CallToolResult, agentapi.Envelope, error) {
 			envelope := client.Call(ctx, name, input)
 			return &mcp.CallToolResult{IsError: !envelope.OK}, envelope, nil
 		})
+}
+
+func reviewSubmissionInputSchema() *jsonschema.Schema {
+	text := func(description string) *jsonschema.Schema {
+		return &jsonschema.Schema{Type: "string", Description: description}
+	}
+	integer := func(description string) *jsonschema.Schema {
+		minimum := float64(1)
+		return &jsonschema.Schema{Type: "integer", Description: description, Minimum: &minimum}
+	}
+	constant := func(value string) *jsonschema.Schema {
+		var exact any = value
+		return &jsonschema.Schema{Type: "string", Const: &exact}
+	}
+	closed := func(kind string, properties map[string]*jsonschema.Schema, required ...string) *jsonschema.Schema {
+		all := map[string]*jsonschema.Schema{"kind": constant(kind)}
+		for key, value := range properties {
+			all[key] = value
+		}
+		return &jsonschema.Schema{Type: "object", Properties: all, Required: append([]string{"kind"}, required...), AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}}}
+	}
+	side := func() *jsonschema.Schema {
+		return &jsonschema.Schema{Type: "string", Enum: []any{"before", "with_changes"}}
+	}
+	anchor := &jsonschema.Schema{OneOf: []*jsonschema.Schema{
+		closed("proposal", nil),
+		closed("proposal_markdown", map[string]*jsonschema.Schema{"start_line": integer("One-based inclusive first proposal Markdown line."), "end_line": integer("One-based inclusive last proposal Markdown line.")}, "start_line", "end_line"),
+		closed("component", map[string]*jsonschema.Schema{"side": side(), "component_id": text("Stable Component UUID on the selected exact side.")}, "side", "component_id"),
+		closed("component_markdown", map[string]*jsonschema.Schema{"side": side(), "component_id": text("Stable Component UUID on the selected exact side."), "start_line": integer("One-based inclusive first exact Component Markdown line."), "end_line": integer("One-based inclusive last exact Component Markdown line.")}, "side", "component_id", "start_line", "end_line"),
+		closed("diagram", map[string]*jsonschema.Schema{"side": side(), "diagram_id": text("Stable Diagram UUID on the selected exact side.")}, "side", "diagram_id"),
+		closed("composition", map[string]*jsonschema.Schema{"side": side(), "diagram_id": text("Stable Diagram UUID."), "component_id": text("Stable Component UUID."), "aspect": constant("home")}, "side", "diagram_id", "component_id", "aspect"),
+		closed("composition", map[string]*jsonschema.Schema{"side": side(), "diagram_id": text("Stable Diagram UUID."), "component_id": text("Stable Component UUID."), "aspect": constant("reference")}, "side", "diagram_id", "component_id", "aspect"),
+		closed("composition", map[string]*jsonschema.Schema{"side": side(), "diagram_id": text("Stable parent Diagram UUID."), "component_id": text("Stable anchoring Component UUID."), "aspect": constant("detail"), "detail_diagram_id": text("Stable linked child Diagram UUID.")}, "side", "diagram_id", "component_id", "aspect", "detail_diagram_id"),
+		closed("relationship", map[string]*jsonschema.Schema{"side": side(), "source_component_id": text("Stable source Component UUID."), "target_component_id": text("Stable target Component UUID."), "label": text("Exact reviewed Relationship label."), "occurrence": integer("One-based occurrence among identical reviewed facts.")}, "side", "source_component_id", "target_component_id", "label", "occurrence"),
+	}}
+	schema, err := jsonschema.For[agentapi.ReviewSubmissionSubmitRequest](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[agentapi.ReviewAnchor](): anchor,
+	}})
+	if err != nil {
+		panic(err)
+	}
+	return schema
 }
 
 func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
@@ -70,6 +118,9 @@ func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
 	addMCPTool[agentapi.ChangeSetEditProposalRequest](server, client, "change_set_edit_proposal", "Edit proposal", "Replace the exact Markdown proposal document for one active change set at its exact generation. This invalidates only that change set's Review.", mutationAnnotations("Edit proposal", false, false))
 	addMCPTool[agentapi.ChangeSetReviewRequest](server, client, "change_set_review", "Review change set", "Review one exact active generation against its original base and return the exact binding required by architecture_update plus a review_url to give the reviewer. Out-of-date work remains reviewable.", mutationAnnotations("Review change set", false, true))
 	addMCPTool[agentapi.ChangeSetDiscardRequest](server, client, "change_set_discard", "Delete change set", "Delete one whole active change set at its exact generation without changing Accepted or any other record. Partial discard and applied deletion do not exist.", mutationAnnotations("Delete change set", true, false))
+	addMCPTool[agentapi.ReviewSubmissionsListRequest](server, client, "review_submissions_list", "List submitted reviews", "List immutable review feedback for one exact Change Set, including verdict, author label, exact reviewed state/binding, and current or earlier context.", readAnnotations("List submitted reviews"))
+	addMCPTool[agentapi.ReviewSubmissionInspectRequest](server, client, "review_submission_inspect", "Inspect submitted review", "Inspect one immutable review and reconstruct its exact reviewed proposal Markdown, Before/With Architecture, canonical diff, bodies, and typed anchors. It may describe an earlier, applied, or no-longer-active proposal.", readAnnotations("Inspect submitted review"))
+	addMCPToolWithSchema[agentapi.ReviewSubmissionSubmitRequest](server, client, "review_submission_submit", "Submit review feedback", "Submit immutable informational feedback only against the exact active reviewed_state and base/tree/generation returned by change_set_review. Comments use one of the closed typed anchor shapes. Verdicts never accept or gate Architecture.", mutationAnnotations("Submit review feedback", false, false), reviewSubmissionInputSchema())
 	addMCPTool[agentapi.ComponentCreateRequest](server, client, "component_create", "Create Component", "Create a Component in one explicitly addressed active change set. Pass its exact store UUID, change-set UUID, and generation, plus an explicit home Diagram when known.", mutationAnnotations("Create Component", false, false))
 	addMCPTool[agentapi.ComponentEditRequest](server, client, "component_edit", "Edit Component", "Edit structured Title and/or exact Markdown Description for a stable Component ID under exact state preconditions. Omit unchanged fields; the returned generation replaces the inspected one.", mutationAnnotations("Edit Component", false, false))
 	addMCPTool[agentapi.ComponentMoveHomeRequest](server, client, "component_move_home", "Move Component home", "Move one stable Component home to an allowed stable Diagram in the explicitly addressed proposal Architecture. It preserves identity, documentation, Relationships, and any anchored detail subtree.", mutationAnnotations("Move Component home", false, false))

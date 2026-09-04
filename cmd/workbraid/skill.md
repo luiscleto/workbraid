@@ -46,6 +46,14 @@ workbraid change-set discard <state>
 workbraid architecture update --store-id <uuid> --change-set-id <uuid> --base-revision <sha> --candidate-tree <tree> --generation <n>
 ```
 
+Review feedback (separate from preparing `Review changes`):
+
+```text
+workbraid review-submission list --store-id <uuid> --change-set-id <uuid>
+workbraid review-submission inspect --store-id <uuid> --change-set-id <uuid> --review-id <uuid>
+workbraid review-submission submit --store-id <uuid> --change-set-id <uuid> --reviewed-state <commit> --base-revision <sha> --candidate-tree <tree> --generation <n> --verdict <comment|approve|request_changes> --author <label> [--body <markdown>|--body-file <path|->] [--comments-file <path|->]
+```
+
 Structured authoring:
 
 ```text
@@ -63,7 +71,26 @@ workbraid diagram stop-showing-component <state> --diagram-id <uuid> --component
 
 Here `<state>` is `--store-id <uuid> --change-set-id <uuid> --generation <n>`. Component creation may omit `--diagram-id` only for deliberate root fallback. File values are exact UTF-8; `-` reads stdin; literal and file forms are mutually exclusive. Relationship edit/remove uses the exact raw source/target/label plus one-based occurrence. Empty or malformed raw selectors remain valid inputs so invalid rows can be repaired without deleting the change set.
 
-Creation starts at generation 0 with a valid candidate equal to its exact Accepted base. Rename, proposal edit, and semantic edits increment only that change set and invalidate only its Review. `change-set review` returns the complete unified Architecture diff, Before/With projections, exact ID/base/tree/generation binding, and a `review_url`; give that URL to the reviewer. `architecture update` accepts only that binding. There is no force, accept-latest, automatic review, rebase, merge, or combined mutate-and-accept action.
+Creation starts at generation 0 with a valid candidate equal to its exact Accepted base. Rename, proposal edit, and semantic edits increment only that change set and invalidate only its Review. `change-set review` returns the complete unified Architecture diff, Before/With projections, exact ID/base/tree/generation binding, `reviewed_state`, and a `review_url`; give that URL to the reviewer. Repeating it on the unchanged generation returns the same `reviewed_state`. `architecture update` accepts only that binding. There is no force, accept-latest, automatic review, rebase, merge, or combined mutate-and-accept action.
+
+A review submission is immutable informational feedback; it does not accept Architecture or gate later edits. Submit only against the exact `reviewed_state`, base, tree, and generation returned by `change-set review`. The author is a self-described display label, not authenticated identity. A `comment` verdict needs an overall note or at least one anchored comment; `approve` and `request_changes` may stand alone. A comments file is a closed JSON array such as:
+
+```json
+[
+  {
+    "body": "Clarify this responsibility.",
+    "anchor": {
+      "kind": "component_markdown",
+      "side": "with_changes",
+      "component_id": "<component-uuid>",
+      "start_line": 3,
+      "end_line": 4
+    }
+  }
+]
+```
+
+Anchor kinds are `proposal`, `proposal_markdown`, `component`, `component_markdown`, `diagram`, `composition`, and `relationship`. Markdown ranges are one-based inclusive lines. Architecture anchors require `side: before` or `side: with_changes`. Inspect the exact review source first and copy IDs, exact Relationship label plus one-based identical-fact occurrence, or composition aspect (`home`, `reference`, or `detail`) from it. Submitted feedback stays attached to that exact version after iteration, acceptance, or discard; use `review-submission inspect` and its `review_url` rather than treating old comments as current.
 
 An out-of-date active change set keeps its original base, remains editable and reviewable, and cannot update Accepted. Reconciliation is a future product. Applied change sets are immutable evidence. Discard deletes one whole active change set at its exact generation and changes neither Accepted nor any other record.
 
@@ -88,6 +115,10 @@ An out-of-date active change set keeps its original base, remains editable and r
 - `validation_blocked`: use the returned stable location and raw values to repair the addressed change set.
 - `review_required`: inspect and Review the exact current generation.
 - `review_invalidated`: inspect, then Review again.
+- `review_submission_not_found`: list reviews for the exact Change Set and copy both UUIDs.
+- `review_submission_unavailable`: the immutable review record cannot be validated; do not guess or edit private Git.
+- `review_anchor_invalid`: inspect the exact reviewed Before/With source and correct the reported comment location.
+- `review_submission_not_allowed`: feedback requires an active Change Set with an exact durable Review binding.
 - `acceptance_uncertain`: inspect/list/Refresh before any retry; an applied record is the durable receipt.
 - `accepted_reload_required`: acceptance succeeded; do not Update again. Refresh or reopen.
 - `unsupported_action`: do not substitute raw Git/YAML operations.
@@ -107,6 +138,8 @@ workbraid --json component create --store-id <store> --change-set-id <change> --
 workbraid --json relationship add --store-id <store> --change-set-id <change> --generation 3 --source-id <gateway> --target-id <worker> --label calls
 workbraid --json change-set inspect --store-id <store> --change-set-id <change>
 workbraid --json change-set review --store-id <store> --change-set-id <change> --generation 4
+workbraid --json review-submission submit --store-id <store> --change-set-id <change> --reviewed-state <reviewed-state> --base-revision <review-base> --candidate-tree <review-tree> --generation 4 --verdict comment --author "Reviewer agent" --body "Ready for a human decision."
+workbraid --json review-submission list --store-id <store> --change-set-id <change>
 workbraid --json architecture update --store-id <store> --change-set-id <change> --base-revision <review-base> --candidate-tree <review-tree> --generation 4
 workbraid --json architecture inspect
 ```

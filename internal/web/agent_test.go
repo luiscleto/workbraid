@@ -94,6 +94,64 @@ func requireAgentErrorCode(t *testing.T, response *httptest.ResponseRecorder, co
 
 func stringPointer(value string) *string { return &value }
 
+func TestAgentV2ReviewSubmissionParityUsesExactBoundState(t *testing.T) {
+	_, handler := newHandler("http://127.0.0.1:8080", t.TempDir(), t.TempDir())
+	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Agent reviews"}))
+	change := createAgentChangeSet(t, handler, created.StoreID, created.Revision, "Review me")
+	state := changeSetState(t, change)
+	component := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/components/create", agentapi.ComponentCreateRequest{
+		StatePreconditions: state, Title: "Gateway", Description: "Routes traffic.\n", DiagramID: &created.RootDiagramID,
+	}))
+	if !component.OK {
+		t.Fatalf("component create: %+v", component)
+	}
+	state.Generation = uint64(resultMap(t, component)["generation"].(float64))
+	componentID := resultMap(t, component)["component_id"].(string)
+	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: state}))
+	if !reviewed.OK {
+		t.Fatalf("prepare review: %+v", reviewed)
+	}
+	binding := resultMap(t, reviewed)
+	input := agentapi.ReviewSubmissionSubmitRequest{
+		StoreID: created.StoreID, ChangeSetID: state.ChangeSetID, ReviewedState: binding["reviewed_state"].(string),
+		BaseRevision: binding["base_revision"].(string), CandidateTree: binding["candidate_tree"].(string), Generation: state.Generation,
+		Verdict: "request_changes", Author: "Reviewer agent", Body: "Please clarify this proposal.\n",
+		Comments: []agentapi.ReviewCommentInput{{Body: "Explain this line.", Anchor: agentapi.ReviewAnchor{Kind: "component_markdown", Side: "with_changes", ComponentID: componentID, StartLine: 2, EndLine: 2}}},
+	}
+	empty := input
+	empty.Verdict, empty.Body, empty.Comments = "comment", "", nil
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/review-submissions/submit", empty), "invalid_request")
+	invalidAnchor := input
+	invalidAnchor.Comments = []agentapi.ReviewCommentInput{{Body: "Missing line.", Anchor: agentapi.ReviewAnchor{Kind: "component_markdown", Side: "with_changes", ComponentID: componentID, StartLine: 99, EndLine: 99}}}
+	invalidResponse := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/review-submissions/submit", invalidAnchor))
+	if invalidResponse.OK || invalidResponse.Error == nil || invalidResponse.Error.Code != "review_anchor_invalid" || invalidResponse.Error.Details["comment_index"] != float64(1) {
+		t.Fatalf("invalid anchor response=%+v", invalidResponse)
+	}
+
+	submitted := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/review-submissions/submit", input))
+	if !submitted.OK {
+		t.Fatalf("submit: %+v", submitted)
+	}
+	submission := resultMap(t, submitted)
+	reviewID, ok := submission["id"].(string)
+	if !ok || submission["reviewed_state"] != input.ReviewedState || submission["verdict"] != "request_changes" || submission["current_generation"] != true {
+		t.Fatalf("submission=%+v", submission)
+	}
+	listed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/review-submissions/list", agentapi.ReviewSubmissionsListRequest{StoreID: created.StoreID, ChangeSetID: state.ChangeSetID}))
+	if !listed.OK || len(resultMap(t, listed)["reviews"].([]any)) != 1 {
+		t.Fatalf("list=%+v", listed)
+	}
+	inspected := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/review-submissions/inspect", agentapi.ReviewSubmissionInspectRequest{StoreID: created.StoreID, ChangeSetID: state.ChangeSetID, ReviewID: reviewID}))
+	if !inspected.OK {
+		t.Fatalf("inspect=%+v", inspected)
+	}
+	inspectResult := resultMap(t, inspected)
+	comments := inspectResult["comments"].([]any)
+	if inspectResult["body"] != input.Body || inspectResult["proposal_markdown"] != "" || len(comments) != 1 || comments[0].(map[string]any)["body"] != "Explain this line." {
+		t.Fatalf("inspect result=%+v", inspectResult)
+	}
+}
+
 func TestAgentV2ParallelChangeSetsPreserveInvalidRawStateAcrossRestart(t *testing.T) {
 	dataDirectory := t.TempDir()
 	uiDirectory := t.TempDir()

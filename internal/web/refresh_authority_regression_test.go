@@ -269,8 +269,10 @@ func TestRefreshUnchangedPreservesExactReviewBinding(t *testing.T) {
 	before := *active.review
 	result := decodeArchitectureResponse(t, postJSONRequest(t, fixture.handler, "/api/architecture/refresh", fixture.action()))
 	selectActiveChangeSetForTest(&result, active.id)
+	expected := reviewResponseForBinding(active.id, before, active.baseSnapshot)
+	expected.ReviewedState = active.refObject
 	if result.ActionError != "" || result.Stale || result.Changes == nil || result.Changes.Stale || result.Changes.Review == nil ||
-		!reflect.DeepEqual(*result.Changes.Review, reviewResponseForBinding(active.id, before, active.baseSnapshot)) {
+		!reflect.DeepEqual(*result.Changes.Review, expected) {
 		t.Fatalf("unchanged Refresh displaced review presentation: result=%+v", result.Changes)
 	}
 	current := testActiveChangeSet(fixture.state)

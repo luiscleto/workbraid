@@ -140,6 +140,9 @@ func projectSnapshot(snapshot architecture.Snapshot, relationshipKeyPrefix strin
 			ID: component.ID, Title: component.Title, Description: component.Description,
 			Filename: component.Filename, Relationships: relationships,
 		}
+		if source, exists := snapshot.ComponentMarkdownSource(component.ID); exists {
+			components[componentIndex].MarkdownSource = string(source)
+		}
 	}
 	return snapshotProjectionResponse{
 		Revision:        snapshot.Revision(),

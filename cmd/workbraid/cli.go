@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -261,6 +262,25 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return operation, agentapi.ChangeSetDiscardRequest{StatePreconditions: state}, nil
 	case "change_set_edit_proposal", "change_set_rename":
 		return parseChangeSetText(operation, flags, actionArgs, stdin, invalid)
+	case "review_submission_list":
+		var storeID, changeSetID string
+		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+		flags.StringVar(&changeSetID, "change-set-id", "", "exact Change Set UUID")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, changeSetID) {
+			return invalid("Review-submission list requires --store-id and --change-set-id.")
+		}
+		return "review_submissions_list", agentapi.ReviewSubmissionsListRequest{StoreID: storeID, ChangeSetID: changeSetID}, nil
+	case "review_submission_inspect":
+		var storeID, changeSetID, reviewID string
+		flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+		flags.StringVar(&changeSetID, "change-set-id", "", "exact Change Set UUID")
+		flags.StringVar(&reviewID, "review-id", "", "exact review-submission UUID")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(storeID, changeSetID, reviewID) {
+			return invalid("Review-submission inspect requires --store-id, --change-set-id, and --review-id.")
+		}
+		return "review_submission_inspect", agentapi.ReviewSubmissionInspectRequest{StoreID: storeID, ChangeSetID: changeSetID, ReviewID: reviewID}, nil
+	case "review_submission_submit":
+		return parseReviewSubmission(flags, actionArgs, stdin, invalid)
 	case "component_create":
 		return parseComponentCreate(flags, actionArgs, stdin, invalid)
 	case "component_edit":
@@ -278,6 +298,62 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 	default:
 		return invalid("That WorkBraid command is not available. Use --help to list commands.")
 	}
+}
+
+func parseReviewSubmission(flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
+	var storeID, changeSetID, reviewedState, base, tree, generation, verdict, author, commentsFile string
+	var body, bodyFile trackedString
+	flags.StringVar(&storeID, "store-id", "", "exact store UUID")
+	flags.StringVar(&changeSetID, "change-set-id", "", "exact Change Set UUID")
+	flags.StringVar(&reviewedState, "reviewed-state", "", "exact reviewed Change Set state commit")
+	flags.StringVar(&base, "base-revision", "", "exact reviewed base commit")
+	flags.StringVar(&tree, "candidate-tree", "", "exact reviewed candidate tree")
+	flags.StringVar(&generation, "generation", "", "exact reviewed generation")
+	flags.StringVar(&verdict, "verdict", "", "comment, approve, or request_changes")
+	flags.StringVar(&author, "author", "", "descriptive reviewer label")
+	flags.Var(&body, "body", "optional exact overall Markdown")
+	flags.Var(&bodyFile, "body-file", "optional exact overall Markdown file or -")
+	flags.StringVar(&commentsFile, "comments-file", "", "optional JSON array of review comments")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(storeID, changeSetID, reviewedState, base, tree, generation, verdict, author) || (body.set && bodyFile.set) {
+		return invalid("Review-submission submit requires exact reviewed state/binding, --verdict, and --author; use at most one body input.")
+	}
+	parsed, err := parseRequiredGeneration(generation)
+	if err != nil || parsed == nil {
+		return invalid("Review generation must be a non-negative integer.")
+	}
+	overall := ""
+	if body.set || bodyFile.set {
+		overall, _, err = exactText(body, bodyFile, stdin)
+		if err != nil {
+			return invalid("The overall review Markdown could not be read as exact UTF-8.")
+		}
+	}
+	comments := []agentapi.ReviewCommentInput{}
+	if commentsFile != "" {
+		if commentsFile == "-" && bodyFile.set && bodyFile.value == "-" {
+			return invalid("Only one review input may read from standard input.")
+		}
+		var contents []byte
+		if commentsFile == "-" {
+			contents, err = io.ReadAll(io.LimitReader(stdin, 4<<20))
+		} else {
+			contents, err = os.ReadFile(commentsFile)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(contents))
+		decoder.DisallowUnknownFields()
+		decodeErr := decoder.Decode(&comments)
+		if decodeErr == nil {
+			var extra any
+			if nextErr := decoder.Decode(&extra); nextErr != io.EOF {
+				decodeErr = errors.New("comments JSON contains another value")
+			}
+		}
+		if err != nil || !utf8.Valid(contents) || decodeErr != nil {
+			return invalid("--comments-file must contain one valid JSON array of typed review comments.")
+		}
+	}
+	return "review_submission_submit", agentapi.ReviewSubmissionSubmitRequest{StoreID: storeID, ChangeSetID: changeSetID, ReviewedState: reviewedState,
+		BaseRevision: base, CandidateTree: tree, Generation: *parsed, Verdict: verdict, Author: author, Body: overall, Comments: comments}, nil
 }
 
 type invalidCommand func(string) (string, any, *agentapi.Envelope)
@@ -590,6 +666,11 @@ Durable change sets:
   change-set rename <state> --name <text>
   change-set edit-proposal <state> (--proposal <markdown>|--proposal-file <path|->)
 
+Durable review feedback:
+  review-submission list --store-id <uuid> --change-set-id <uuid>
+  review-submission inspect --store-id <uuid> --change-set-id <uuid> --review-id <uuid>
+  review-submission submit --store-id <uuid> --change-set-id <uuid> --reviewed-state <commit> --base-revision <sha> --candidate-tree <tree> --generation <n> --verdict <comment|approve|request_changes> --author <label> [--body <markdown>|--body-file <path|->] [--comments-file <json>]
+
 Every authoring command requires this exact inspected state:
   --store-id <uuid> --change-set-id <uuid> --generation <n>
 
@@ -613,6 +694,7 @@ Review and deliberate update:
 The slug locates a project. Store, change-set, Component, and Diagram UUIDs are stable
 identity. Each change set has its own generation. Inspect after conflicts. Review returns
 the only ID/base/tree/generation binding accepted by Update and a review_url to give the
-reviewer. Run workbraid --skill for typed recovery, out-of-date rules, and a complete
+reviewer. Review submissions are immutable informational feedback and never accept
+Architecture. Run workbraid --skill for typed recovery, out-of-date rules, and a complete
 JSON workflow.
 `

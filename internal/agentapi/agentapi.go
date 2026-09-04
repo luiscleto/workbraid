@@ -115,6 +115,52 @@ type ChangeSetDiscardRequest struct {
 	StatePreconditions
 }
 
+type ReviewSubmissionsListRequest struct {
+	StoreID     string `json:"store_id" jsonschema:"Exact current store UUID."`
+	ChangeSetID string `json:"change_set_id" jsonschema:"Exact Change Set UUID whose submitted reviews will be listed."`
+}
+
+type ReviewSubmissionInspectRequest struct {
+	StoreID     string `json:"store_id" jsonschema:"Exact current store UUID."`
+	ChangeSetID string `json:"change_set_id" jsonschema:"Exact reviewed Change Set UUID."`
+	ReviewID    string `json:"review_id" jsonschema:"Exact immutable review-submission UUID."`
+}
+
+type ReviewAnchor struct {
+	Kind              string `json:"kind" jsonschema:"Anchor kind: proposal, proposal_markdown, component, component_markdown, diagram, composition, or relationship."`
+	Side              string `json:"side,omitempty" jsonschema:"Exact Architecture side: before or with_changes, when required by the anchor kind."`
+	ComponentID       string `json:"component_id,omitempty" jsonschema:"Stable Component UUID for Component or composition anchors."`
+	DiagramID         string `json:"diagram_id,omitempty" jsonschema:"Stable Diagram UUID for Diagram or composition anchors."`
+	Aspect            string `json:"aspect,omitempty" jsonschema:"Composition fact: home, reference, or detail."`
+	DetailDiagramID   string `json:"detail_diagram_id,omitempty" jsonschema:"Exact child Diagram UUID, required only for a detail composition anchor."`
+	SourceComponentID string `json:"source_component_id,omitempty" jsonschema:"Stable source Component UUID for a Relationship anchor."`
+	TargetComponentID string `json:"target_component_id,omitempty" jsonschema:"Stable target Component UUID for a Relationship anchor."`
+	Label             string `json:"label,omitempty" jsonschema:"Exact Relationship label for a Relationship anchor."`
+	Occurrence        int    `json:"occurrence,omitempty" jsonschema:"One-based occurrence among identical Relationship facts."`
+	StartLine         int    `json:"start_line,omitempty" jsonschema:"One-based inclusive source start line for Markdown anchors."`
+	EndLine           int    `json:"end_line,omitempty" jsonschema:"One-based inclusive source end line for Markdown anchors."`
+}
+
+type ReviewCommentInput struct {
+	Body   string       `json:"body" jsonschema:"Exact non-empty Markdown comment body."`
+	Anchor ReviewAnchor `json:"anchor" jsonschema:"One exact typed reviewed-snapshot anchor."`
+}
+
+type ReviewSubmissionSubmitRequest struct {
+	StoreID       string               `json:"store_id" jsonschema:"Exact current store UUID."`
+	ChangeSetID   string               `json:"change_set_id" jsonschema:"Exact active Change Set UUID."`
+	ReviewedState string               `json:"reviewed_state" jsonschema:"Exact reviewed state commit returned by change_set_review."`
+	BaseRevision  string               `json:"base_revision" jsonschema:"Exact base commit returned by change_set_review."`
+	CandidateTree string               `json:"candidate_tree" jsonschema:"Exact candidate tree returned by change_set_review."`
+	Generation    uint64               `json:"generation" jsonschema:"Exact generation returned by change_set_review."`
+	Verdict       string               `json:"verdict" jsonschema:"Informational verdict: comment, approve, or request_changes."`
+	Author        string               `json:"author" jsonschema:"Descriptive untrusted single-line author label."`
+	Body          string               `json:"body" jsonschema:"Optional exact Markdown overall review body."`
+	Comments      []ReviewCommentInput `json:"comments" jsonschema:"Immutable comments with exact typed anchors."`
+}
+
+func (ReviewSubmissionSubmitRequest) RequiresExactGeneration() {}
+
 type ComponentCreateRequest struct {
 	StatePreconditions
 	Title       string  `json:"title" jsonschema:"Structured Component title."`
@@ -195,6 +241,9 @@ var operationPaths = map[string]string{
 	"change_set_edit_proposal":       "/api/agent/v2/change-sets/edit-proposal",
 	"change_set_review":              "/api/agent/v2/change-sets/review",
 	"change_set_discard":             "/api/agent/v2/change-sets/discard",
+	"review_submissions_list":        "/api/agent/v2/review-submissions/list",
+	"review_submission_inspect":      "/api/agent/v2/review-submissions/inspect",
+	"review_submission_submit":       "/api/agent/v2/review-submissions/submit",
 	"component_create":               "/api/agent/v2/components/create",
 	"component_edit":                 "/api/agent/v2/components/edit",
 	"component_move_home":            "/api/agent/v2/components/move-home",
@@ -248,7 +297,37 @@ func (client *Client) Call(ctx context.Context, operation string, input any) Env
 			result["review_url"] = client.baseURL + "/projects/" + url.PathEscape(envelope.Context.Project.Slug) + "/proposals/" + url.PathEscape(request.ChangeSetID) + "/review"
 		}
 	}
+	if envelope.OK && envelope.Context.Project != nil {
+		result, resultOK := envelope.Result.(map[string]any)
+		if resultOK {
+			changeSetID, reviewID := "", ""
+			switch request := input.(type) {
+			case ReviewSubmissionsListRequest:
+				if reviews, ok := result["reviews"].([]any); ok {
+					for _, value := range reviews {
+						if review, ok := value.(map[string]any); ok {
+							if id, ok := review["id"].(string); ok {
+								review["review_url"] = client.submittedReviewURL(envelope.Context.Project.Slug, request.ChangeSetID, id)
+							}
+						}
+					}
+				}
+			case ReviewSubmissionInspectRequest:
+				changeSetID, reviewID = request.ChangeSetID, request.ReviewID
+			case ReviewSubmissionSubmitRequest:
+				changeSetID = request.ChangeSetID
+				reviewID, _ = result["id"].(string)
+			}
+			if changeSetID != "" && reviewID != "" {
+				result["review_url"] = client.submittedReviewURL(envelope.Context.Project.Slug, changeSetID, reviewID)
+			}
+		}
+	}
 	return envelope
+}
+
+func (client *Client) submittedReviewURL(slug, changeSetID, reviewID string) string {
+	return client.baseURL + "/projects/" + url.PathEscape(slug) + "/proposals/" + url.PathEscape(changeSetID) + "/reviews/" + url.PathEscape(reviewID)
 }
 
 func (client *Client) call(ctx context.Context, operation string, input any) Envelope {

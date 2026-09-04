@@ -462,6 +462,31 @@ func (snapshot Snapshot) HasComponent(id string) bool {
 	return false
 }
 
+// ComponentMarkdownSource returns the exact canonical Markdown bytes after
+// frontmatter. It is used for exact-source review anchors, not interpretation.
+func (snapshot Snapshot) ComponentMarkdownSource(id string) ([]byte, bool) {
+	for _, component := range snapshot.components {
+		if component.id.String() == id {
+			return append([]byte(nil), component.source[component.markdownStart:]...), true
+		}
+	}
+	return nil, false
+}
+
+func (snapshot Snapshot) HasDetailLink(diagramID, componentID, detailDiagramID string) bool {
+	for _, diagram := range snapshot.diagrams {
+		if diagram.id.String() != diagramID {
+			continue
+		}
+		for _, appearance := range diagram.appearances {
+			if appearance.component.String() == componentID && appearance.hasDetailLink && appearance.detailDiagram.String() == detailDiagramID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
 	parsed, err := uuid.Parse(componentID)
 	if err != nil || snapshot.formatVersion != 2 {

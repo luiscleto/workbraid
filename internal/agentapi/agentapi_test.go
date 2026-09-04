@@ -2,6 +2,7 @@ package agentapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -87,6 +88,46 @@ func TestClientRejectsRedirectsBeforeMutationBodyCanLeaveConfiguredLoopback(t *t
 	}
 	if targetCalls != 0 {
 		t.Fatalf("redirect target received %d requests", targetCalls)
+	}
+}
+
+func TestClientAddsStableSubmittedReviewURL(t *testing.T) {
+	changeSetID := "11111111-1111-4111-8111-111111111111"
+	reviewID := "22222222-2222-4222-8222-222222222222"
+	mux := http.NewServeMux()
+	write := func(response http.ResponseWriter, result map[string]any) {
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(Envelope{Protocol: Protocol, OK: true, Context: Context{
+			Project: &ProjectContext{StoreID: "33333333-3333-4333-8333-333333333333", Name: "URL project", Slug: "url-project"}, AuthorityState: "current",
+		}, Result: result})
+	}
+	mux.HandleFunc("GET /api/agent/v2/status", func(response http.ResponseWriter, _ *http.Request) {
+		write(response, map[string]any{"protocol": Protocol})
+	})
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/inspect", func(response http.ResponseWriter, _ *http.Request) { write(response, map[string]any{"id": reviewID}) })
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/submit", func(response http.ResponseWriter, _ *http.Request) { write(response, map[string]any{"id": reviewID}) })
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/list", func(response http.ResponseWriter, _ *http.Request) {
+		write(response, map[string]any{"reviews": []any{map[string]any{"id": reviewID}}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client, failure := NewClient(server.URL)
+	if failure != nil {
+		t.Fatalf("NewClient: %#v", failure)
+	}
+	want := server.URL + "/projects/url-project/proposals/" + changeSetID + "/reviews/" + reviewID
+	inspect := client.Call(context.Background(), "review_submission_inspect", ReviewSubmissionInspectRequest{ChangeSetID: changeSetID, ReviewID: reviewID})
+	if !inspect.OK || inspect.Result.(map[string]any)["review_url"] != want {
+		t.Fatalf("inspect=%+v want URL %q", inspect, want)
+	}
+	submit := client.Call(context.Background(), "review_submission_submit", ReviewSubmissionSubmitRequest{ChangeSetID: changeSetID})
+	if !submit.OK || submit.Result.(map[string]any)["review_url"] != want {
+		t.Fatalf("submit=%+v want URL %q", submit, want)
+	}
+	list := client.Call(context.Background(), "review_submissions_list", ReviewSubmissionsListRequest{ChangeSetID: changeSetID})
+	reviews := list.Result.(map[string]any)["reviews"].([]any)
+	if !list.OK || len(reviews) != 1 || reviews[0].(map[string]any)["review_url"] != want {
+		t.Fatalf("list=%+v want URL %q", list, want)
 	}
 }
 

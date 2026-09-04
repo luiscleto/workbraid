@@ -28,7 +28,11 @@ type ArchitectureResult = {
   changes?: ChangesInProgress
   change_sets: ChangesInProgress[]
   unavailable_change_sets?: { id?: string; name?: string; lifecycle?: string; reason: string }[]
+  review_submissions?: ReviewSubmissionSummary[]
+  unavailable_reviews?: { change_set_id?: string; review_id?: string; reason: string }[]
+  submitted_review?: ReviewSubmission
   action_change_set_id?: string
+  action_review_id?: string
   stale?: boolean
   parent_diff?: string
   action_error?: string
@@ -77,6 +81,7 @@ type AuthoringComponent = {
   id: string
   title: string
   description: string
+  markdown_source?: string
   filename: string
   relationships: { target_id: string; label: string; projection_key?: string }[]
 }
@@ -86,7 +91,7 @@ type PendingComponent = AuthoringComponent & { new: boolean }
 type ChangesInProgress = {
   id: string
   name: string
-  lifecycle: 'active' | 'applied'
+  lifecycle: 'active' | 'applied' | 'no_longer_active'
   proposal_markdown: string
   applied_revision?: string
   out_of_date?: boolean
@@ -126,6 +131,7 @@ type RelationshipValue = { target_id: string; label: string }
 type RelationshipRow = RelationshipValue & { rowKey: string }
 
 type ChangeReview = {
+  reviewed_state: string
   diff: string
   base_revision: string
   candidate_tree: string
@@ -138,6 +144,42 @@ type ChangeReview = {
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
     appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed' | 'detail_changed'; path: string }[]
   }
+}
+
+type ReviewAnchor = {
+  kind: 'proposal' | 'proposal_markdown' | 'component' | 'component_markdown' | 'diagram' | 'composition' | 'relationship'
+  side?: 'before' | 'with_changes'
+  component_id?: string
+  diagram_id?: string
+  aspect?: 'home' | 'reference' | 'detail'
+  detail_diagram_id?: string
+  source_component_id?: string
+  target_component_id?: string
+  label?: string
+  occurrence?: number
+  start_line?: number
+  end_line?: number
+}
+
+type ReviewSubmissionSummary = {
+  id: string
+  change_set_id: string
+  reviewed_state: string
+  binding: { base_revision: string; candidate_tree: string; generation: number }
+  verdict: 'comment' | 'approve' | 'request_changes'
+  author: string
+  submitted_at: string
+  comment_count: number
+  lifecycle: 'active' | 'applied' | 'no_longer_active'
+  current_generation: boolean
+  out_of_date?: boolean
+}
+
+type ReviewSubmission = ReviewSubmissionSummary & {
+  body: string
+  comments: { id: string; body: string; anchor: ReviewAnchor }[]
+  proposal_markdown: string
+  review: ChangeReview
 }
 
 type ReviewSnapshot = {
@@ -155,7 +197,7 @@ type ReviewSide = 'with' | 'before'
 type ReviewFocus =
   | { kind: 'component'; key: string; componentID: string; title: string; path: string; status: 'added' | 'content_changed' | 'unchanged' }
   | ({ kind: 'relationship' } & ReviewRelationshipSelection)
-  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed' }
+  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed'; componentID?: string; role?: 'home' | 'reference'; compositionAspect?: 'home' | 'reference' | 'detail'; detailDiagramID?: string }
 
 type ComponentEditor = {
   kind: 'add' | 'edit'
@@ -189,8 +231,9 @@ type NavigationIntent =
   | { kind: 'new-changes' }
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
+  | { kind: 'submitted-review'; changeSetID: string; reviewID: string }
   | { kind: 'open-another' }
-  | { kind: 'route'; slug?: string; proposalChangeSetID?: string; reviewChangeSetID?: string }
+  | { kind: 'route'; slug?: string; proposalChangeSetID?: string; reviewChangeSetID?: string; submittedReviewID?: string }
   | { kind: 'refresh' }
   | { kind: 'clear' }
   | { kind: 'review-result'; result: ArchitectureResult }
@@ -511,7 +554,10 @@ export function App() {
   const enterWorkspace = useCallback((incoming: ArchitectureResult, task?: WorkspaceTask, requestedContextID?: string) => {
     const changeSets = incoming.change_sets ?? (incoming.changes ? [incoming.changes] : [])
     const contextID = requestedContextID ?? incoming.action_change_set_id ?? incoming.changes?.id ?? selectedContextIDRef.current
-    const selectedChangeSet = contextID === 'accepted' ? undefined : changeSets.find((changeSet) => changeSet.id === contextID)
+    const selectedChangeSet = contextID === 'accepted' ? undefined
+      : incoming.submitted_review && incoming.changes?.id === contextID
+        ? incoming.changes
+        : changeSets.find((changeSet) => changeSet.id === contextID)
     const result = { ...incoming, change_sets: changeSets, changes: selectedChangeSet }
     setSelectedContextID(selectedChangeSet?.id ?? 'accepted')
     setState({ kind: 'ready', value: result })
@@ -539,14 +585,14 @@ export function App() {
     setDiscardConfirming(false)
     setChangeSetTextDirty(false)
     if (selected) {
-      enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
+      enterWorkspace({ ...result, submitted_review: undefined, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(false)
       setArchitectureNotice('')
       const path = proposalRoutePath(result.project_slug, changeSetID)
       if (historyMode === 'push') window.history.pushState({}, '', path)
       if (historyMode === 'replace') window.history.replaceState({}, '', path)
     } else {
-      enterWorkspace({ ...result, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
+      enterWorkspace({ ...result, submitted_review: undefined, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
       setReviewVisible(false)
       setArchitectureNotice('That proposal is no longer available.')
       window.history.replaceState({}, '', projectRoutePath(result.project_slug))
@@ -573,24 +619,52 @@ export function App() {
     setDiscardConfirming(false)
     setChangeSetTextDirty(false)
     if (selected?.review && !result.stale && !selected.stale) {
-      enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
+      enterWorkspace({ ...result, submitted_review: undefined, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(true)
       setArchitectureNotice('')
       const path = reviewRoutePath(result.project_slug, changeSetID)
       if (historyMode === 'push') window.history.pushState({}, '', path)
       if (historyMode === 'replace') window.history.replaceState({}, '', path)
     } else if (selected) {
-      enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
+      enterWorkspace({ ...result, submitted_review: undefined, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(false)
       setArchitectureNotice('This proposal has changed and needs to be reviewed again.')
       window.history.replaceState({}, '', proposalRoutePath(result.project_slug, changeSetID))
     } else {
-      enterWorkspace({ ...result, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
+      enterWorkspace({ ...result, submitted_review: undefined, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
       setReviewVisible(false)
       setArchitectureNotice('That review is no longer available.')
       window.history.replaceState({}, '', projectRoutePath(result.project_slug))
     }
     resetWorkingPaneScroll()
+  }
+
+  async function openSubmittedReview(result: ArchitectureResult, changeSetID: string, reviewID: string, historyMode: 'push' | 'replace' | 'none') {
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/architecture/review-submissions/inspect', {
+        project_slug: result.project_slug, store_id: result.store_id, change_set_id: changeSetID, review_id: reviewID,
+      })
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload) || !payload.submitted_review || !payload.changes?.review) {
+        setArchitectureNotice('That submitted review is not available.')
+        return
+      }
+      enterWorkspace(payload, 'changes', changeSetID)
+      setReviewVisible(true)
+      setReviewSide('with')
+      setReviewFocus(null)
+      setArchitectureNotice(payload.action_error ? messageForArchitectureAction(payload.action_error) : '')
+      const path = submittedReviewRoutePath(payload.project_slug, changeSetID, reviewID)
+      if (historyMode === 'push') window.history.pushState({}, '', path)
+      if (historyMode === 'replace') window.history.replaceState({}, '', path)
+      resetWorkingPaneScroll()
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't open that submitted review. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
   }
 
   function leaveReviewRoute(result: ArchitectureResult, updateHistory: boolean) {
@@ -608,10 +682,10 @@ export function App() {
   }
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
-  const currentReview = readyResult?.stale || readyResult?.changes?.stale
+  const currentReview = readyResult?.submitted_review?.review ?? (readyResult?.stale || readyResult?.changes?.stale
     ? undefined
-    : readyResult?.changes?.review
-  const reviewIdentity = currentReview ? `${currentReview.base_revision}:${currentReview.candidate_tree}:${currentReview.generation}` : ''
+    : readyResult?.changes?.review)
+  const reviewIdentity = currentReview ? `${readyResult?.submitted_review?.id ?? ''}:${currentReview.base_revision}:${currentReview.candidate_tree}:${currentReview.generation}` : ''
   const editorDirty = editor !== null && (
     editor.title !== editor.initialTitle || editor.description !== editor.initialDescription ||
     !sameRelationships(relationshipValues(editor.relationships), editor.initialRelationships)
@@ -703,17 +777,19 @@ export function App() {
 
   useEffect(() => {
     const route = decodeProjectRoute(window.location.pathname)
-    if (route?.slug) void openProject(route.slug, true, route.proposalChangeSetID, route.reviewChangeSetID)
+    if (route?.slug) void openProject(route.slug, true, route.proposalChangeSetID, route.reviewChangeSetID, route.submittedReviewID)
     else void loadCatalog()
     const restoreHistoryRoute = () => {
       const target = decodeProjectRoute(window.location.pathname)
       const current = stateRef.current
       if (current.kind === 'ready' && target?.slug === current.value.project_slug) {
-        const alreadyShowingTarget = target.reviewChangeSetID
-          ? reviewVisibleRef.current && current.value.changes?.id === target.reviewChangeSetID
+        const alreadyShowingTarget = target.submittedReviewID
+          ? current.value.submitted_review?.id === target.submittedReviewID
+          : target.reviewChangeSetID
+          ? reviewVisibleRef.current && !current.value.submitted_review && current.value.changes?.id === target.reviewChangeSetID
           : target.proposalChangeSetID
-            ? !reviewVisibleRef.current && current.value.changes?.id === target.proposalChangeSetID
-            : !reviewVisibleRef.current && selectedContextIDRef.current === 'accepted'
+            ? !reviewVisibleRef.current && !current.value.submitted_review && current.value.changes?.id === target.proposalChangeSetID
+            : !reviewVisibleRef.current && !current.value.submitted_review && selectedContextIDRef.current === 'accepted'
         if (alreadyShowingTarget) return
       }
       if (editorDirtyRef.current && current.kind === 'ready') {
@@ -723,10 +799,10 @@ export function App() {
             ? proposalRoutePath(current.value.project_slug, current.value.changes.id)
             : projectRoutePath(current.value.project_slug)
         window.history.pushState({}, '', currentPath)
-        setNavigationIntent({ kind: 'route', slug: target?.slug, proposalChangeSetID: target?.proposalChangeSetID, reviewChangeSetID: target?.reviewChangeSetID })
+        setNavigationIntent({ kind: 'route', slug: target?.slug, proposalChangeSetID: target?.proposalChangeSetID, reviewChangeSetID: target?.reviewChangeSetID, submittedReviewID: target?.submittedReviewID })
         return
       }
-      void restoreRoute(target?.slug, target?.proposalChangeSetID, target?.reviewChangeSetID)
+      void restoreRoute(target?.slug, target?.proposalChangeSetID, target?.reviewChangeSetID, target?.submittedReviewID)
     }
     window.addEventListener('popstate', restoreHistoryRoute)
     return () => window.removeEventListener('popstate', restoreHistoryRoute)
@@ -747,7 +823,7 @@ export function App() {
     }
   }
 
-  async function openProject(slug: string, replaceRoute = false, proposalChangeSetID?: string, reviewChangeSetID?: string) {
+  async function openProject(slug: string, replaceRoute = false, proposalChangeSetID?: string, reviewChangeSetID?: string, submittedReviewID?: string) {
     setState({ kind: 'looking' })
     setArchitectureNotice('')
     try {
@@ -758,7 +834,9 @@ export function App() {
         else setState({ kind: 'catalog-error', message: messageForError('code' in result ? result.code : undefined) })
         return
       }
-      if (reviewChangeSetID) {
+      if (reviewChangeSetID && submittedReviewID) {
+        await openSubmittedReview(result, reviewChangeSetID, submittedReviewID, replaceRoute ? 'replace' : 'push')
+      } else if (reviewChangeSetID) {
         enterReviewRoute(result, reviewChangeSetID, replaceRoute ? 'replace' : 'push')
       } else if (proposalChangeSetID) {
         enterProposalRoute(result, proposalChangeSetID, replaceRoute ? 'replace' : 'push')
@@ -899,6 +977,36 @@ export function App() {
       }
     } catch {
       setArchitectureNotice("WorkBraid couldn't prepare these changes for review. Try again.")
+    } finally {
+      setArchitectureBusy(false)
+    }
+  }
+
+  async function submitReviewFeedback(result: ArchitectureResult, input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: { body: string; anchor: ReviewAnchor }[] }) {
+    const review = result.changes?.review
+    if (!review || !result.changes) return
+    setArchitectureBusy(true)
+    setArchitectureNotice('')
+    try {
+      const response = await postJSON('/api/architecture/review-submissions/submit', {
+        project_slug: result.project_slug, store_id: result.store_id, change_set_id: result.changes.id,
+        reviewed_state: review.reviewed_state, base_revision: review.base_revision,
+        candidate_tree: review.candidate_tree, generation: review.generation, ...input,
+      })
+      const payload = await response.json() as ArchitectureResult | ErrorPayload
+      if (!response.ok || !('state' in payload) || !payload.action_review_id) {
+        const code = 'code' in payload ? payload.code : undefined
+        setArchitectureNotice(code === 'review_changed'
+          ? 'This proposal changed after you reviewed it. Prepare the review again before submitting feedback.'
+          : code === 'review_anchor_invalid'
+            ? 'One comment no longer points to this exact review. Check its location and try again.'
+            : 'WorkBraid could not submit that review. Check the review and try again.')
+        return
+      }
+      setChangeSetTextDirty(false)
+      await openSubmittedReview(payload, result.changes.id, payload.action_review_id, 'push')
+    } catch {
+      setArchitectureNotice("WorkBraid couldn't submit that review. Try again.")
     } finally {
       setArchitectureBusy(false)
     }
@@ -1087,7 +1195,7 @@ export function App() {
         const projectPath = projectRoutePath(state.value.project_slug)
         if (!creatingChangeSet) newChangesPushedHistoryRef.current = window.location.pathname !== projectPath
         if (window.location.pathname !== projectPath) window.history.pushState({}, '', projectPath)
-        enterWorkspace({ ...state.value, changes: undefined, action_change_set_id: undefined }, state.value.components.length ? 'documentation' : 'empty', 'accepted')
+        enterWorkspace({ ...state.value, submitted_review: undefined, changes: undefined, action_change_set_id: undefined }, state.value.components.length ? 'documentation' : 'empty', 'accepted')
         setReviewVisible(false)
       }
       setCreatingChangeSet(true)
@@ -1130,7 +1238,7 @@ export function App() {
         return
       }
       if (window.location.pathname !== projectRoutePath(state.value.project_slug)) window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
-      enterWorkspace({ ...state.value, changes: selected, action_change_set_id: undefined }, selected ? 'changes' : state.value.components.length ? 'documentation' : 'empty', intent.id)
+      enterWorkspace({ ...state.value, submitted_review: undefined, changes: selected, action_change_set_id: undefined }, selected ? 'changes' : state.value.components.length ? 'documentation' : 'empty', intent.id)
       setReviewVisible(false)
       setDiscardConfirming(false)
       setChangeSetTextDirty(false)
@@ -1155,6 +1263,10 @@ export function App() {
     if (intent.kind === 'review-result') {
       setAcceptanceUnknown(false)
       if (intent.result.changes?.review) enterReviewRoute(intent.result, intent.result.changes.id, 'push')
+      return
+    }
+    if (intent.kind === 'submitted-review') {
+      if (state.kind === 'ready') await openSubmittedReview(state.value, intent.changeSetID, intent.reviewID, 'push')
       return
     }
     if (intent.kind === 'route') {
@@ -1188,11 +1300,12 @@ export function App() {
     }
   }
 
-  async function restoreRoute(slug?: string, proposalChangeSetID?: string, reviewChangeSetID?: string) {
+  async function restoreRoute(slug?: string, proposalChangeSetID?: string, reviewChangeSetID?: string, submittedReviewID?: string) {
     const current = stateRef.current
     if (slug) {
       if (current.kind === 'ready' && current.value.project_slug === slug) {
-        if (reviewChangeSetID) enterReviewRoute(current.value, reviewChangeSetID, 'replace')
+        if (reviewChangeSetID && submittedReviewID) await openSubmittedReview(current.value, reviewChangeSetID, submittedReviewID, 'replace')
+        else if (reviewChangeSetID) enterReviewRoute(current.value, reviewChangeSetID, 'replace')
         else if (proposalChangeSetID) enterProposalRoute(current.value, proposalChangeSetID, 'replace')
         else {
           setEditor(null)
@@ -1203,12 +1316,12 @@ export function App() {
           setChangeSetTextDirty(false)
           setReviewVisible(false)
           setArchitectureNotice('')
-          enterWorkspace({ ...current.value, changes: undefined, action_change_set_id: undefined }, current.value.components.length ? 'documentation' : 'empty', 'accepted')
+          enterWorkspace({ ...current.value, submitted_review: undefined, changes: undefined, action_change_set_id: undefined }, current.value.components.length ? 'documentation' : 'empty', 'accepted')
           window.history.replaceState({}, '', projectRoutePath(current.value.project_slug))
           resetWorkingPaneScroll()
         }
       } else {
-        await openProject(slug, true, proposalChangeSetID, reviewChangeSetID)
+        await openProject(slug, true, proposalChangeSetID, reviewChangeSetID, submittedReviewID)
       }
       return
     }
@@ -1283,7 +1396,9 @@ export function App() {
       const notice = payload.action_error ? messageForArchitectureAction(payload.action_error) : ''
       const nextTask = payload.changes?.stale ? 'changes' : workspaceTask
       const route = decodeProjectRoute(window.location.pathname)
-      if (route?.reviewChangeSetID) {
+      if (route?.reviewChangeSetID && route.submittedReviewID) {
+        await openSubmittedReview(payload, route.reviewChangeSetID, route.submittedReviewID, 'replace')
+      } else if (route?.reviewChangeSetID) {
         enterReviewRoute(payload, route.reviewChangeSetID, 'replace')
         if (notice) setArchitectureNotice(notice)
       } else if (route?.proposalChangeSetID) {
@@ -1481,7 +1596,9 @@ export function App() {
             <p className="workspace-context"><strong>{result.project_name}</strong><span>Architecture</span></p>
           </div>
           <div className="frame-actions">
-            <ShowingMenu changeSets={result.change_sets} selectedID={selectedContextID} onSelect={(id) => requestNavigation({ kind: 'context', id })} />
+            {result.submitted_review
+              ? <span className="submitted-review-context">Submitted review</span>
+              : <ShowingMenu changeSets={result.change_sets} selectedID={selectedContextID} onSelect={(id) => requestNavigation({ kind: 'context', id })} />}
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale} onClick={() => requestNavigation({ kind: 'new-changes' })}>New changes</button>
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'refresh' })}>
               Refresh
@@ -1641,6 +1758,10 @@ export function App() {
                 reviewSide={reviewSide}
                 selectedReviewComponent={selected}
                 reviewFocus={reviewFocus}
+                activeReviewSubmission={result.submitted_review}
+                activeDiagram={activeDiagram}
+                onOpenSubmittedReview={(reviewID) => requestNavigation({ kind: 'submitted-review', changeSetID: result.changes!.id, reviewID })}
+                onSubmitReview={(input) => submitReviewFeedback(result, input)}
                 onReviewSide={switchReviewSide}
                 onContinueEditing={() => leaveReviewRoute(result, true)}
                 onClearReviewFocus={() => {
@@ -2036,6 +2157,10 @@ function ChangesTask({
   reviewSide,
   selectedReviewComponent,
   reviewFocus,
+  activeReviewSubmission,
+  activeDiagram,
+  onOpenSubmittedReview,
+  onSubmitReview,
   onReviewSide,
   onContinueEditing,
   onReturnToReview,
@@ -2065,6 +2190,10 @@ function ChangesTask({
   reviewSide?: ReviewSide
   selectedReviewComponent?: AuthoringComponent
   reviewFocus?: ReviewFocus | null
+  activeReviewSubmission?: ReviewSubmission
+  activeDiagram?: DiagramProjection
+  onOpenSubmittedReview?: (reviewID: string) => void
+  onSubmitReview?: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: { body: string; anchor: ReviewAnchor }[] }) => void
   onReviewSide?: (side: ReviewSide) => void
   onContinueEditing?: () => void
   onReturnToReview?: () => void
@@ -2107,13 +2236,14 @@ function ChangesTask({
     return (
       <section className="changes-in-progress review-workspace-pane" aria-labelledby="review-heading">
         <div className="review-heading-row">
-          <div className="pane-heading"><p className="eyebrow">Architecture</p><h2 id="review-heading">Review changes</h2></div>
+          <div className="pane-heading"><p className="eyebrow">{activeReviewSubmission ? 'Submitted feedback' : 'Architecture'}</p><h2 id="review-heading">{activeReviewSubmission ? verdictLabel(activeReviewSubmission.verdict) : 'Review changes'}</h2></div>
           <div className="review-side-toggle" role="group" aria-label="Review side">
             <button type="button" aria-pressed={reviewSide === 'with'} onClick={() => onReviewSide('with')}>With changes</button>
             <button type="button" aria-pressed={reviewSide === 'before'} onClick={() => onReviewSide('before')}>Before changes</button>
           </div>
         </div>
-        <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
+        <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : changes.lifecycle === 'no_longer_active' ? 'Proposal no longer active' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
+        {activeReviewSubmission && <SubmittedReviewDetails review={activeReviewSubmission} />}
         <p className="review-introduction">{changes.out_of_date
           ? 'Out of date with Accepted. You can inspect this review, but it cannot update Architecture until the proposal matches Accepted.'
           : readOnly
@@ -2138,7 +2268,10 @@ function ChangesTask({
                 const diagram = preferredDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                   ?? fallbackDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                 const description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
-                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
+                const detailDiagramID = appearance.status === 'detail_changed' && appearance.role === 'home'
+                  ? diagram?.appearances.find((value) => value.component_id === appearance.component_id)?.detail_diagram_id
+                  : undefined
+                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
               })}
             </ul>
           </section>
@@ -2158,10 +2291,32 @@ function ChangesTask({
             focusToken={reviewFocus?.key}
           />
         </section>
+        {!activeReviewSubmission && changes.lifecycle === 'active' && onSubmitReview && (
+          <ReviewComposer
+            key={changes.review.reviewed_state}
+            review={changes.review}
+            proposal={changes.proposal_markdown}
+            selectedComponent={selectedReviewComponent}
+            activeDiagram={activeDiagram}
+            focus={reviewFocus}
+            side={reviewSide}
+            busy={busy}
+            onDirty={onTextDirty}
+            onSubmit={onSubmitReview}
+          />
+        )}
+        {!activeReviewSubmission && (result.review_submissions?.some((item) => item.change_set_id === changes.id)) && (
+          <section className="submitted-review-list" aria-label="Submitted reviews">
+            <h3>Submitted reviews</h3>
+            <ul>{result.review_submissions?.filter((item) => item.change_set_id === changes.id).map((item) => (
+              <li key={item.id}><button className="text-action" type="button" onClick={() => onOpenSubmittedReview?.(item.id)}><strong>{verdictLabel(item.verdict)}</strong><span>{item.author} · {new Date(item.submitted_at).toLocaleString()} · version {item.binding.generation}{item.lifecycle === 'applied' ? ' · accepted proposal' : item.lifecycle === 'no_longer_active' ? ' · proposal no longer active' : item.current_generation ? '' : ' · earlier version'}{item.out_of_date ? ' · out of date' : ''}</span></button></li>
+            ))}</ul>
+          </section>
+        )}
         <div className="change-actions">
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
-          {!readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
-          {onContinueEditing && <button className="secondary-action" type="button" disabled={busy} onClick={onContinueEditing}>{readOnly ? 'View proposal' : 'Continue editing'}</button>}
+          {!activeReviewSubmission && !readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
+          {!activeReviewSubmission && onContinueEditing && <button className="secondary-action" type="button" disabled={busy} onClick={onContinueEditing}>{readOnly ? 'View proposal' : 'Continue editing'}</button>}
           {discardAction}
         </div>
         {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
@@ -2172,6 +2327,7 @@ function ChangesTask({
             <dt>Based on</dt><dd>{changes.review.base_revision}</dd>
             <dt>Reviewed tree</dt><dd>{changes.review.candidate_tree}</dd>
             <dt>Change version</dt><dd>{changes.review.generation}</dd>
+            {changes.review.reviewed_state && <><dt>Reviewed state</dt><dd>{changes.review.reviewed_state}</dd></>}
           </dl>
         </details>
       </section>
@@ -2357,6 +2513,165 @@ function appearanceReviewDescription(role: 'home' | 'reference', status: 'added'
   return status === 'added' ? `shown in ${diagramTitle}` : `no longer shown in ${diagramTitle}`
 }
 
+function verdictLabel(verdict: ReviewSubmissionSummary['verdict']) {
+  if (verdict === 'approve') return 'Approved'
+  if (verdict === 'request_changes') return 'Changes requested'
+  return 'Comment'
+}
+
+function anchorLabel(anchor: ReviewAnchor) {
+  const side = anchor.side === 'before' ? 'Before changes' : anchor.side === 'with_changes' ? 'With changes' : ''
+  switch (anchor.kind) {
+    case 'proposal': return 'Whole proposal'
+    case 'proposal_markdown': return `Proposal lines ${anchor.start_line}–${anchor.end_line}`
+    case 'component': return `${side} Component`
+    case 'component_markdown': return `${side} Component lines ${anchor.start_line}–${anchor.end_line}`
+    case 'diagram': return `${side} Diagram`
+    case 'composition': return `${side} ${anchor.aspect === 'detail' ? 'detail link' : `${anchor.aspect} placement`}`
+    case 'relationship': return `${side} Relationship · occurrence ${anchor.occurrence}`
+  }
+}
+
+function reviewAnchorPresentation(review: ReviewSubmission, anchor: ReviewAnchor) {
+  const sideLabel = anchor.side === 'before' ? 'Before changes' : 'With changes'
+  const snapshot = anchor.side === 'before' ? review.review.before : review.review.with_changes
+  const component = snapshot.components.find((value) => value.id === anchor.component_id)
+  const diagram = snapshot.diagrams?.find((value) => value.id === anchor.diagram_id)
+  const lineExcerpt = (source: string | undefined) => {
+    if (!source || !anchor.start_line || !anchor.end_line) return undefined
+    return reviewSourceLines(source).slice(anchor.start_line - 1, anchor.end_line).join('\n')
+  }
+  if (anchor.kind === 'proposal') return { label: 'Whole proposal' }
+  if (anchor.kind === 'proposal_markdown') return { label: `Proposal lines ${anchor.start_line}–${anchor.end_line}`, excerpt: lineExcerpt(review.proposal_markdown) }
+  if (anchor.kind === 'component') return { label: `${sideLabel} · ${component?.title ?? 'Component'}` }
+  if (anchor.kind === 'component_markdown') return { label: `${sideLabel} · ${component?.title ?? 'Component'} · lines ${anchor.start_line}–${anchor.end_line}`, excerpt: lineExcerpt(component?.markdown_source) }
+  if (anchor.kind === 'diagram') return { label: `${sideLabel} · ${diagram?.title ?? 'Diagram'}` }
+  if (anchor.kind === 'composition') {
+    const placed = snapshot.components.find((value) => value.id === anchor.component_id)
+    const aspect = anchor.aspect === 'detail' ? 'detail link' : anchor.aspect === 'reference' ? 'shown here' : 'home'
+    return { label: `${sideLabel} · ${placed?.title ?? 'Component'} · ${aspect} in ${diagram?.title ?? 'Diagram'}` }
+  }
+  if (anchor.kind === 'relationship') {
+    const source = snapshot.components.find((value) => value.id === anchor.source_component_id)
+    const target = snapshot.components.find((value) => value.id === anchor.target_component_id)
+    return { label: `${sideLabel} · ${source?.title ?? 'Component'} — ${anchor.label} → ${target?.title ?? 'Component'} · occurrence ${anchor.occurrence}` }
+  }
+  return { label: anchorLabel(anchor) }
+}
+
+function SubmittedReviewDetails({ review }: { review: ReviewSubmission }) {
+  return (
+    <section className="submitted-review-details" aria-label="Submitted review feedback">
+      <p className="submitted-review-byline">{review.author} · {new Date(review.submitted_at).toLocaleString()}</p>
+      {review.lifecycle === 'no_longer_active' && <p className="review-age-note">This proposal is no longer active.</p>}
+      {!review.current_generation && review.lifecycle !== 'no_longer_active' && <p className="review-age-note">Feedback on an earlier proposal version.</p>}
+      {review.body && <div className="submitted-review-body"><MarkdownBody source={review.body} /></div>}
+      {review.comments.length > 0 && <ol className="submitted-review-comments">{review.comments.map((comment) => {
+        const anchor = reviewAnchorPresentation(review, comment.anchor)
+        return <li key={comment.id}><span>{anchor.label}</span>{anchor.excerpt !== undefined && <pre className="review-anchor-excerpt">{anchor.excerpt || ' '}</pre>}<MarkdownBody source={comment.body} /></li>
+      })}</ol>}
+    </section>
+  )
+}
+
+type LocalReviewComment = { body: string; anchor: ReviewAnchor }
+
+function reviewSourceLines(source: string) {
+  if (!source) return []
+  const lines = source.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+function ReviewComposer({
+  review, proposal, selectedComponent, activeDiagram, focus, side, busy, onDirty, onSubmit,
+}: {
+  review: ChangeReview
+  proposal: string
+  selectedComponent?: AuthoringComponent
+  activeDiagram?: DiagramProjection
+  focus?: ReviewFocus | null
+  side: ReviewSide
+  busy: boolean
+  onDirty: (dirty: boolean) => void
+  onSubmit: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: LocalReviewComment[] }) => void
+}) {
+  const [author, setAuthor] = useState('')
+  const [verdict, setVerdict] = useState<ReviewSubmissionSummary['verdict']>('comment')
+  const [body, setBody] = useState('')
+  const [comments, setComments] = useState<LocalReviewComment[]>([])
+  const [commentBody, setCommentBody] = useState('')
+  const [anchorKind, setAnchorKind] = useState('proposal')
+  const [startLine, setStartLine] = useState(1)
+  const [endLine, setEndLine] = useState(1)
+  const dirty = author !== '' || body !== '' || comments.length > 0 || commentBody !== '' || verdict !== 'comment'
+  useEffect(() => { onDirty(dirty); return () => onDirty(false) }, [dirty, onDirty])
+
+  const architectureSide = side === 'with' ? 'with_changes' : 'before'
+  const componentSource = selectedComponent?.markdown_source ?? ''
+  const source = anchorKind === 'proposal_markdown' ? proposal : componentSource
+  const lines = reviewSourceLines(source)
+  const choices = [
+    { value: 'proposal', label: 'Whole proposal' },
+    ...(proposal ? [{ value: 'proposal_markdown', label: 'Proposal lines' }] : []),
+    ...(selectedComponent ? [{ value: 'component', label: 'Selected Component' }] : []),
+    ...(selectedComponent?.markdown_source ? [{ value: 'component_markdown', label: 'Selected Component lines' }] : []),
+    ...(activeDiagram ? [{ value: 'diagram', label: 'Current Diagram' }] : []),
+    ...(focus?.kind === 'diagram' && focus.componentID ? [{ value: 'composition', label: 'Selected Diagram placement' }] : []),
+    ...(focus?.kind === 'relationship' ? [{ value: 'relationship', label: 'Selected Relationship' }] : []),
+  ]
+  useEffect(() => {
+    if (!choices.some((choice) => choice.value === anchorKind)) setAnchorKind('proposal')
+  }, [anchorKind, choices.map((choice) => choice.value).join(':')])
+
+  const makeAnchor = (): ReviewAnchor | undefined => {
+    if (anchorKind === 'proposal') return { kind: 'proposal' }
+    if (anchorKind === 'proposal_markdown') return { kind: 'proposal_markdown', start_line: startLine, end_line: endLine }
+    if (anchorKind === 'component' && selectedComponent) return { kind: 'component', side: architectureSide, component_id: selectedComponent.id }
+    if (anchorKind === 'component_markdown' && selectedComponent) return { kind: 'component_markdown', side: architectureSide, component_id: selectedComponent.id, start_line: startLine, end_line: endLine }
+    if (anchorKind === 'diagram' && activeDiagram) return { kind: 'diagram', side: architectureSide, diagram_id: activeDiagram.id }
+    if (anchorKind === 'composition' && focus?.kind === 'diagram' && focus.componentID && focus.role) return {
+      kind: 'composition', side: architectureSide, diagram_id: focus.diagramID, component_id: focus.componentID,
+      aspect: focus.compositionAspect ?? focus.role, ...(focus.compositionAspect === 'detail' && focus.detailDiagramID ? { detail_diagram_id: focus.detailDiagramID } : {}),
+    }
+    if (anchorKind === 'relationship' && focus?.kind === 'relationship') return {
+      kind: 'relationship', side: focus.review_side === 'before' ? 'before' : focus.review_side === 'with' ? 'with_changes' : architectureSide,
+      source_component_id: focus.source_id, target_component_id: focus.target_id, label: focus.label, occurrence: focus.occurrence,
+    }
+    return undefined
+  }
+  const lineAnchor = anchorKind === 'proposal_markdown' || anchorKind === 'component_markdown'
+  const lineSelectionInvalid = lineAnchor && (startLine < 1 || endLine < startLine || endLine > lines.length)
+  const addComment = () => {
+    const anchor = makeAnchor()
+    if (!anchor || !commentBody.trim() || lineSelectionInvalid) return
+    setComments((current) => [...current, { body: commentBody, anchor }])
+    setCommentBody('')
+  }
+  const valid = author.trim() !== '' && (verdict !== 'comment' || body.trim() !== '' || comments.length > 0)
+  return (
+    <section className="review-composer" aria-labelledby="review-feedback-heading">
+      <div className="review-section-heading"><h3 id="review-feedback-heading">Submit feedback</h3><span>Informational only</span></div>
+      <label>Reviewer name<input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="Your name or agent label" /></label>
+      <label>Conclusion<select value={verdict} onChange={(event) => setVerdict(event.target.value as ReviewSubmissionSummary['verdict'])}><option value="comment">Comment</option><option value="approve">Approve</option><option value="request_changes">Request changes</option></select></label>
+      <label>Overall note <span className="field-optional">Optional</span><textarea rows={4} value={body} onChange={(event) => setBody(event.target.value)} /></label>
+      <div className="anchored-comment-composer">
+        <div className="review-section-heading"><h4>Comment on this review</h4><span>Optional</span></div>
+        <label>Location<select value={anchorKind} onChange={(event) => setAnchorKind(event.target.value)}>{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>
+        {lineAnchor && <div className="review-line-picker">
+          <div><label>Start line<input type="number" min={1} max={Math.max(1, lines.length)} value={startLine} onChange={(event) => setStartLine(Number(event.target.value))} /></label><label>End line<input type="number" min={1} max={Math.max(1, lines.length)} value={endLine} onChange={(event) => setEndLine(Number(event.target.value))} /></label></div>
+          <pre>{lines.map((line, index) => <span key={index}><b>{index + 1}</b>{line || ' '}{'\n'}</span>)}</pre>
+        </div>}
+        <label>Comment<textarea rows={3} value={commentBody} onChange={(event) => setCommentBody(event.target.value)} /></label>
+        <button className="secondary-action" type="button" disabled={!commentBody.trim() || lineSelectionInvalid} onClick={addComment}>Add comment</button>
+      </div>
+      {comments.length > 0 && <ol className="review-comment-drafts">{comments.map((comment, index) => <li key={index}><span>{anchorLabel(comment.anchor)}</span><p>{comment.body}</p><button className="text-action" type="button" onClick={() => setComments((current) => current.filter((_, item) => item !== index))}>Remove</button></li>)}</ol>}
+      <button className="inline-action" type="button" disabled={busy || !valid} onClick={() => onSubmit({ author, verdict, body, comments })}>{busy ? 'Submitting…' : 'Submit review'}</button>
+      <p className="field-hint">This records feedback on this exact version. It does not update Architecture.</p>
+    </section>
+  )
+}
+
 function ReviewContext({
   side,
   component,
@@ -2474,11 +2789,17 @@ function reviewRoutePath(slug: string, changeSetID: string) {
   return `${proposalRoutePath(slug, changeSetID)}/review`
 }
 
-function decodeProjectRoute(pathname: string): { slug: string; proposalChangeSetID?: string; reviewChangeSetID?: string } | undefined {
+function submittedReviewRoutePath(slug: string, changeSetID: string, reviewID: string) {
+  return `${proposalRoutePath(slug, changeSetID)}/reviews/${encodeURIComponent(reviewID)}`
+}
+
+function decodeProjectRoute(pathname: string): { slug: string; proposalChangeSetID?: string; reviewChangeSetID?: string; submittedReviewID?: string } | undefined {
+  const submittedMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/reviews\/([^/]+)\/?$/.exec(pathname)
   const reviewMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/review\/?$/.exec(pathname)
   const proposalMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/?$/.exec(pathname)
   const projectMatch = /^\/projects\/([^/]+)\/?$/.exec(pathname)
   try {
+    if (submittedMatch) return { slug: decodeURIComponent(submittedMatch[1]), reviewChangeSetID: decodeURIComponent(submittedMatch[2]), submittedReviewID: decodeURIComponent(submittedMatch[3]) }
     if (reviewMatch) return { slug: decodeURIComponent(reviewMatch[1]), reviewChangeSetID: decodeURIComponent(reviewMatch[2]) }
     if (proposalMatch) return { slug: decodeURIComponent(proposalMatch[1]), proposalChangeSetID: decodeURIComponent(proposalMatch[2]) }
     if (projectMatch) return { slug: decodeURIComponent(projectMatch[1]) }

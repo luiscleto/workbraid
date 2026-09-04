@@ -128,7 +128,7 @@ function reviewedArchitecture(overrides: Record<string, unknown> = {}) {
       valid: true,
       candidate: { revision: 'b'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker updated', 'External'], components: withComponents, root_diagram_id: root, diagrams: withDiagrams },
       review: {
-        diff, base_revision: 'a'.repeat(40), candidate_tree: 'b'.repeat(40), generation: 4,
+        diff, reviewed_state: 'c'.repeat(40), base_revision: 'a'.repeat(40), candidate_tree: 'b'.repeat(40), generation: 4,
         before: { revision: 'a'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker', 'External'], components: beforeComponents, root_diagram_id: root, diagrams: beforeDiagrams },
         with_changes: { revision: 'b'.repeat(40), format_version: 2, component_count: 2, component_titles: ['Worker updated', 'External'], components: withComponents, root_diagram_id: root, diagrams: withDiagrams },
         comparison: {
@@ -143,6 +143,36 @@ function reviewedArchitecture(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   })
+}
+
+function submittedReviewArchitecture(overrides: Record<string, unknown> = {}) {
+  const value = reviewedArchitecture()
+  const current = value as unknown as { changes: Record<string, any>; review_submissions?: unknown[]; submitted_review?: unknown }
+  const reviewID = '77777777-7777-4777-8777-777777777777'
+  const submission = {
+    id: reviewID,
+    change_set_id: current.changes.id,
+    reviewed_state: current.changes.review.reviewed_state,
+    binding: { base_revision: current.changes.review.base_revision, candidate_tree: current.changes.review.candidate_tree, generation: current.changes.review.generation },
+    verdict: 'request_changes',
+    author: 'Review agent',
+    submitted_at: '2026-09-04T14:30:00Z',
+    comment_count: 1,
+    lifecycle: 'active',
+    current_generation: true,
+    body: 'Please clarify the worker responsibility.',
+    comments: [{
+      id: '88888888-8888-4888-8888-888888888888',
+      body: 'This wording is ambiguous.',
+      anchor: { kind: 'component_markdown', side: 'with_changes', component_id: worker, start_line: 2, end_line: 2 },
+    }],
+    proposal_markdown: current.changes.proposal_markdown,
+    review: current.changes.review,
+    ...overrides,
+  }
+  current.review_submissions = [submission]
+  current.submitted_review = submission
+  return value
 }
 
 beforeEach(() => {
@@ -413,6 +443,176 @@ describe('slug workspace and reusable references', () => {
 })
 
 describe('candidate review regressions', () => {
+  it('submits immutable anchored feedback and opens its exact review route', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = reviewedArchitecture()
+    const currentChanges = (current as unknown as { changes: Record<string, any> }).changes
+    currentChanges.proposal_markdown = '# Direction\n\nReview this exact proposal.\n'
+    currentChanges.review.with_changes.components[0].markdown_source = '# Worker updated\nCandidate documentation.\n'
+    const submitted = submittedReviewArchitecture()
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(current))
+      .mockImplementationOnce(() => response(architecture({ action_review_id: reviewID }), 201))
+      .mockImplementationOnce(() => response(submitted))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Human reviewer')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
+    await user.type(screen.getByRole('textbox', { name: /Overall note/ }), 'Please revise this.')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'component_markdown')
+    await user.clear(screen.getByRole('spinbutton', { name: 'Start line' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Start line' }), '2')
+    await user.clear(screen.getByRole('spinbutton', { name: 'End line' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'End line' }), '2')
+    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Clarify this line.')
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+
+    expect(requestBody(fetchMock, 1)).toMatchObject({
+      change_set_id: changeSetID,
+      reviewed_state: 'c'.repeat(40),
+      base_revision: 'a'.repeat(40),
+      candidate_tree: 'b'.repeat(40),
+      generation: 4,
+      verdict: 'request_changes',
+      author: 'Human reviewer',
+      body: 'Please revise this.',
+      comments: [{ body: 'Clarify this line.', anchor: { kind: 'component_markdown', side: 'with_changes', component_id: worker, start_line: 2, end_line: 2 } }],
+    })
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+    expect(screen.getByText('Submitted review')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Showing / })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+  })
+
+  it('restores discarded-proposal feedback from its exact direct route without a selector record', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+    const catalogState = architecture({ change_sets: [] })
+    const submitted = submittedReviewArchitecture({ lifecycle: 'no_longer_active', current_generation: false })
+    ;(submitted as unknown as { change_sets: unknown[] }).change_sets = []
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(catalogState))
+      .mockImplementationOnce(() => response(submitted))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    expect(screen.getByText('This proposal is no longer active.')).toBeInTheDocument()
+    expect(screen.getByText('Please clarify the worker responsibility.')).toBeInTheDocument()
+    expect(screen.getByText('This wording is ambiguous.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Showing / })).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+  })
+
+  it('keeps an earlier submitted review on its exact historical projection when the active proposal advanced', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+    const submitted = submittedReviewArchitecture({ current_generation: false }) as Record<string, any>
+    submitted.change_sets = [{
+      ...submitted.changes,
+      generation: 5,
+      proposal_markdown: '# New proposal version\n',
+      review: undefined,
+      candidate: {
+        ...submitted.changes.candidate,
+        components: submitted.changes.candidate.components.map((component: Record<string, any>) => component.id === worker ? { ...component, title: 'Later Worker' } : component),
+      },
+    }]
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => response(submitted)))
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    expect(screen.getByText('Feedback on an earlier proposal version.')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Proposal' })).not.toHaveTextContent('New proposal version')
+    expect(screen.getByRole('navigation', { name: 'Diagrams and components' })).toHaveTextContent('Worker updated')
+    expect(screen.getByRole('navigation', { name: 'Diagrams and components' })).not.toHaveTextContent('Later Worker')
+  })
+
+  it('keeps the exact submitted-review route and snapshot through Refresh', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    const path = `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`
+    window.history.replaceState({}, '', path)
+    const submitted = submittedReviewArchitecture()
+    const refreshed = submittedReviewArchitecture() as Record<string, unknown>
+    delete refreshed.submitted_review
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => response(submitted))
+      .mockImplementationOnce(() => response(refreshed))
+      .mockImplementationOnce(() => response(submitted))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText('Please clarify the worker responsibility.')).toBeInTheDocument()
+    expect(window.location.pathname).toBe(path)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('protects unsent review feedback when leaving its exact review', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    const author = screen.getByRole('textbox', { name: 'Reviewer name' })
+    await user.type(author, 'Local reviewer')
+    await selectShowing(user, 'Accepted')
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(author).toHaveValue('Local reviewer')
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/review`)
+
+    await selectShowing(user, 'Accepted')
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(await screen.findByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+  })
+
+  it('protects unsent feedback before opening an earlier submitted review', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = submittedReviewArchitecture() as Record<string, unknown>
+    delete current.submitted_review
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(current))
+      .mockImplementationOnce(() => response(submittedReviewArchitecture()))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.type(await screen.findByRole('textbox', { name: 'Reviewer name' }), 'Local reviewer')
+    await user.click(screen.getByRole('button', { name: /Changes requested.*Review agent/ }))
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('textbox', { name: 'Reviewer name' })).toHaveValue('Local reviewer')
+
+    await user.click(screen.getByRole('button', { name: /Changes requested.*Review agent/ }))
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+  })
+
   it('restores a UUID-addressed review with safe proposal context and returns to its proposal task', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)

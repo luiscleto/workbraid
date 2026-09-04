@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 26 {
+	if err != nil || len(tools.Tools) != 29 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -357,14 +357,54 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if bindingA["review_url"] != expectedReviewAURL {
 		t.Fatalf("CLI review URL = %#v, want %q", bindingA["review_url"], expectedReviewAURL)
 	}
+	repeatedReviewA := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idA, "generation": 15})
+	if repeatedReviewA.Result.(map[string]any)["reviewed_state"] != bindingA["reviewed_state"] {
+		t.Fatalf("repeated cross-client review changed state: CLI=%+v MCP=%+v", bindingA, repeatedReviewA.Result)
+	}
+	commentFile := filepath.Join(runtimeRoot, "review-comments.json")
+	commentJSON := `[{"body":"Keep this exact proposal context.","anchor":{"kind":"proposal"}}]`
+	if err := os.WriteFile(commentFile, []byte(commentJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	submittedA := runRealCLI(t, binary, origin, "review-submission", "submit", "--store-id", storeID, "--change-set-id", idA,
+		"--reviewed-state", bindingA["reviewed_state"].(string), "--base-revision", bindingA["base_revision"].(string), "--candidate-tree", bindingA["candidate_tree"].(string),
+		"--generation", "15", "--verdict", "request_changes", "--author", "CLI reviewer", "--body", "Review body.", "--comments-file", commentFile)
+	submittedAMap := submittedA.Result.(map[string]any)
+	reviewAID := submittedAMap["id"].(string)
+	expectedSubmittedAURL := expectedReviewAURL[:len(expectedReviewAURL)-len("review")] + "reviews/" + reviewAID
+	if submittedAMap["review_url"] != expectedSubmittedAURL {
+		t.Fatalf("submitted review URL=%#v want=%q", submittedAMap["review_url"], expectedSubmittedAURL)
+	}
+	listedAReviews := runRealMCP(t, ctx, session, "review_submissions_list", map[string]any{"store_id": storeID, "change_set_id": idA})
+	listedReviews := listedAReviews.Result.(map[string]any)["reviews"].([]any)
+	if len(listedReviews) != 1 || listedReviews[0].(map[string]any)["review_url"] != expectedSubmittedAURL {
+		t.Fatalf("MCP review list=%+v", listedAReviews)
+	}
+	inspectedAReview := runRealMCP(t, ctx, session, "review_submission_inspect", map[string]any{"store_id": storeID, "change_set_id": idA, "review_id": reviewAID})
+	if inspectedAReview.Result.(map[string]any)["review_url"] != expectedSubmittedAURL {
+		t.Fatalf("MCP review inspect=%+v", inspectedAReview)
+	}
 	reviewB := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2})
 	expectedReviewBURL := origin + "/projects/" + created.Context.Project.Slug + "/proposals/" + idB + "/review"
 	if reviewB.Result.(map[string]any)["review_url"] != expectedReviewBURL {
 		t.Fatalf("MCP review URL = %#v, want %q", reviewB.Result, expectedReviewBURL)
 	}
+	bindingBInitial := reviewB.Result.(map[string]any)
+	submittedB := runRealMCP(t, ctx, session, "review_submission_submit", map[string]any{
+		"store_id": storeID, "change_set_id": idB, "reviewed_state": bindingBInitial["reviewed_state"], "base_revision": bindingBInitial["base_revision"],
+		"candidate_tree": bindingBInitial["candidate_tree"], "generation": 2, "verdict": "approve", "author": "MCP reviewer", "body": "", "comments": []any{},
+	})
+	reviewBID := submittedB.Result.(map[string]any)["id"].(string)
+	if inspectedBReview := runRealCLI(t, binary, origin, "review-submission", "inspect", "--store-id", storeID, "--change-set-id", idB, "--review-id", reviewBID); inspectedBReview.Result.(map[string]any)["verdict"] != "approve" {
+		t.Fatalf("CLI review inspect=%+v", inspectedBReview)
+	}
 	updatedA := runRealCLI(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idA, "--base-revision", bindingA["base_revision"].(string), "--candidate-tree", bindingA["candidate_tree"].(string), "--generation", "15")
 	if !updatedA.OK || updatedA.Context.AcceptedRevision == nil || *updatedA.Context.AcceptedRevision == revision {
 		t.Fatalf("CLI update A: %+v", updatedA)
+	}
+	appliedReviewA := runRealCLI(t, binary, origin, "review-submission", "inspect", "--store-id", storeID, "--change-set-id", idA, "--review-id", reviewAID)
+	if appliedReviewA.Result.(map[string]any)["lifecycle"] != "applied" || appliedReviewA.Result.(map[string]any)["current_generation"] != true {
+		t.Fatalf("applied review context=%+v", appliedReviewA)
 	}
 	acceptedRevision := *updatedA.Context.AcceptedRevision
 
@@ -430,6 +470,14 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if reopened.Context.Project == nil || reopened.Context.Project.StoreID != storeID {
 		t.Fatalf("reopened project: %+v", reopened)
 	}
+	reloadedAppliedReview := runRealMCP(t, ctx, session, "review_submission_inspect", map[string]any{"store_id": storeID, "change_set_id": idA, "review_id": reviewAID})
+	if reloadedAppliedReview.Result.(map[string]any)["lifecycle"] != "applied" || reloadedAppliedReview.Result.(map[string]any)["current_generation"] != true {
+		t.Fatalf("reloaded applied review: %+v", reloadedAppliedReview)
+	}
+	reloadedEarlierReview := runRealCLI(t, binary, origin, "review-submission", "inspect", "--store-id", storeID, "--change-set-id", idB, "--review-id", reviewBID)
+	if reloadedEarlierReview.Result.(map[string]any)["lifecycle"] != "active" || reloadedEarlierReview.Result.(map[string]any)["current_generation"] != false || reloadedEarlierReview.Result.(map[string]any)["binding"].(map[string]any)["generation"] != float64(2) {
+		t.Fatalf("reloaded earlier review: %+v", reloadedEarlierReview)
+	}
 }
 
 func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
@@ -440,7 +488,7 @@ func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
 	if code := run([]string{"--help"}, &help, &stderr, bytes.NewReader(nil)); code != 0 {
 		t.Fatalf("help exit=%d", code)
 	}
-	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "--change-set-id <uuid>", "change_set_out_of_date", "Applied change sets are immutable evidence", "review_url"} {
+	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "review-submission list", "review-submission inspect", "review-submission submit", "--change-set-id <uuid>", "change_set_out_of_date", "review_anchor_invalid", "component_markdown", "reviewed_state", "Applied change sets are immutable evidence", "review_url"} {
 		if !strings.Contains(skill.String(), exact) && !strings.Contains(help.String(), exact) {
 			t.Fatalf("v2 help/skill missing %q", exact)
 		}
@@ -507,7 +555,8 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	wantNames := []string{
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_rename", "change_set_review", "change_sets_list",
-		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove", "status",
+		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
+		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))
 	for index, tool := range listed.Tools {
@@ -518,6 +567,17 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		}
 		if tool.Name == "change_set_review" && !strings.Contains(tool.Description, "review_url") {
 			t.Fatalf("review tool does not tell agents about review_url: %q", tool.Description)
+		}
+		if tool.Name == "review_submission_submit" {
+			properties, ok := input["properties"].(map[string]any)
+			comments, commentsOK := properties["comments"].(map[string]any)
+			items, itemsOK := comments["items"].(map[string]any)
+			commentProperties, propertiesOK := items["properties"].(map[string]any)
+			anchor, anchorOK := commentProperties["anchor"].(map[string]any)
+			variants, variantsOK := anchor["oneOf"].([]any)
+			if !ok || !commentsOK || !itemsOK || !propertiesOK || !anchorOK || !variantsOK || len(variants) != 9 {
+				t.Fatalf("review submission does not expose closed typed anchor variants: %#v", input)
+			}
 		}
 	}
 	slices.Sort(gotNames)

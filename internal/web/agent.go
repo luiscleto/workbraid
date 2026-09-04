@@ -96,6 +96,9 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/change-sets/edit-proposal", h.agentChangeSetEditProposal)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/review", h.agentChangeSetReview)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/discard", h.agentChangeSetDiscard)
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/list", h.agentReviewSubmissionsList)
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/inspect", h.agentReviewSubmissionInspect)
+	mux.HandleFunc("POST /api/agent/v2/review-submissions/submit", h.agentReviewSubmissionSubmit)
 	mux.HandleFunc("POST /api/agent/v2/components/create", h.agentComponentCreate)
 	mux.HandleFunc("POST /api/agent/v2/components/edit", h.agentComponentEdit)
 	mux.HandleFunc("POST /api/agent/v2/components/move-home", h.agentComponentMoveHome)
@@ -169,6 +172,8 @@ func (h *Handler) agentContextLocked() agentapi.Context {
 	context.AuthorityState = "current"
 	if h.loadedStale {
 		context.AuthorityState = "non_current"
+	} else if h.acceptedIndeterminate {
+		context.AuthorityState = "indeterminate"
 	}
 	return context
 }
@@ -245,6 +250,14 @@ func agentMessage(code string) string {
 		return "Review the complete current changes before updating Architecture."
 	case "review_invalidated":
 		return "This Review is no longer valid. Inspect changes, then Review again."
+	case "review_submission_not_found":
+		return "That submitted review was not found. List reviews for the Change Set again."
+	case "review_submission_unavailable":
+		return "That submitted review could not be loaded exactly. Do not guess or repair it."
+	case "review_anchor_invalid":
+		return "A review comment does not point to that exact reviewed source. Correct its anchor and submit again."
+	case "review_submission_not_allowed":
+		return "New feedback requires an active proposal with an exact prepared Review."
 	case "accepted_conflict":
 		return "Accepted Architecture changed before update. Refresh and inspect the preserved pending work."
 	case "acceptance_uncertain":
@@ -450,6 +463,9 @@ func (h *Handler) checkAgentStateLocked(expected agentapi.StatePreconditions) (a
 	if h.loadedStale {
 		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "architecture_non_current", Message: agentMessage("architecture_non_current"), Details: map[string]any{"loaded_revision": snapshot.Revision()}}
 	}
+	if h.acceptedIndeterminate {
+		return architecture.Snapshot{}, nil, &agentapi.Error{Code: "refresh_failed", Message: agentMessage("refresh_failed"), Details: map[string]any{"loaded_revision": snapshot.Revision()}}
+	}
 	record, lifecycleErr := h.editableAgentChangeSetLocked(expected.ChangeSetID)
 	if lifecycleErr != nil {
 		return architecture.Snapshot{}, nil, lifecycleErr
@@ -543,7 +559,15 @@ func (h *Handler) agentChangeSetCreate(response http.ResponseWriter, request *ht
 		h.writeAgentErrorLocked(response, http.StatusConflict, "project_mismatch", agentMessage("project_mismatch"), nil)
 		return
 	}
-	if h.loadedStale || payload.AcceptedRevision != h.loadedSnapshot.Revision() {
+	if h.loadedStale {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "architecture_non_current", agentMessage("architecture_non_current"), map[string]any{"expected_revision": payload.AcceptedRevision, "loaded_revision": h.loadedSnapshot.Revision()})
+		return
+	}
+	if h.acceptedIndeterminate {
+		h.writeAgentErrorLocked(response, http.StatusServiceUnavailable, "refresh_failed", agentMessage("refresh_failed"), map[string]any{"loaded_revision": h.loadedSnapshot.Revision()})
+		return
+	}
+	if payload.AcceptedRevision != h.loadedSnapshot.Revision() {
 		h.writeAgentErrorLocked(response, http.StatusConflict, "architecture_non_current", agentMessage("architecture_non_current"), map[string]any{"expected_revision": payload.AcceptedRevision, "loaded_revision": h.loadedSnapshot.Revision()})
 		return
 	}

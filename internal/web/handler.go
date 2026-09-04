@@ -32,9 +32,12 @@ type Handler struct {
 	loadedSnapshot        *architecture.Snapshot
 	loadedProject         *loadedProject
 	loadedStale           bool
+	acceptedIndeterminate bool
 	acceptedDiff          string
 	changeSets            map[string]*pendingChangeSet
 	unavailableChangeSets []architecture.UnavailableChangeSet
+	reviews               map[string]architecture.ReviewSubmission
+	unavailableReviews    []architecture.UnavailableReview
 
 	// publicationFailure is a focused test seam at the concrete post-CAS
 	// publication boundary. Production never sets it.
@@ -117,6 +120,7 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 		uiDirectory:    uiDirectory,
 		architecture:   architecture.NewManager(dataDirectory),
 		changeSets:     make(map[string]*pendingChangeSet),
+		reviews:        make(map[string]architecture.ReviewSubmission),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects", handler.projectCatalog)
@@ -133,6 +137,8 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/change-sets/rename", handler.renameChangeSet)
 	mux.HandleFunc("POST /api/architecture/change-sets/proposal", handler.editChangeSetProposal)
 	mux.HandleFunc("POST /api/architecture/review", handler.reviewChanges)
+	mux.HandleFunc("POST /api/architecture/review-submissions/inspect", handler.inspectReviewSubmission)
+	mux.HandleFunc("POST /api/architecture/review-submissions/submit", handler.submitReviewSubmission)
 	mux.HandleFunc("POST /api/architecture/accept", handler.acceptChanges)
 	mux.HandleFunc("POST /api/architecture/discard", handler.discardChanges)
 	mux.HandleFunc("POST /api/architecture/refresh", handler.refreshArchitecture)
@@ -332,7 +338,11 @@ type architectureResponse struct {
 	Changes               *changesResponse                    `json:"changes,omitempty"`
 	ChangeSets            []*changesResponse                  `json:"change_sets"`
 	UnavailableChangeSets []unavailableChangeSetResponse      `json:"unavailable_change_sets,omitempty"`
+	ReviewSubmissions     []reviewSubmissionSummaryResponse   `json:"review_submissions,omitempty"`
+	UnavailableReviews    []unavailableReviewResponse         `json:"unavailable_reviews,omitempty"`
+	SubmittedReview       *reviewSubmissionResponse           `json:"submitted_review,omitempty"`
 	ActionChangeSetID     string                              `json:"action_change_set_id,omitempty"`
+	ActionReviewID        string                              `json:"action_review_id,omitempty"`
 	Stale                 bool                                `json:"stale,omitempty"`
 	ParentDiff            string                              `json:"parent_diff,omitempty"`
 	ActionError           string                              `json:"action_error,omitempty"`
@@ -340,11 +350,12 @@ type architectureResponse struct {
 }
 
 type componentResponse struct {
-	ID            string                 `json:"id"`
-	Title         string                 `json:"title"`
-	Description   string                 `json:"description"`
-	Filename      string                 `json:"filename"`
-	Relationships []relationshipResponse `json:"relationships"`
+	ID             string                 `json:"id"`
+	Title          string                 `json:"title"`
+	Description    string                 `json:"description"`
+	MarkdownSource string                 `json:"markdown_source,omitempty"`
+	Filename       string                 `json:"filename"`
+	Relationships  []relationshipResponse `json:"relationships"`
 }
 
 type relationshipResponse struct {
@@ -442,6 +453,7 @@ type diagramAuthoringComponentFact struct {
 
 type reviewResponse struct {
 	ChangeSetID   string                     `json:"change_set_id"`
+	ReviewedState string                     `json:"reviewed_state"`
 	Diff          string                     `json:"diff"`
 	BaseRevision  string                     `json:"base_revision"`
 	CandidateTree string                     `json:"candidate_tree"`
@@ -531,9 +543,14 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 		}
 		if pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 			before, withChanges, comparison := captureReviewPresentation(pending.baseSnapshot, pending.review.candidate.Snapshot())
+			reviewedState := ""
+			if pending.lifecycle == "active" {
+				reviewedState = pending.refObject
+			}
 			result.Changes.Review = &reviewResponse{
-				ChangeSetID: pending.id,
-				Diff:        pending.review.diff, BaseRevision: pending.review.baseRevision,
+				ChangeSetID:   pending.id,
+				ReviewedState: reviewedState,
+				Diff:          pending.review.diff, BaseRevision: pending.review.baseRevision,
 				CandidateTree: pending.review.candidateTree, Generation: pending.review.generation,
 				Before: before, WithChanges: withChanges, Comparison: comparison,
 			}
@@ -572,6 +589,11 @@ func (h *Handler) responseForLoadedProjectLocked(snapshot architecture.Snapshot,
 	result.UnavailableChangeSets = make([]unavailableChangeSetResponse, len(h.unavailableChangeSets))
 	for index, unavailable := range h.unavailableChangeSets {
 		result.UnavailableChangeSets[index] = unavailableChangeSetResponse{ID: unavailable.ID, Name: unavailable.Name, Lifecycle: unavailable.Lifecycle, Reason: unavailable.Reason}
+	}
+	result.ReviewSubmissions = h.reviewSummariesLocked()
+	result.UnavailableReviews = make([]unavailableReviewResponse, len(h.unavailableReviews))
+	for index, unavailable := range h.unavailableReviews {
+		result.UnavailableReviews[index] = unavailableReviewResponse{ChangeSetID: unavailable.ChangeSetID, ReviewID: unavailable.ReviewID, Reason: unavailable.Reason}
 	}
 	return result
 }
@@ -759,6 +781,7 @@ func (h *Handler) publishSnapshotLocked(ctx context.Context, snapshot architectu
 	h.loadedSnapshot = &snapshot
 	h.loadedProject = &loadedProject{storeID: snapshot.StoreID(), projectName: snapshot.ProjectName(), projectSlug: snapshot.ProjectSlug()}
 	h.loadedStale = false
+	h.acceptedIndeterminate = false
 	if !keepAcceptedDiff {
 		h.acceptedDiff = ""
 	}
@@ -781,18 +804,7 @@ func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architectur
 	nextRecords := make(map[string]*pendingChangeSet, len(records))
 	nextUnavailable := append([]architecture.UnavailableChangeSet(nil), unavailable...)
 	for _, durable := range records {
-		record := &pendingChangeSet{
-			id: durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
-			appliedRevision: durable.AppliedRevision, refObject: durable.RefObject,
-			storeID: durable.BaseSnapshot.StoreID(), baseRevision: durable.BaseRevision, baseSnapshot: durable.BaseSnapshot,
-			changes:           append([]architecture.ComponentChange(nil), durable.Changes...),
-			newComponentHomes: append([]architecture.NewComponentHome(nil), durable.Composition.NewComponentHomes...),
-			detailDiagrams:    append([]architecture.DetailDiagramChange(nil), durable.Composition.DetailDiagrams...),
-			diagramTitles:     append([]architecture.DiagramTitleChange(nil), durable.Composition.DiagramTitles...),
-			homeMoves:         append([]architecture.ComponentHomeMove(nil), durable.Composition.HomeMoves...),
-			references:        append([]architecture.ReferenceAppearanceChange(nil), durable.Composition.References...),
-			candidate:         durable.Candidate, generation: durable.Generation,
-		}
+		record := pendingFromDurableChangeSet(durable)
 		if durable.ValidationError != nil {
 			h.recordCandidateValidation(record, durable.ValidationError)
 		}
@@ -808,7 +820,35 @@ func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architectur
 	}
 	h.changeSets = nextRecords
 	h.unavailableChangeSets = nextUnavailable
+	reviews, unavailableReviews, reviewErr := h.architecture.LoadReviews(ctx, snapshot.StoreID(), "")
+	if reviewErr != nil {
+		return reviewErr
+	}
+	h.reviews = make(map[string]architecture.ReviewSubmission, len(reviews))
+	for _, review := range reviews {
+		h.reviews[review.ID] = review
+	}
+	h.unavailableReviews = unavailableReviews
 	return nil
+}
+
+func pendingFromDurableChangeSet(durable architecture.ChangeSet) *pendingChangeSet {
+	record := &pendingChangeSet{
+		id: durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
+		appliedRevision: durable.AppliedRevision, refObject: durable.RefObject,
+		storeID: durable.BaseSnapshot.StoreID(), baseRevision: durable.BaseRevision, baseSnapshot: durable.BaseSnapshot,
+		changes:           append([]architecture.ComponentChange(nil), durable.Changes...),
+		newComponentHomes: append([]architecture.NewComponentHome(nil), durable.Composition.NewComponentHomes...),
+		detailDiagrams:    append([]architecture.DetailDiagramChange(nil), durable.Composition.DetailDiagrams...),
+		diagramTitles:     append([]architecture.DiagramTitleChange(nil), durable.Composition.DiagramTitles...),
+		homeMoves:         append([]architecture.ComponentHomeMove(nil), durable.Composition.HomeMoves...),
+		references:        append([]architecture.ReferenceAppearanceChange(nil), durable.Composition.References...),
+		candidate:         durable.Candidate, generation: durable.Generation,
+	}
+	if durable.Review != nil && durable.Candidate != nil {
+		record.review = &reviewBinding{baseRevision: durable.Review.BaseRevision, candidateTree: durable.Review.CandidateTree, generation: durable.Review.Generation, candidate: *durable.Candidate}
+	}
+	return record
 }
 
 func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.ChangeSet {
@@ -871,16 +911,23 @@ func (h *Handler) currentArchitectureResponseLocked() architectureResponse {
 	if h.loadedSnapshot == nil || h.loadedProject == nil {
 		return architectureResponse{}
 	}
-	return h.responseForLoadedProjectLocked(*h.loadedSnapshot, nil, h.loadedStale, h.acceptedDiff)
+	result := h.responseForLoadedProjectLocked(*h.loadedSnapshot, nil, h.loadedStale, h.acceptedDiff)
+	if h.acceptedIndeterminate {
+		result.ActionError = errorRefreshFailed
+	}
+	return result
 }
 
 func (h *Handler) clearLoadedProjectLocked() {
 	h.loadedSnapshot = nil
 	h.loadedProject = nil
 	h.loadedStale = false
+	h.acceptedIndeterminate = false
 	h.acceptedDiff = ""
 	h.changeSets = make(map[string]*pendingChangeSet)
 	h.unavailableChangeSets = nil
+	h.reviews = make(map[string]architecture.ReviewSubmission)
+	h.unavailableReviews = nil
 }
 
 func (h *Handler) matchesLoadedProjectLocked(projectSlug, storeID string) bool {
@@ -937,6 +984,7 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 		return h.refreshResultLocked(errorRefreshUnavailable, http.StatusConflict)
 	}
 	if observed == loaded.Revision() && !h.loadedStale {
+		h.acceptedIndeterminate = false
 		return h.currentArchitectureResponseLocked(), "", http.StatusOK
 	}
 
@@ -990,6 +1038,7 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 			h.loadedProject.projectSlug = loaded.ProjectSlug()
 			h.loadedProject.validatedCurrent = nil
 			h.loadedStale = false
+			h.acceptedIndeterminate = false
 			return h.currentArchitectureResponseLocked(), "", http.StatusOK
 		}
 		h.markKnownNonCurrentLocked()
@@ -1007,6 +1056,7 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 	h.loadedProject.projectSlug = replacement.ProjectSlug()
 	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
+	h.acceptedIndeterminate = false
 	h.acceptedDiff = ""
 	if err := h.loadChangeSetsLocked(ctx, replacement); err != nil {
 		h.loadedStale = true
@@ -1016,6 +1066,9 @@ func (h *Handler) refreshArchitectureLocked(ctx context.Context, payload archite
 }
 
 func (h *Handler) refreshResultLocked(actionError string, status int) (architectureResponse, string, int) {
+	if actionError == errorRefreshFailed {
+		h.acceptedIndeterminate = true
+	}
 	result := h.currentArchitectureResponseLocked()
 	result.ActionError = actionError
 	return result, actionError, status
@@ -1023,6 +1076,7 @@ func (h *Handler) refreshResultLocked(actionError string, status int) (architect
 
 func (h *Handler) markKnownNonCurrentLocked() {
 	h.loadedStale = true
+	h.acceptedIndeterminate = false
 	if h.loadedProject != nil {
 		h.loadedProject.validatedCurrent = nil
 	}
@@ -1049,6 +1103,9 @@ func (h *Handler) discardChangesLocked(ctx context.Context, payload architecture
 	}
 	if h.loadedStale {
 		return architectureResponse{}, errorArchitectureStale
+	}
+	if h.acceptedIndeterminate {
+		return architectureResponse{}, errorRefreshFailed
 	}
 	if !h.matchesExpectedPendingGenerationLocked(payload.ChangeSetID, payload.ExpectedGeneration, payload.PendingGenerationObserved) {
 		return architectureResponse{}, errorChangesElsewhere
@@ -1144,7 +1201,15 @@ func (h *Handler) createChangeSet(response http.ResponseWriter, request *http.Re
 	}
 	h.stateMutex.Lock()
 	defer h.stateMutex.Unlock()
-	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) || h.loadedSnapshot == nil || h.loadedStale || payload.AcceptedRevision != h.loadedSnapshot.Revision() {
+	if !h.matchesLoadedProjectLocked(payload.ProjectSlug, payload.StoreID) || h.loadedSnapshot == nil {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
+		return
+	}
+	if h.acceptedIndeterminate {
+		writeJSON(response, http.StatusServiceUnavailable, errorResponse{Code: errorRefreshFailed})
+		return
+	}
+	if h.loadedStale || payload.AcceptedRevision != h.loadedSnapshot.Revision() {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return
 	}
@@ -1190,6 +1255,10 @@ func (h *Handler) editChangeSetText(response http.ResponseWriter, request *http.
 	}
 	if h.loadedStale {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
+		return
+	}
+	if h.acceptedIndeterminate {
+		writeJSON(response, http.StatusServiceUnavailable, errorResponse{Code: errorRefreshFailed})
 		return
 	}
 	current := h.changeSetLocked(payload.ChangeSetID)
@@ -1313,6 +1382,10 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 	}
 	if h.loadedStale {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
+		return
+	}
+	if h.acceptedIndeterminate {
+		writeJSON(response, http.StatusServiceUnavailable, errorResponse{Code: errorRefreshFailed})
 		return
 	}
 	accepted := *h.loadedSnapshot
@@ -1499,6 +1572,10 @@ func (h *Handler) writableV2StateLocked(response http.ResponseWriter, payload di
 	}
 	if h.loadedStale {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorArchitectureStale})
+		return architecture.Snapshot{}, nil, false
+	}
+	if h.acceptedIndeterminate {
+		writeJSON(response, http.StatusServiceUnavailable, errorResponse{Code: errorRefreshFailed})
 		return architecture.Snapshot{}, nil, false
 	}
 	accepted := *h.loadedSnapshot
@@ -1960,6 +2037,9 @@ func (h *Handler) reviewChangesLocked(ctx context.Context, payload architectureA
 	if h.loadedStale {
 		return architectureResponse{}, errorArchitectureStale, http.StatusConflict
 	}
+	if h.acceptedIndeterminate {
+		return architectureResponse{}, errorRefreshFailed, http.StatusConflict
+	}
 	if !h.matchesExpectedPendingGenerationLocked(payload.ChangeSetID, payload.ExpectedGeneration, payload.PendingGenerationObserved) {
 		return architectureResponse{}, errorChangesElsewhere, http.StatusConflict
 	}
@@ -2002,8 +2082,12 @@ func (h *Handler) reviewChangesLocked(ctx context.Context, payload architectureA
 		diff: string(diff), candidate: candidate,
 	}
 	if current.review != nil && current.review.baseRevision == proposed.review.baseRevision &&
-		current.review.candidateTree == proposed.review.candidateTree && current.review.generation == proposed.review.generation &&
-		current.review.diff == proposed.review.diff {
+		current.review.candidateTree == proposed.review.candidateTree && current.review.generation == proposed.review.generation {
+		// The durable binding already identifies this exact review. Refresh only
+		// the derived in-memory presentation after a process restart; do not
+		// manufacture another semantically identical state commit.
+		current.review.diff = proposed.review.diff
+		current.review.candidate = proposed.review.candidate
 		result := h.responseForLoadedProjectLocked(*h.loadedSnapshot, current, false, h.acceptedDiff)
 		result.ActionChangeSetID = current.id
 		return result, "", http.StatusOK
@@ -2043,6 +2127,9 @@ func (h *Handler) acceptChangesLocked(payload acceptChangesRequest) (architectur
 	}
 	if h.loadedStale {
 		return architectureResponse{}, errorArchitectureStale, http.StatusConflict, false
+	}
+	if h.acceptedIndeterminate {
+		return architectureResponse{}, errorRefreshFailed, http.StatusServiceUnavailable, false
 	}
 	snapshot := *h.loadedSnapshot
 	if receipt := h.changeSets[payload.ChangeSetID]; receipt != nil && receipt.lifecycle == "applied" && appliedReceiptMatches(receipt, payload) {
@@ -2199,6 +2286,7 @@ func (h *Handler) acceptChangesLocked(payload acceptChangesRequest) (architectur
 	h.loadedProject.projectSlug = acceptedSnapshot.ProjectSlug()
 	h.loadedProject.validatedCurrent = nil
 	h.loadedStale = false
+	h.acceptedIndeterminate = false
 	result := h.responseForLoadedProjectLocked(acceptedSnapshot, applied, false, h.acceptedDiff)
 	result.ActionChangeSetID = applied.id
 	return result, "", http.StatusOK, false

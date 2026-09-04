@@ -1830,6 +1830,126 @@ dd {
   padding: 10px 0;
 }
 
+.review-composer,
+.submitted-review-details,
+.submitted-review-list {
+  border-top: 1px solid var(--line);
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+}
+
+.review-composer {
+  display: grid;
+  gap: 1rem;
+}
+
+.review-composer label,
+.anchored-comment-composer {
+  display: grid;
+  gap: .4rem;
+}
+
+.review-composer input,
+.review-composer select,
+.review-composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.field-optional,
+.submitted-review-byline,
+.review-age-note,
+.submitted-review-list button span,
+.submitted-review-comments > li > span,
+.review-comment-drafts > li > span {
+  color: var(--muted);
+  font-size: .78rem;
+  letter-spacing: .03em;
+}
+
+.submitted-review-context {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.submitted-review-body {
+  margin-top: 1rem;
+}
+
+.submitted-review-comments,
+.review-comment-drafts,
+.submitted-review-list ul {
+  display: grid;
+  gap: .75rem;
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.submitted-review-comments li,
+.review-comment-drafts li {
+  border-left: 3px solid var(--accent);
+  padding-left: .85rem;
+}
+
+.review-anchor-excerpt {
+  margin: .45rem 0;
+  max-height: 10rem;
+  overflow: auto;
+  border-left: 3px solid color-mix(in srgb, var(--ink) 20%, transparent);
+  padding: .5rem .7rem;
+  background: color-mix(in srgb, var(--paper) 58%, transparent);
+  color: var(--muted-ink);
+  font: .78rem/1.55 var(--mono);
+  white-space: pre-wrap;
+}
+
+.submitted-review-list button {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  text-align: left;
+}
+
+.anchored-comment-composer {
+  background: color-mix(in srgb, var(--paper) 82%, var(--ink));
+  padding: 1rem;
+}
+
+.review-line-picker > div {
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: 1fr 1fr;
+}
+
+.review-line-picker pre {
+  background: var(--ink);
+  color: var(--paper);
+  font-size: .78rem;
+  max-height: 15rem;
+  overflow: auto;
+  padding: .75rem;
+  white-space: pre-wrap;
+}
+
+.review-line-picker pre span {
+  display: block;
+}
+
+.review-line-picker pre b {
+  color: var(--muted-light, #b8b09e);
+  display: inline-block;
+  font-weight: 400;
+  margin-right: .75rem;
+  text-align: right;
+  width: 2.5rem;
+}
+
 .review-proposal-document > summary {
   color: var(--ink);
   cursor: pointer;

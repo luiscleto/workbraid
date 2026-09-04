@@ -477,7 +477,8 @@ describe('candidate review regressions', () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const proposalPath = `/projects/example-project/proposals/${changeSetID}`
     const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
-    window.history.replaceState({}, '', reviewPath)
+    window.history.replaceState({}, '', '/projects/example-project')
+    window.history.pushState({}, '', reviewPath)
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
     const user = userEvent.setup()
     render(<App />)
@@ -498,6 +499,10 @@ describe('candidate review regressions', () => {
     await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
     expect(window.location.pathname).toBe(reviewPath)
+
+    act(() => window.history.back())
+    expect(await screen.findByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
   })
 
   it('opens an applied review read-only without an update action', async () => {
@@ -734,6 +739,36 @@ describe('proposal workspace contexts', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    { origin: 'proposal', review: false, returnPath: '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', nextPath: '/projects/example-project' },
+    { origin: 'review', review: true, returnPath: '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review', nextPath: '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' },
+  ])('cancels New changes through history from a $origin without leaving a duplicate entry', async ({ review, returnPath, nextPath }) => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await selectShowing(user, 'Steady lantern')
+    if (review) await user.click(screen.getByRole('button', { name: 'Return to review' }))
+    expect(window.location.pathname).toBe(returnPath)
+    await user.click(screen.getByRole('button', { name: 'New changes' }))
+    await user.type(screen.getByLabelText('Name'), 'Not created')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(window.location.pathname).toBe(returnPath))
+    if (review) expect(screen.getByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    else expect(screen.getByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+
+    act(() => window.history.back())
+    await waitFor(() => expect(window.location.pathname).toBe(nextPath))
+    if (review) {
+      expect(screen.getByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    }
+  })
+
   it('guards a typed New changes name and drops it only after confirmed navigation', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -787,6 +822,10 @@ describe('proposal workspace contexts', () => {
     await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
     expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
     expect(window.location.pathname).toBe(proposalPath)
+
+    act(() => window.history.back())
+    expect(await screen.findByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
   })
 
   it('switches Accepted, valid, and invalid contexts locally without overlaying snapshots', async () => {

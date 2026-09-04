@@ -499,7 +499,7 @@ export function App() {
   const [creatingChangeSet, setCreatingChangeSet] = useState(false)
   const [newChangeSetName, setNewChangeSetName] = useState('')
   const workingPaneRef = useRef<HTMLElement>(null)
-  const newChangesReturnRef = useRef<{ changeSetID?: string; review: boolean }>({ review: false })
+  const newChangesPushedHistoryRef = useRef(false)
   const selectedContextIDRef = useRef(selectedContextID)
   selectedContextIDRef.current = selectedContextID
   const reviewVisibleRef = useRef(reviewVisible)
@@ -1084,8 +1084,9 @@ export function App() {
       }
       setArchitectureNotice('')
       if (state.kind === 'ready') {
-        if (!creatingChangeSet) newChangesReturnRef.current = { changeSetID: state.value.changes?.id, review: reviewVisibleRef.current }
-        if (window.location.pathname !== projectRoutePath(state.value.project_slug)) window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
+        const projectPath = projectRoutePath(state.value.project_slug)
+        if (!creatingChangeSet) newChangesPushedHistoryRef.current = window.location.pathname !== projectPath
+        if (window.location.pathname !== projectPath) window.history.pushState({}, '', projectPath)
         enterWorkspace({ ...state.value, changes: undefined, action_change_set_id: undefined }, state.value.components.length ? 'documentation' : 'empty', 'accepted')
         setReviewVisible(false)
       }
@@ -1157,7 +1158,9 @@ export function App() {
       return
     }
     if (intent.kind === 'route') {
-      await restoreRoute(intent.slug, intent.proposalChangeSetID, intent.reviewChangeSetID)
+      editorDirtyRef.current = false
+      setChangeSetTextDirty(false)
+      window.history.back()
       return
     }
     if (state.kind !== 'ready') return
@@ -1620,14 +1623,13 @@ export function App() {
                 onName={setNewChangeSetName}
                 onCreate={() => createChangeSet(result)}
                 onCancel={() => {
-                  const previous = newChangesReturnRef.current
-                  if (previous.review && previous.changeSetID) enterReviewRoute(result, previous.changeSetID, 'replace')
-                  else if (previous.changeSetID) enterProposalRoute(result, previous.changeSetID, 'replace')
-                  else {
-                    setCreatingChangeSet(false)
-                    setNewChangeSetName('')
-                    resetWorkingPaneScroll()
-                  }
+                  const shouldReturnThroughHistory = newChangesPushedHistoryRef.current
+                  newChangesPushedHistoryRef.current = false
+                  editorDirtyRef.current = false
+                  setCreatingChangeSet(false)
+                  setNewChangeSetName('')
+                  resetWorkingPaneScroll()
+                  if (shouldReturnThroughHistory) window.history.back()
                 }}
               />
             ) : review && result.changes ? (

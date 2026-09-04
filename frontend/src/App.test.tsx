@@ -5,7 +5,7 @@ import { App } from './App'
 
 const graphHarness = vi.hoisted(() => ({
   calls: [] as Array<{ elements?: Array<{ data: Record<string, unknown> }> }>,
-  nodeSelect: undefined as undefined | ((event: { target: { id: () => string } }) => void),
+  nodeSelect: undefined as undefined | ((event: { target: { id: () => string; data?: () => unknown } }) => void),
   edgeSelect: undefined as undefined | ((event: { target: { data: () => unknown } }) => void),
   fail: false,
 }))
@@ -463,14 +463,12 @@ describe('candidate review regressions', () => {
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Human reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
-    await user.type(screen.getByRole('textbox', { name: /Overall note/ }), 'Please revise this.')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'component_markdown')
-    await user.clear(screen.getByRole('spinbutton', { name: 'Start line' }))
-    await user.type(screen.getByRole('spinbutton', { name: 'Start line' }), '2')
-    await user.clear(screen.getByRole('spinbutton', { name: 'End line' }))
-    await user.type(screen.getByRole('spinbutton', { name: 'End line' }), '2')
-    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Clarify this line.')
-    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await user.type(screen.getByRole('textbox', { name: /Review summary/ }), 'Please revise this.')
+    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Comment on lines' }))
+    await user.click(within(screen.getByRole('listbox', { name: 'Worker updated lines source lines' })).getByRole('option', { name: /2Candidate documentation/ }))
+    const commentEditor = screen.getByRole('region', { name: /^Comment on/ })
+    await user.type(within(commentEditor).getByRole('textbox', { name: 'Comment' }), 'Clarify this line.')
+    await user.click(within(commentEditor).getByRole('button', { name: 'Add comment' }))
     await user.click(screen.getByRole('button', { name: 'Submit review' }))
 
     expect(requestBody(fetchMock, 1)).toMatchObject({
@@ -539,6 +537,126 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('navigation', { name: 'Diagrams and components' })).not.toHaveTextContent('Later Worker')
   })
 
+  it('offers clear routes out of an exact submitted review while keeping its history compact', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => response(submittedReviewArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    const navigation = screen.getByRole('navigation', { name: 'Review navigation' })
+    expect(within(navigation).getByRole('button', { name: 'Current review' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Proposal workspace' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Accepted workspace' })).toBeInTheDocument()
+    const history = screen.getByRole('region', { name: 'Submitted reviews' })
+    expect(within(history).getByText(/Review history/).closest('details')).not.toHaveAttribute('open')
+
+    await user.click(within(navigation).getByRole('button', { name: 'Current review' }))
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/review`)
+    expect(screen.getByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+  })
+
+  it('marks exact submitted comments in the navigator, map and Diagram comments dock', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewID = '77777777-7777-4777-8777-777777777777'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
+    const submitted = submittedReviewArchitecture() as Record<string, any>
+    const review = submitted.submitted_review
+    review.comments = [
+      { id: '10000000-0000-4000-8000-000000000001', body: 'Diagram note.', anchor: { kind: 'diagram', side: 'with_changes', diagram_id: root } },
+      { id: '10000000-0000-4000-8000-000000000002', body: 'Component note.', anchor: { kind: 'component', side: 'with_changes', component_id: worker } },
+      { id: '10000000-0000-4000-8000-000000000003', body: 'Placement note.', anchor: { kind: 'composition', side: 'with_changes', diagram_id: root, component_id: worker, aspect: 'home' } },
+      { id: '10000000-0000-4000-8000-000000000004', body: 'Relationship note.', anchor: { kind: 'relationship', side: 'with_changes', source_component_id: worker, target_component_id: external, label: 'invokes', occurrence: 1 } },
+    ]
+    review.comment_count = review.comments.length
+    submitted.review_submissions = [review]
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => response(architecture()))
+      .mockImplementationOnce(() => response(submitted)))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+    const navigator = screen.getByRole('navigation', { name: 'Diagrams and components' })
+    const diagramMarker = within(navigator).getByRole('button', { name: '1 review comment on System' })
+    expect(within(navigator).getByRole('button', { name: '2 review comments on Worker updated' })).toBeInTheDocument()
+    await user.click(diagramMarker)
+    expect(screen.getByRole('tab', { name: 'Comments' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('list', { name: 'Diagram comments' })).toHaveTextContent('Diagram note.')
+
+    await waitFor(() => expect(graphHarness.calls.length).toBeGreaterThan(0))
+    let elements = graphHarness.calls.at(-1)?.elements ?? []
+    const workerNode = elements.find((element) => element.data.id === worker)
+    expect(workerNode?.data.annotationCount).toBe(2)
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => worker, data: () => workerNode?.data } }))
+    expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(1)
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Component note.')
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Placement note.')
+
+    elements = graphHarness.calls.at(-1)?.elements ?? []
+    const relationshipEdge = elements.find((element) => element.data.key === 'edge-with')
+    expect(relationshipEdge?.data.annotationCount).toBe(1)
+    act(() => graphHarness.edgeSelect?.({ target: { data: () => relationshipEdge?.data } }))
+    expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(2)
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Relationship note.')
+
+    await user.click(screen.getByRole('button', { name: 'Close comments on Worker updated' }))
+    expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(1)
+
+    await user.click(within(navigator).getByRole('button', { name: 'Detail' }))
+    expect(within(navigator).getByRole('heading', { name: 'Comments elsewhere' })).toBeInTheDocument()
+    const elsewhereMarker = within(navigator).getByRole('button', { name: '2 review comments on Worker updated' })
+    await user.click(elsewhereMarker)
+    expect(within(navigator).getByRole('button', { name: 'System, Changed' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigator).getByRole('button', { name: 'Worker updated, Content changed' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Component note.')
+
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(screen.queryByLabelText('Open review comments')).not.toBeInTheDocument()
+  })
+
+  it('selects, edits and removes an exact proposal Markdown line-range comment', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = reviewedArchitecture() as Record<string, any>
+    current.changes.proposal_markdown = '# Direction\n\nReview this exact proposal.\n'
+    vi.stubGlobal('fetch', vi.fn(() => response(current)))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    await user.click(within(screen.getByRole('group', { name: 'Proposal' })).getByRole('button', { name: 'Comment on lines' }))
+    const source = screen.getByRole('listbox', { name: 'Proposal lines source lines' })
+    const lines = within(source).getAllByRole('option')
+    await user.click(lines[0])
+    await user.keyboard('{Shift>}')
+    await user.click(lines[2])
+    await user.keyboard('{/Shift}')
+    expect(lines[0]).toHaveAttribute('aria-selected', 'true')
+    expect(lines[1]).toHaveAttribute('aria-selected', 'true')
+    expect(lines[2]).toHaveAttribute('aria-selected', 'true')
+    const editor = screen.getByRole('region', { name: 'Comment on Proposal lines' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Clarify the direction.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+
+    const draft = screen.getByText('Clarify the direction.').closest('li')
+    expect(draft).not.toBeNull()
+    expect(draft).toHaveTextContent('Proposal lines 1–3')
+    await user.click(within(draft!).getByRole('button', { name: 'Edit' }))
+    const editComment = within(draft!).getByRole('textbox', { name: 'Edit comment' })
+    await user.clear(editComment)
+    await user.type(editComment, 'Clarify all three lines.')
+    await user.click(within(draft!).getByRole('button', { name: 'Save' }))
+    const updatedDraft = screen.getByText('Clarify all three lines.').closest('li')
+    expect(updatedDraft).not.toBeNull()
+    await user.click(within(updatedDraft!).getByRole('button', { name: 'Remove' }))
+    expect(screen.queryByText('Clarify all three lines.')).not.toBeInTheDocument()
+  })
+
   it('keeps earlier submitted feedback discoverable after proposal iteration invalidates Review changes', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}`)
@@ -558,7 +676,9 @@ describe('candidate review regressions', () => {
     expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Submitted reviews' })).toHaveTextContent('Changes requested')
     expect(screen.getByRole('region', { name: 'Submitted reviews' })).toHaveTextContent('earlier version')
-    await user.click(within(screen.getByRole('region', { name: 'Submitted reviews' })).getByRole('button'))
+    const submittedReviews = screen.getByRole('region', { name: 'Submitted reviews' })
+    await user.click(within(submittedReviews).getByText(/Review history/))
+    await user.click(within(submittedReviews).getByRole('button', { name: /Changes requested/ }))
     expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
   })
 
@@ -585,11 +705,12 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Composition reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'composition')
+    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Add comment' }))
     await user.click(screen.getByRole('button', { name: 'With changes' }))
-    expect(screen.getByRole('combobox', { name: 'Location' })).toHaveValue('composition')
-    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Keep this placement.')
-    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const commentEditor = screen.getByRole('region', { name: /^Comment on/ })
+    expect(commentEditor).toBeInTheDocument()
+    await user.type(within(commentEditor).getByRole('textbox', { name: 'Comment' }), 'Keep this placement.')
+    await user.click(within(commentEditor).getByRole('button', { name: 'Add comment' }))
     await user.click(screen.getByRole('button', { name: 'Submit review' }))
 
     expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{
@@ -620,9 +741,10 @@ describe('candidate review regressions', () => {
     await user.click(await screen.findByRole('button', { name: /Worker detail diagram link changed in System/ }))
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Hierarchy reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'composition')
-    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Keep the detail link.')
-    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Add comment' }))
+    const commentEditor = screen.getByRole('region', { name: /^Comment on/ })
+    await user.type(within(commentEditor).getByRole('textbox', { name: 'Comment' }), 'Keep the detail link.')
+    await user.click(within(commentEditor).getByRole('button', { name: 'Add comment' }))
     await user.click(screen.getByRole('button', { name: 'Submit review' }))
 
     expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{ anchor: {
@@ -836,7 +958,7 @@ describe('candidate review regressions', () => {
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
     expect(screen.getByText('Accepted proposal')).toBeInTheDocument()
     expect(screen.getByText('No proposal document.')).toBeInTheDocument()
-    expect(screen.getByText('Inspect the visual change and complete exact diff.')).toBeInTheDocument()
+    expect(screen.getByText('Review the proposed architecture and its complete file changes.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'View proposal' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Continue editing' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()

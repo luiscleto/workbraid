@@ -45,7 +45,8 @@ type ReviewDiagramRelationshipProjection = {
   target_node_key: string
 }
 
-export type ReviewRelationshipSelection = ReviewMapRelationshipChange & {
+export type ReviewRelationshipSelection = Omit<ReviewMapRelationshipChange, 'status'> & {
+  status: 'added' | 'removed' | 'unchanged'
   source_title: string
   target_title: string
   review_side?: 'with' | 'before'
@@ -65,9 +66,15 @@ type ArchitectureMapProps = {
   selectedRelationshipKey?: string
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
   externalReferences?: ReactNode
+  comments?: ReactNode
+  commentsOpenSignal?: number
+  annotationNodes?: Record<string, number>
+  annotationRelationships?: Record<string, number>
+  onSelectNodeAnnotation?: (id: string) => void
+  onSelectRelationshipAnnotation?: (key: string) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships'>
 
 export function ArchitectureMap({
   revision,
@@ -83,6 +90,12 @@ export function ArchitectureMap({
   selectedRelationshipKey,
   onSelectRelationship,
   externalReferences,
+  comments,
+  commentsOpenSignal,
+  annotationNodes = {},
+  annotationRelationships = {},
+  onSelectNodeAnnotation,
+  onSelectRelationshipAnnotation,
 }: ArchitectureMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
@@ -90,8 +103,11 @@ export function ArchitectureMap({
   const syncBoundaryCaptions = useRef<() => void>(() => undefined)
   const selectHandler = useRef(onSelect)
   const relationshipHandler = useRef(onSelectRelationship)
+  const nodeAnnotationHandler = useRef(onSelectNodeAnnotation)
+  const relationshipAnnotationHandler = useRef(onSelectRelationshipAnnotation)
   const [renderFailed, setRenderFailed] = useState(false)
   const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))].sort().join('\u0000')
+  const annotationKey = JSON.stringify([annotationNodes, annotationRelationships])
   // A revision-pinned projection intentionally ignores response-object churn
   // caused by pending edits at the same accepted revision. A review revision is
   // the bound candidate tree or base commit and carries one stable layout basis.
@@ -101,12 +117,16 @@ export function ArchitectureMap({
     reviewComponents,
     reviewRelationships,
     reviewDiagramID,
-  }), [revision, reviewSide, layoutKey])
+    annotationNodes,
+    annotationRelationships,
+  }), [revision, reviewSide, layoutKey, annotationKey])
 
   useEffect(() => {
     selectHandler.current = onSelect
     relationshipHandler.current = onSelectRelationship
-  }, [onSelect, onSelectRelationship])
+    nodeAnnotationHandler.current = onSelectNodeAnnotation
+    relationshipAnnotationHandler.current = onSelectRelationshipAnnotation
+  }, [onSelect, onSelectRelationship, onSelectNodeAnnotation, onSelectRelationshipAnnotation])
 
   useEffect(() => {
     if (!container.current) return
@@ -116,14 +136,27 @@ export function ArchitectureMap({
       instance = cytoscape({
         container: container.current,
         elements,
-        layout: { name: 'preset', animate: false, fit: true, padding: 34 },
+        layout: { name: 'preset', animate: false, fit: true, padding: 72 },
         minZoom: 0.35,
         maxZoom: 2.5,
         style: mapStyles,
       })
-      instance.on('tap', 'node', (event) => selectHandler.current(event.target.id()))
+      instance.on('tap', 'node', (event) => {
+        const data = typeof event.target.data === 'function' ? event.target.data() as { annotationCount?: number; annotationNodeID?: string; annotationRelationshipKey?: string } : {}
+        if (data.annotationNodeID) {
+          nodeAnnotationHandler.current?.(data.annotationNodeID)
+          return
+        }
+        if (data.annotationRelationshipKey) {
+          relationshipAnnotationHandler.current?.(data.annotationRelationshipKey)
+          return
+        }
+        selectHandler.current(event.target.id())
+        if (data.annotationCount) nodeAnnotationHandler.current?.(event.target.id())
+      })
       instance.on('tap', 'edge', (event) => {
-        const data = event.target.data() as ReviewRelationshipSelection & { reviewStatus?: string }
+        const data = event.target.data() as ReviewRelationshipSelection & { reviewStatus?: string; annotationCount?: number }
+        if (data.annotationCount) relationshipAnnotationHandler.current?.(data.key)
         if (data.reviewStatus && relationshipHandler.current) {
           relationshipHandler.current({
             key: data.key,
@@ -202,8 +235,9 @@ export function ArchitectureMap({
   ) : null
   const hasExternalReferences = Boolean(externalReferences)
   const hasReviewControls = Boolean(reviewControls)
+  const hasComments = Boolean(comments)
   const reviewDockIdentity = reviewSide ? revision : ''
-  const [dockPane, setDockPane] = useState<'changes' | 'external'>('changes')
+  const [dockPane, setDockPane] = useState<'changes' | 'external' | 'comments'>('changes')
   const [dockCollapsed, setDockCollapsed] = useState(false)
 
   useEffect(() => {
@@ -212,25 +246,46 @@ export function ArchitectureMap({
       return
     }
     if (!hasReviewControls && hasExternalReferences) setDockPane('external')
-  }, [reviewDockIdentity, hasReviewControls, hasExternalReferences])
+    else if (!hasReviewControls && !hasExternalReferences && hasComments) setDockPane('comments')
+  }, [reviewDockIdentity, hasReviewControls, hasExternalReferences, hasComments])
+
+  useEffect(() => {
+    if (!commentsOpenSignal || !hasComments) return
+    setDockPane('comments')
+    setDockCollapsed(false)
+  }, [commentsOpenSignal, hasComments])
 
   const visibleDockPane = dockPane === 'changes' && hasReviewControls
     ? 'changes'
-    : hasExternalReferences ? 'external' : 'changes'
-  const bottomDock = hasReviewControls || hasExternalReferences ? (
+    : dockPane === 'external' && hasExternalReferences
+      ? 'external'
+      : hasComments ? 'comments' : hasExternalReferences ? 'external' : 'changes'
+  useEffect(() => {
+    const animationFrame = requestAnimationFrame(() => {
+      graph.current?.resize()
+      graph.current?.fit(undefined, 72)
+      syncBoundaryCaptions.current()
+    })
+    return () => cancelAnimationFrame(animationFrame)
+  }, [dockCollapsed, visibleDockPane, hasComments, hasExternalReferences, hasReviewControls])
+  const dockPanes = [
+    ...(hasReviewControls ? [{ id: 'changes' as const, label: 'Changes' }] : []),
+    ...(hasExternalReferences ? [{ id: 'external' as const, label: 'External references' }] : []),
+    ...(hasComments ? [{ id: 'comments' as const, label: 'Comments' }] : []),
+  ]
+  const bottomDock = dockPanes.length ? (
     <div className={`map-bottom-dock ${dockCollapsed ? 'collapsed' : ''}`}>
       <div className="map-bottom-dock-header">
-        {hasReviewControls && hasExternalReferences ? (
+        {dockPanes.length > 1 ? (
           <div className="map-bottom-dock-tabs" role="tablist" aria-label="Map information">
-            <button type="button" role="tab" aria-selected={visibleDockPane === 'changes'} aria-controls="map-bottom-dock-panel" onClick={() => setDockPane('changes')}>Changes</button>
-            <button type="button" role="tab" aria-selected={visibleDockPane === 'external'} aria-controls="map-bottom-dock-panel" onClick={() => setDockPane('external')}>External references</button>
+            {dockPanes.map((pane) => <button key={pane.id} type="button" role="tab" aria-selected={visibleDockPane === pane.id} aria-controls="map-bottom-dock-panel" onClick={() => setDockPane(pane.id)}>{pane.label}</button>)}
           </div>
-        ) : <strong>{hasReviewControls ? 'Changes' : 'External references'}</strong>}
+        ) : <strong>{dockPanes[0].label}</strong>}
         <button className="map-bottom-dock-collapse" type="button" aria-expanded={!dockCollapsed} aria-controls="map-bottom-dock-panel" onClick={() => setDockCollapsed((collapsed) => !collapsed)}>{dockCollapsed ? 'Expand' : 'Collapse'}</button>
       </div>
       {!dockCollapsed && (
-        <div className="map-bottom-dock-body" id="map-bottom-dock-panel" role={hasReviewControls && hasExternalReferences ? 'tabpanel' : 'region'} aria-label={visibleDockPane === 'changes' ? 'Changes' : 'External references'}>
-          {visibleDockPane === 'changes' ? reviewControls : externalReferences}
+        <div className="map-bottom-dock-body" id="map-bottom-dock-panel" role={dockPanes.length > 1 ? 'tabpanel' : 'region'} aria-label={dockPanes.find((pane) => pane.id === visibleDockPane)?.label}>
+          {visibleDockPane === 'changes' ? reviewControls : visibleDockPane === 'external' ? externalReferences : comments}
         </div>
       )}
     </div>
@@ -260,7 +315,7 @@ export function ArchitectureMap({
         </div>
       )}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
-        graph.current?.fit(undefined, 34)
+        graph.current?.fit(undefined, 72)
         syncBoundaryCaptions.current()
       }}>Fit map</button>}
       {bottomDock}
@@ -298,7 +353,7 @@ function ReviewChangeControls({
   }
   return (
     <div className="map-review-controls" aria-label="Visual changes">
-      <p className="map-review-key"><span>＋ Added</span><span>△ Content changed</span><span>− − Removed relationship</span></p>
+      <p className="map-review-key"><span>＋ Added</span><span>△ Content changed</span><span>− Removed relationship</span></p>
       <ul>
         {visibleComponentChanges.map((change) => {
           const title = titles.get(change.component_id)
@@ -351,6 +406,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
   const titleByID = new Map(components.map((component) => [component.id, component.title]))
   const nodes: ElementDefinition[] = components.map((component) => {
     const status = componentStatus.get(component.id) ?? (options.reviewSide ? 'unchanged' : '')
+    const annotationCount = options.annotationNodes?.[component.id] ?? 0
     return {
       data: {
         id: component.id,
@@ -359,6 +415,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
         nodeKind: component.node_kind ?? '',
         boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
+        annotationCount,
       },
       position: positions[component.component_id ?? component.id],
     }
@@ -371,6 +428,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
     }
   }
   const seen = new Map<string, number>()
+  const occurrences = new Map<string, number>()
   const edges: ElementDefinition[] = []
   for (const source of components) {
     for (let relationshipIndex = 0; relationshipIndex < (source.relationships ?? []).length; relationshipIndex += 1) {
@@ -380,18 +438,24 @@ export function projectionElements(components: MapComponent[], options: Projecti
       seen.set(pair, index + 1)
       const count = grouped.get(pair) ?? 1
       const key = relationship.projection_key ?? `projection:${source.id}:${relationship.target_id}:${index}`
+      const sourceComponentID = source.component_id ?? source.id
+      const targetComponentID = components.find((component) => component.id === relationship.target_id)?.component_id ?? relationship.target_id
+      const exactFact = `${sourceComponentID}\u0000${targetComponentID}\u0000${relationship.label}`
+      const occurrence = (occurrences.get(exactFact) ?? 0) + 1
+      occurrences.set(exactFact, occurrence)
       const relationshipChange = relationshipStatus.get(key)
       const change = relationshipChange?.change
       const reviewProjection = relationshipChange?.projection
       const status = change?.status ?? (options.reviewSide ? 'unchanged' : '')
+      const annotationCount = options.annotationRelationships?.[key] ?? 0
       edges.push({
         data: {
           id: key,
           key,
           source: reviewProjection?.source_node_key ?? source.id,
           target: reviewProjection?.target_node_key ?? relationship.target_id,
-          source_id: change?.source_id ?? source.component_id ?? source.id,
-          target_id: change?.target_id ?? components.find((component) => component.id === relationship.target_id)?.component_id ?? relationship.target_id,
+          source_id: change?.source_id ?? sourceComponentID,
+          target_id: change?.target_id ?? targetComponentID,
           source_title: change?.source_title ?? source.title,
           target_title: change?.target_title ?? titleByID.get(relationship.target_id) ?? 'Component',
           label: relationship.label,
@@ -399,10 +463,11 @@ export function projectionElements(components: MapComponent[], options: Projecti
           distance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
           reviewStatus: status,
           status,
-          path: change?.path,
-          occurrence: change?.occurrence,
+          path: change?.path ?? (source.filename ? `components/${source.filename}` : ''),
+          occurrence: change?.occurrence ?? occurrence,
           before_key: change?.before_key,
           review_side: options.reviewSide,
+          annotationCount,
         },
       })
     }
@@ -443,7 +508,29 @@ export function projectionElements(components: MapComponent[], options: Projecti
       })
     }
   }
-  return [...nodes, ...edges]
+  const positionsByNodeID = new Map(nodes.map((node) => [String(node.data.id), node.position ?? { x: 0, y: 0 }]))
+  const annotationMarkers: ElementDefinition[] = []
+  for (const node of nodes) {
+    const count = Number(node.data.annotationCount ?? 0)
+    if (!count) continue
+    const position = node.position ?? { x: 0, y: 0 }
+    annotationMarkers.push({
+      data: { id: `annotation-node:${node.data.id}`, displayLabel: `✎ ${count}`, uiAnnotation: true, annotationNodeID: node.data.id },
+      position: { x: position.x + 58, y: position.y - 34 },
+    })
+  }
+  for (const edge of edges) {
+    const count = Number(edge.data.annotationCount ?? 0)
+    if (!count) continue
+    const source = positionsByNodeID.get(String(edge.data.source))
+    const target = positionsByNodeID.get(String(edge.data.target))
+    if (!source || !target) continue
+    annotationMarkers.push({
+      data: { id: `annotation-relationship:${edge.data.id}`, displayLabel: `✎ ${count}`, uiAnnotation: true, annotationRelationshipKey: edge.data.key },
+      position: { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 - 18 },
+    })
+  }
+  return [...nodes, ...edges, ...annotationMarkers]
 }
 
 export function deterministicPositions(componentIDs: string[]): Record<string, { x: number; y: number }> {
@@ -499,6 +586,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
   { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },
   { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 5, 'border-style': 'dashed', opacity: 1 } },
+  { selector: 'node[uiAnnotation]', style: { width: 32, height: 20, shape: 'round-rectangle', label: 'data(displayLabel)', color: '#68470f', 'background-color': '#f2dea0', 'border-color': '#a77b25', 'border-width': 1, 'font-size': 9, 'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center', opacity: 1, 'z-index': 20 } },
   {
     selector: 'edge',
     style: {
@@ -516,7 +604,9 @@ const mapStyles: cytoscape.StylesheetJson = [
       'text-background-color': '#f4ecd8',
       'text-background-opacity': 1,
       'text-background-padding': '2px',
-      'text-rotation': 'autorotate',
+      'text-rotation': 'none',
+      'text-wrap': 'wrap',
+      'text-max-width': '150px',
     },
   },
   { selector: 'edge[reviewStatus = "unchanged"]', style: { opacity: 0.38, 'line-style': 'dotted' } },

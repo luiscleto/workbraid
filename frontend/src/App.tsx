@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   ArchitectureMap,
   MapComponent,
@@ -182,6 +182,25 @@ type ReviewSubmission = ReviewSubmissionSummary & {
   review: ChangeReview
 }
 
+type ReviewSubmissionComment = ReviewSubmission['comments'][number]
+
+type ReviewAnnotationGroup = {
+  key: string
+  label: string
+  side?: ReviewAnchor['side']
+  comments: ReviewSubmissionComment[]
+}
+
+type ReviewCommentTarget = {
+  contextKey: string
+  label: string
+  anchor: ReviewAnchor
+  source?: string
+}
+
+type LocalReviewComment = ReviewSubmissionComment
+type ReviewPresentation = Pick<ReviewSubmission, 'review' | 'proposal_markdown'>
+
 type ReviewSnapshot = {
   revision: string
   format_version?: number
@@ -320,6 +339,54 @@ function relationshipIssueComponentName(changes: ChangesInProgress, component: P
   return target?.context ? `${title} — ${target.context}` : title
 }
 
+function reviewSideValue(side: ReviewSide): ReviewAnchor['side'] {
+  return side === 'before' ? 'before' : 'with_changes'
+}
+
+function annotationGroup(key: string, label: string, comments: ReviewSubmissionComment[], side?: ReviewAnchor['side']): ReviewAnnotationGroup | undefined {
+  return comments.length ? { key, label, comments, side } : undefined
+}
+
+function componentAnnotation(comments: ReviewSubmissionComment[] | undefined, side: ReviewAnchor['side'], componentID: string, label: string) {
+  return annotationGroup(
+    `component:${side}:${componentID}`,
+    label,
+    comments?.filter((comment) => comment.anchor.side === side && comment.anchor.component_id === componentID &&
+      (comment.anchor.kind === 'component' || comment.anchor.kind === 'component_markdown')) ?? [],
+    side,
+  )
+}
+
+function diagramAnnotation(comments: ReviewSubmissionComment[] | undefined, side: ReviewAnchor['side'], diagramID: string, label: string) {
+  return annotationGroup(
+    `diagram:${side}:${diagramID}`,
+    label,
+    comments?.filter((comment) => comment.anchor.side === side && comment.anchor.kind === 'diagram' && comment.anchor.diagram_id === diagramID) ?? [],
+    side,
+  )
+}
+
+function compositionAnnotation(comments: ReviewSubmissionComment[] | undefined, side: ReviewAnchor['side'], diagramID: string, componentID: string, label: string) {
+  return annotationGroup(
+    `composition:${side}:${diagramID}:${componentID}`,
+    label,
+    comments?.filter((comment) => comment.anchor.side === side && comment.anchor.kind === 'composition' &&
+      comment.anchor.diagram_id === diagramID && comment.anchor.component_id === componentID) ?? [],
+    side,
+  )
+}
+
+function relationshipAnnotation(comments: ReviewSubmissionComment[] | undefined, side: ReviewAnchor['side'], sourceID: string, targetID: string, label: string, occurrence: number, context: string) {
+  return annotationGroup(
+    `relationship:${side}:${sourceID}:${targetID}:${label}:${occurrence}`,
+    context,
+    comments?.filter((comment) => comment.anchor.side === side && comment.anchor.kind === 'relationship' &&
+      comment.anchor.source_component_id === sourceID && comment.anchor.target_component_id === targetID &&
+      comment.anchor.label === label && comment.anchor.occurrence === occurrence) ?? [],
+    side,
+  )
+}
+
 type DiagramComponent = AuthoringComponent & { appearance: DiagramAppearance }
 
 function componentsForDiagram(result: Pick<ArchitectureResult, 'components'> | ReviewSnapshot, diagram?: DiagramProjection): DiagramComponent[] {
@@ -378,7 +445,7 @@ function componentStatusText(status: Extract<ReviewFocus, { kind: 'component' }>
 }
 
 function relationshipStatusText(status: Extract<ReviewFocus, { kind: 'relationship' }>['status']) {
-  return status === 'added' ? 'Added' : 'Removed'
+  return status === 'added' ? 'Added' : status === 'removed' ? 'Removed' : 'Unchanged'
 }
 
 function ShowingMenu({
@@ -541,6 +608,9 @@ export function App() {
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
   const [creatingChangeSet, setCreatingChangeSet] = useState(false)
   const [newChangeSetName, setNewChangeSetName] = useState('')
+  const [openReviewAnnotations, setOpenReviewAnnotations] = useState<Record<string, ReviewAnnotationGroup>>({})
+  const [diagramCommentsSignal, setDiagramCommentsSignal] = useState(0)
+  const [localReviewComments, setLocalReviewComments] = useState<LocalReviewComment[]>([])
   const workingPaneRef = useRef<HTMLElement>(null)
   const newChangesPushedHistoryRef = useRef(false)
   const selectedContextIDRef = useRef(selectedContextID)
@@ -550,6 +620,20 @@ export function App() {
   const resetWorkingPaneScroll = useCallback(() => {
     if (workingPaneRef.current) workingPaneRef.current.scrollTop = 0
   }, [])
+  const toggleReviewAnnotation = useCallback((group: ReviewAnnotationGroup) => {
+    const targetSide = group.side === 'before' ? 'before' : group.side === 'with_changes' ? 'with' : undefined
+    const switchingSide = Boolean(targetSide && targetSide !== reviewSide)
+    if (targetSide) setReviewSide(targetSide)
+    setDiagramCommentsSignal((value) => value + 1)
+    setOpenReviewAnnotations((current) => {
+      if (current[group.key] && !switchingSide) {
+        const next = { ...current }
+        delete next[group.key]
+        return next
+      }
+      return { ...current, [group.key]: group }
+    })
+  }, [reviewSide])
 
   const enterWorkspace = useCallback((incoming: ArchitectureResult, task?: WorkspaceTask, requestedContextID?: string) => {
     const changeSets = incoming.change_sets ?? (incoming.changes ? [incoming.changes] : [])
@@ -698,6 +782,8 @@ export function App() {
   stateRef.current = state
 
   useEffect(() => {
+    setOpenReviewAnnotations({})
+    setLocalReviewComments([])
     if (!currentReview) {
       setReviewFocus(null)
       setReviewSelectionCleared(false)
@@ -1465,7 +1551,7 @@ export function App() {
       ? activeDiagramComponents ?? []
       : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
-    const mapComponents = diagramMapComponents ?? activeComponents
+    const mapComponents: MapComponent[] = diagramMapComponents ?? activeComponents
     const selected = activeComponents.find((component) => component.id === selectedComponentID)
     const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
     const diagramNodeTitles = new Map<string, string>()
@@ -1487,6 +1573,71 @@ export function App() {
     for (const change of review?.comparison.appearances ?? []) {
       if (!diagramReviewStatus.has(change.diagram_id)) diagramReviewStatus.set(change.diagram_id, 'Changed')
     }
+    const submittedReview = result.submitted_review
+    const reviewAnnotationComments = submittedReview?.comments ?? localReviewComments
+    const reviewPresentation = submittedReview ?? (review && result.changes
+      ? { review, proposal_markdown: result.changes.proposal_markdown }
+      : undefined)
+    const annotationSide = reviewSideValue(reviewSide)
+    const commentsForActiveDiagram = activeDiagram
+      ? reviewAnnotationComments.filter((comment) => comment.anchor.side === annotationSide &&
+        ((comment.anchor.kind === 'diagram' && comment.anchor.diagram_id === activeDiagram.id) ||
+          (comment.anchor.kind === 'composition' && comment.anchor.diagram_id === activeDiagram.id)))
+      : []
+    const commentedNavigationItems = new Map<string, {
+      diagram: DiagramProjection
+      component: AuthoringComponent
+      comments: ReviewSubmissionComment[]
+    }>()
+    if (review && diagramProjection.format_version === 2) {
+      for (const comment of reviewAnnotationComments) {
+        if (comment.anchor.side !== annotationSide ||
+          (comment.anchor.kind !== 'component' && comment.anchor.kind !== 'component_markdown' && comment.anchor.kind !== 'composition')) continue
+        const componentID = comment.anchor.component_id
+        const component = diagramProjection.components.find((candidate) => candidate.id === componentID)
+        const diagram = comment.anchor.kind === 'composition'
+          ? diagramProjection.diagrams?.find((candidate) => candidate.id === comment.anchor.diagram_id)
+          : diagramProjection.diagrams?.find((candidate) => candidate.appearances.some((appearance) =>
+            appearance.component_id === componentID && appearance.role === 'home'))
+        if (!component || !diagram) continue
+        const key = `${diagram.id}:${component.id}`
+        const existing = commentedNavigationItems.get(key)
+        if (existing) existing.comments.push(comment)
+        else commentedNavigationItems.set(key, { diagram, component, comments: [comment] })
+      }
+    }
+    const commentsOutsideActiveIndex = [...commentedNavigationItems.values()].filter((item) =>
+      item.diagram.id !== activeDiagram?.id || !activeComponents.some((component) => component.id === item.component.id))
+    const mapNodeAnnotationGroups: Record<string, ReviewAnnotationGroup> = {}
+    for (const component of mapComponents) {
+      const componentID = component.component_id ?? component.id
+      const componentComments = componentAnnotation(reviewAnnotationComments, annotationSide, componentID, component.title)?.comments ?? []
+      const placementComments = activeDiagram?.appearances.some((appearance) => appearance.component_id === componentID)
+        ? compositionAnnotation(reviewAnnotationComments, annotationSide, activeDiagram.id, componentID, `${component.title} placement`)?.comments ?? []
+        : []
+      const group = annotationGroup(`map-item:${annotationSide}:${activeDiagram?.id ?? ''}:${componentID}`, component.title,
+        [...componentComments, ...placementComments], annotationSide)
+      if (group) mapNodeAnnotationGroups[component.id] = group
+    }
+    const relationshipAnnotationGroups: Record<string, ReviewAnnotationGroup> = {}
+    if (activeDiagram) {
+      const occurrences = new Map<string, number>()
+      for (const relationship of activeDiagram.relationships) {
+        const fact = `${relationship.source_component_id}\u0000${relationship.target_component_id}\u0000${relationship.label}`
+        const occurrence = (occurrences.get(fact) ?? 0) + 1
+        occurrences.set(fact, occurrence)
+        const sourceTitle = diagramNodeTitles.get(relationship.source_node_key) ?? 'Component'
+        const targetTitle = diagramNodeTitles.get(relationship.target_node_key) ?? 'Component'
+        const group = relationshipAnnotation(reviewAnnotationComments, annotationSide, relationship.source_component_id, relationship.target_component_id,
+          relationship.label, occurrence, `${sourceTitle} — ${relationship.label} → ${targetTitle}`)
+        if (group) relationshipAnnotationGroups[relationship.key] = group
+      }
+    }
+    const activeDiagramReviewComments = [...new Map([
+      ...commentsForActiveDiagram,
+      ...Object.values(mapNodeAnnotationGroups).flatMap((group) => group.comments),
+      ...Object.values(relationshipAnnotationGroups).flatMap((group) => group.comments),
+    ].map((comment) => [comment.id, comment])).values()]
     const layoutComponentIDs = review
       ? [...new Set([...review.before.components, ...review.with_changes.components].map((component) => component.id))]
       : undefined
@@ -1586,6 +1737,32 @@ export function App() {
         ))}
       </nav>
     ) : undefined
+    const currentProposalRecord = submittedReview ? result.change_sets.find((changeSet) => changeSet.id === submittedReview.change_set_id) : undefined
+    const visibleAnnotationCards = Object.values(openReviewAnnotations).filter((group) => !group.side || group.side === annotationSide)
+    const dockListComments = visibleAnnotationCards.length
+      ? []
+      : activeDiagramReviewComments
+    const reviewCommentsDock = reviewPresentation && activeDiagram && (activeDiagramReviewComments.length > 0 || visibleAnnotationCards.length > 0) ? (
+      <div className="review-comments-dock">
+        {visibleAnnotationCards.length > 0 && <ReviewAnnotationCards groups={visibleAnnotationCards} review={reviewPresentation} onClose={(key) => {
+          setOpenReviewAnnotations((current) => {
+            const next = { ...current }
+            delete next[key]
+            return next
+          })
+        }} />}
+        {dockListComments.length > 0 && <ReviewDiagramComments
+          review={reviewPresentation}
+          comments={dockListComments}
+          onOpen={(comment) => toggleReviewAnnotation({
+            key: `dock-comment:${comment.id}`,
+            label: reviewAnchorPresentation(reviewPresentation, comment.anchor).label,
+            side: comment.anchor.side,
+            comments: [comment],
+          })}
+        />}
+      </div>
+    ) : undefined
     return (
       <main className="workspace-shell">
         <header className="application-frame">
@@ -1628,20 +1805,24 @@ export function App() {
                   {diagramProjection.diagrams?.map((diagram) => {
                     const reviewStatus = diagramReviewStatus.get(diagram.id)
                     const reviewClass = reviewStatus === 'Added' ? 'review-added' : reviewStatus ? 'review-content-changed' : ''
+                    const comments = diagramAnnotation(reviewAnnotationComments, annotationSide, diagram.id, diagram.title)
                     return (
                       <li key={diagram.id}>
-                        <button
-                          type="button"
-                          className={[diagram.id === activeDiagram?.id ? 'selected' : '', reviewClass].filter(Boolean).join(' ') || undefined}
-                          style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
-                          aria-label={[diagram.title, diagram.context, reviewStatus].filter(Boolean).join(', ')}
-                          aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
-                          onClick={() => selectDiagram(diagram.id)}
-                        >
-                          <span>{diagram.title}</span>
-                          {diagram.context && <small>{diagram.context}</small>}
-                          {reviewStatus && <small className="index-review-status">{reviewStatus}</small>}
-                        </button>
+                        <div className="index-entry-row">
+                          <button
+                            type="button"
+                            className={[diagram.id === activeDiagram?.id ? 'selected' : '', reviewClass].filter(Boolean).join(' ') || undefined}
+                            style={{ paddingLeft: `${16 + diagram.depth * 18}px` }}
+                            aria-label={[diagram.title, diagram.context, reviewStatus].filter(Boolean).join(', ')}
+                            aria-current={diagram.id === activeDiagram?.id ? 'page' : undefined}
+                            onClick={() => selectDiagram(diagram.id)}
+                          >
+                            <span>{diagram.title}</span>
+                            {diagram.context && <small>{diagram.context}</small>}
+                            {reviewStatus && <small className="index-review-status">{reviewStatus}</small>}
+                          </button>
+                          {comments && <AnnotationMarker group={comments} onToggle={() => { selectDiagram(diagram.id); setDiagramCommentsSignal((value) => value + 1) }} />}
+                        </div>
                       </li>
                     )
                   })}
@@ -1658,25 +1839,48 @@ export function App() {
                   const referenceHomeTitle = appearance?.role === 'reference' ? homeDiagramTitles.get(component.id) : undefined
                   const referenceContext = referenceHomeTitle ? `Included here · Lives in ${referenceHomeTitle}` : ''
                   const componentLabel = (titleCounts.get(component.title) ?? 0) > 1 ? `${component.title}, ${component.filename || component.id.slice(0, 8)}` : component.title
+                  const componentComments = componentAnnotation(reviewAnnotationComments, annotationSide, component.id, component.title)
+                  const placementComments = activeDiagram ? compositionAnnotation(reviewAnnotationComments, annotationSide, activeDiagram.id, component.id, `${component.title} placement`) : undefined
+                  const comments = annotationGroup(`item:${annotationSide}:${activeDiagram?.id ?? ''}:${component.id}`, component.title,
+                    [...(componentComments?.comments ?? []), ...(placementComments?.comments ?? [])], annotationSide)
                   return (
                   <li key={component.id}>
-                    <button
-                      type="button"
-                      className={`${component.id === selectedComponentID && !editor ? 'selected' : ''} ${review ? `review-${reviewStatus.replace('_', '-')}` : ''}`.trim()}
-                      aria-label={[componentLabel, referenceContext, statusLabel].filter(Boolean).join(', ')}
-                      aria-current={component.id === selectedComponentID && !editor ? 'page' : undefined}
-                      onClick={() => selectComponent(component.id)}
-                    >
-                      <span>{component.title}</span>
-                      {(titleCounts.get(component.title) ?? 0) > 1 && <small>{' '}{component.filename || component.id.slice(0, 8)}</small>}
-                      {referenceContext && <small className="appearance-note">{referenceContext}</small>}
-                      {statusLabel && <small className="index-review-status">{statusLabel}</small>}
-                    </button>
+                    <div className="index-entry-row">
+                      <button
+                        type="button"
+                        className={`${component.id === selectedComponentID && !editor ? 'selected' : ''} ${review ? `review-${reviewStatus.replace('_', '-')}` : ''}`.trim()}
+                        aria-label={[componentLabel, referenceContext, statusLabel].filter(Boolean).join(', ')}
+                        aria-current={component.id === selectedComponentID && !editor ? 'page' : undefined}
+                        onClick={() => selectComponent(component.id)}
+                      >
+                        <span>{component.title}</span>
+                        {(titleCounts.get(component.title) ?? 0) > 1 && <small>{' '}{component.filename || component.id.slice(0, 8)}</small>}
+                        {referenceContext && <small className="appearance-note">{referenceContext}</small>}
+                        {statusLabel && <small className="index-review-status">{statusLabel}</small>}
+                      </button>
+                      {comments && <AnnotationMarker group={comments} onToggle={() => { selectComponent(component.id); toggleReviewAnnotation(comments) }} />}
+                    </div>
                   </li>
                   )
                 })}
               </ul>
             ) : <p className="index-empty">No components</p>}
+            {commentsOutsideActiveIndex.length > 0 && (
+              <div className="commented-elsewhere">
+                <div className="index-heading"><h1>Comments elsewhere</h1></div>
+                <ul>{commentsOutsideActiveIndex.map(({ diagram, component, comments }) => {
+                  const group = annotationGroup(`elsewhere:${annotationSide}:${diagram.id}:${component.id}`, component.title, comments, annotationSide)!
+                  return <li key={`${diagram.id}:${component.id}`}>
+                    <div className="index-entry-row">
+                      <button type="button" aria-label={`${component.title}, in ${diagram.title}`} onClick={() => selectDiagram(diagram.id, component.id)}>
+                        <span>{component.title}</span><small>In {diagram.title}</small>
+                      </button>
+                      <AnnotationMarker group={group} onToggle={() => { selectDiagram(diagram.id, component.id); toggleReviewAnnotation(group) }} />
+                    </div>
+                  </li>
+                })}</ul>
+              </div>
+            )}
             {!review && authoringAvailable && (
               <button className="index-add" type="button" onClick={() => requestNavigation({ kind: 'add' })}>Add component</button>
             )}
@@ -1726,7 +1930,19 @@ export function App() {
                   selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
                   onSelectRelationship: selectRelationship,
                 } : {})}
+                annotationNodes={Object.fromEntries(Object.entries(mapNodeAnnotationGroups).map(([key, group]) => [key, group.comments.length]))}
+                annotationRelationships={Object.fromEntries(Object.entries(relationshipAnnotationGroups).map(([key, group]) => [key, group.comments.length]))}
+                onSelectNodeAnnotation={(id) => {
+                  const group = mapNodeAnnotationGroups[id]
+                  if (group) toggleReviewAnnotation(group)
+                }}
+                onSelectRelationshipAnnotation={(key) => {
+                  const group = relationshipAnnotationGroups[key]
+                  if (group) toggleReviewAnnotation(group)
+                }}
                 externalReferences={externalReferences}
+                comments={reviewCommentsDock}
+                commentsOpenSignal={diagramCommentsSignal}
               />
             )}
           </section>
@@ -1759,6 +1975,12 @@ export function App() {
                 activeReviewSubmission={result.submitted_review}
                 activeDiagram={activeDiagram}
                 onOpenSubmittedReview={(reviewID) => requestNavigation({ kind: 'submitted-review', changeSetID: result.changes!.id, reviewID })}
+                onOpenCurrentReview={currentProposalRecord?.review ? () => requestNavigation({ kind: 'review-result', result: { ...result, submitted_review: undefined, changes: currentProposalRecord } }) : undefined}
+                onOpenProposal={currentProposalRecord ? () => requestNavigation({ kind: 'context', id: currentProposalRecord.id }) : undefined}
+                onOpenAccepted={() => requestNavigation({ kind: 'context', id: 'accepted' })}
+                onOpenAnnotation={toggleReviewAnnotation}
+                localReviewComments={localReviewComments}
+                onLocalReviewComments={setLocalReviewComments}
                 onSubmitReview={(input) => submitReviewFeedback(result, input)}
                 onReviewSide={switchReviewSide}
                 onContinueEditing={() => leaveReviewRoute(result, true)}
@@ -1817,6 +2039,8 @@ export function App() {
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
                 onOpenSubmittedReview={(reviewID) => requestNavigation({ kind: 'submitted-review', changeSetID: result.changes!.id, reviewID })}
+                localReviewComments={localReviewComments}
+                onLocalReviewComments={setLocalReviewComments}
                 onReturnToReview={currentReview && !acceptanceUnknown ? () => {
                   requestNavigation({ kind: 'review-result', result })
                 } : undefined}
@@ -2164,6 +2388,12 @@ function ChangesTask({
   activeReviewSubmission,
   activeDiagram,
   onOpenSubmittedReview,
+  onOpenCurrentReview,
+  onOpenProposal,
+  onOpenAccepted,
+  onOpenAnnotation,
+  localReviewComments,
+  onLocalReviewComments,
   onSubmitReview,
   onReviewSide,
   onContinueEditing,
@@ -2197,6 +2427,12 @@ function ChangesTask({
   activeReviewSubmission?: ReviewSubmission
   activeDiagram?: DiagramProjection
   onOpenSubmittedReview?: (reviewID: string) => void
+  onOpenCurrentReview?: () => void
+  onOpenProposal?: () => void
+  onOpenAccepted?: () => void
+  onOpenAnnotation?: (group: ReviewAnnotationGroup) => void
+  localReviewComments: LocalReviewComment[]
+  onLocalReviewComments: (comments: LocalReviewComment[]) => void
   onSubmitReview?: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: { body: string; anchor: ReviewAnchor }[] }) => void
   onReviewSide?: (side: ReviewSide) => void
   onContinueEditing?: () => void
@@ -2221,6 +2457,19 @@ function ChangesTask({
   onDiscard: () => void
 }) {
   const changes = result.changes
+  const [commentTarget, setCommentTarget] = useState<ReviewCommentTarget>()
+  const [inlineCommentDirty, setInlineCommentDirty] = useState(false)
+  const [reviewFormDirty, setReviewFormDirty] = useState(false)
+  const localCommentSequence = useRef(0)
+  useEffect(() => {
+    setCommentTarget(undefined)
+    setInlineCommentDirty(false)
+    setReviewFormDirty(false)
+  }, [changes?.review?.reviewed_state, activeReviewSubmission?.id])
+  useEffect(() => {
+    if (!changes?.review || activeReviewSubmission) return
+    onTextDirty(reviewFormDirty || inlineCommentDirty || localReviewComments.length > 0)
+  }, [changes?.review, activeReviewSubmission, reviewFormDirty, inlineCommentDirty, localReviewComments.length, onTextDirty])
   if (!changes) return null
   const readOnly = Boolean(result.stale || result.action_error === 'refresh_failed' || changes.stale || changes.read_only || changes.lifecycle === 'applied')
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field
@@ -2233,6 +2482,27 @@ function ChangesTask({
       ?? changes.diagram_titles?.find((diagram) => diagram.diagram_id === changes.validation_diagram)?.title
     : undefined
   const compositionComponents = changes.candidate?.components ?? result.components
+  const reviewAnnotationComments = activeReviewSubmission?.comments ?? localReviewComments
+  const proposalAnnotations = annotationGroup(
+    `proposal:${activeReviewSubmission?.id ?? changes.review?.reviewed_state ?? changes.id}`,
+    'Proposal feedback',
+    reviewAnnotationComments.filter((comment) => comment.anchor.kind === 'proposal' || comment.anchor.kind === 'proposal_markdown'),
+  )
+  const addLocalReviewComment = (body: string, anchor: ReviewAnchor) => {
+    localCommentSequence.current += 1
+    onLocalReviewComments([...localReviewComments, { id: `local-review-comment-${localCommentSequence.current}`, body, anchor }])
+    setCommentTarget(undefined)
+    setInlineCommentDirty(false)
+  }
+  const inlineCommentEditor = (contextKey: string) => commentTarget?.contextKey === contextKey ? (
+    <InlineReviewCommentEditor
+      key={JSON.stringify(commentTarget.anchor)}
+      target={commentTarget}
+      onDirty={setInlineCommentDirty}
+      onSave={addLocalReviewComment}
+      onCancel={() => { setCommentTarget(undefined); setInlineCommentDirty(false) }}
+    />
+  ) : null
   const discardAction = !acceptanceUnknown && !readOnly && changes.lifecycle === 'active'
     ? <button className="discard-action" type="button" disabled={busy} onClick={onBeginDiscard}>Delete proposal</button>
     : null
@@ -2247,14 +2517,30 @@ function ChangesTask({
           </div>
         </div>
         <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : changes.lifecycle === 'no_longer_active' ? 'Proposal no longer active' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
+        {activeReviewSubmission && (
+          <>
+            <nav className="submitted-review-navigation" aria-label="Review navigation">
+              {onOpenCurrentReview && <button className="secondary-action" type="button" onClick={onOpenCurrentReview}>Current review</button>}
+              {onOpenProposal && <button className="secondary-action" type="button" onClick={onOpenProposal}>Proposal workspace</button>}
+              {onOpenAccepted && <button className="secondary-action" type="button" onClick={onOpenAccepted}>Accepted workspace</button>}
+            </nav>
+            <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} compact />
+          </>
+        )}
         {activeReviewSubmission && <SubmittedReviewDetails review={activeReviewSubmission} />}
         <p className="review-introduction">{changes.out_of_date
           ? 'Out of date with Accepted. You can inspect this review, but it cannot update Architecture until the proposal matches Accepted.'
           : readOnly
-            ? 'Inspect the visual change and complete exact diff.'
-            : 'Inspect the visual change and complete exact diff before updating the architecture.'}</p>
+            ? 'Review the proposed architecture and its complete file changes.'
+            : 'Review the proposed architecture and its complete file changes before updating Architecture.'}</p>
         <details className="review-proposal-document" aria-label="Proposal" open>
           <summary>Proposal</summary>
+          <div className="context-comment-actions">
+            {!activeReviewSubmission && <button className="text-action" type="button" onClick={() => setCommentTarget({ contextKey: 'proposal', label: 'Proposal', anchor: { kind: 'proposal' } })}>Comment on proposal</button>}
+            {!activeReviewSubmission && changes.proposal_markdown && <button className="text-action" type="button" onClick={() => setCommentTarget({ contextKey: 'proposal', label: 'Proposal lines', anchor: { kind: 'proposal_markdown' }, source: changes.proposal_markdown })}>Comment on lines</button>}
+            {proposalAnnotations && onOpenAnnotation && <AnnotationMarker group={proposalAnnotations} onToggle={() => onOpenAnnotation(proposalAnnotations)} />}
+          </div>
+          {inlineCommentEditor('proposal')}
           {changes.proposal_markdown
             ? <MarkdownBody source={changes.proposal_markdown} />
             : <p className="proposal-empty">No proposal document.</p>}
@@ -2263,7 +2549,12 @@ function ChangesTask({
           <section className="diagram-review-summary" aria-label="Diagram changes">
             <h3>Diagram changes</h3>
             <ul>
-              {changes.review.comparison.diagrams?.map((diagram) => <li key={`${diagram.diagram_id}:${diagram.status}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `diagram:${diagram.diagram_id}`, diagramID: diagram.diagram_id, title: diagram.title, path: diagram.path, status: diagram.status })}><strong>{diagram.title}</strong> {diagram.status === 'added' ? 'added' : 'title changed'}</button></li>)}
+              {changes.review.comparison.diagrams?.map((diagram) => {
+                const side = diagram.status === 'added' ? 'with_changes' : reviewSide === 'before' ? 'before' : 'with_changes'
+                const annotations = diagramAnnotation(reviewAnnotationComments, side, diagram.diagram_id, diagram.title)
+                const contextKey = `diagram-change:${diagram.diagram_id}:${diagram.status}`
+                return <li key={`${diagram.diagram_id}:${diagram.status}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `diagram:${diagram.diagram_id}`, diagramID: diagram.diagram_id, title: diagram.title, path: diagram.path, status: diagram.status })}><strong>{diagram.title}</strong> {diagram.status === 'added' ? 'added' : 'title changed'}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label: diagram.title, anchor: { kind: 'diagram', side, diagram_id: diagram.diagram_id } })}>Add comment</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
+              })}
               {changes.review.comparison.appearances?.map((appearance, index) => {
                 const exactSide = appearance.side === 'before' ? changes.review?.before : changes.review?.with_changes
                 const otherSide = appearance.side === 'before' ? changes.review?.with_changes : changes.review?.before
@@ -2275,7 +2566,11 @@ function ChangesTask({
                   ?? fallbackDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                 const description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
                 const detailDiagramID = appearance.status === 'detail_changed' ? appearance.detail_diagram_id : undefined
-                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID, reviewSide: appearance.side === 'before' ? 'before' : 'with' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
+                const anchor: ReviewAnchor = { kind: 'composition', side: appearance.side, diagram_id: appearance.diagram_id, component_id: appearance.component_id,
+                  aspect: detailDiagramID ? 'detail' : appearance.role, ...(detailDiagramID ? { detail_diagram_id: detailDiagramID } : {}) }
+                const annotations = compositionAnnotation(reviewAnnotationComments, appearance.side, appearance.diagram_id, appearance.component_id, `${projection?.title ?? 'Component'} · ${description}`)
+                const contextKey = `appearance-change:${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`
+                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID, reviewSide: appearance.side === 'before' ? 'before' : 'with' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label: `${projection?.title ?? 'Component'} · ${description}`, anchor })}>Add comment</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
               })}
             </ul>
           </section>
@@ -2284,8 +2579,13 @@ function ChangesTask({
           side={reviewSide}
           component={selectedReviewComponent}
           components={reviewSide === 'with' ? changes.review.with_changes.components : changes.review.before.components}
+          diagram={activeDiagram}
           focus={reviewFocus}
           onClear={onClearReviewFocus}
+          onComment={!activeReviewSubmission ? setCommentTarget : undefined}
+          comments={reviewAnnotationComments}
+          renderCommentEditor={inlineCommentEditor}
+          onOpenAnnotation={onOpenAnnotation}
         />
         <section className="raw-diff-region" aria-labelledby="raw-diff-heading">
           <div className="review-section-heading"><h3 id="raw-diff-heading">Complete change</h3><span>Raw unified diff</span></div>
@@ -2298,14 +2598,10 @@ function ChangesTask({
         {!activeReviewSubmission && changes.lifecycle === 'active' && onSubmitReview && (
           <ReviewComposer
             key={changes.review.reviewed_state}
-            review={changes.review}
-            proposal={changes.proposal_markdown}
-            selectedComponent={selectedReviewComponent}
-            activeDiagram={activeDiagram}
-            focus={reviewFocus}
-            side={reviewSide}
+            comments={localReviewComments}
+            onComments={onLocalReviewComments}
             busy={busy}
-            onDirty={onTextDirty}
+            onDirty={setReviewFormDirty}
             onSubmit={onSubmitReview}
           />
         )}
@@ -2339,7 +2635,6 @@ function ChangesTask({
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
           : 'These changes have not updated Architecture yet.'}</p>
       <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
-      <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />
       <h3 className="proposal-work-heading">Architecture work in this proposal</h3>
       <ul>
         {changes.components.map((component) => {
@@ -2445,6 +2740,7 @@ function ChangesTask({
         </div>
       )}
       {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
+      <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />
       <details className="technical-details">
         <summary>Technical details</summary>
         <dl className="change-set-binding">
@@ -2530,7 +2826,7 @@ function anchorLabel(anchor: ReviewAnchor) {
   }
 }
 
-function reviewAnchorPresentation(review: ReviewSubmission, anchor: ReviewAnchor) {
+function reviewAnchorPresentation(review: ReviewPresentation, anchor: ReviewAnchor) {
   const sideLabel = anchor.side === 'before' ? 'Before changes' : 'With changes'
   const snapshot = anchor.side === 'before' ? review.review.before : review.review.with_changes
   const component = snapshot.components.find((value) => value.id === anchor.component_id)
@@ -2572,16 +2868,45 @@ function SubmittedReviewDetails({ review }: { review: ReviewSubmission }) {
   )
 }
 
-type LocalReviewComment = { body: string; anchor: ReviewAnchor }
+function AnnotationMarker({ group, onToggle, label }: { group: ReviewAnnotationGroup; onToggle: () => void; label?: string }) {
+  return <button className="review-annotation-marker" type="button" aria-label={`${group.comments.length} ${label ?? 'review comment'}${group.comments.length === 1 ? '' : 's'} on ${group.label}`} onClick={(event) => { event.stopPropagation(); onToggle() }}>✎ {group.comments.length}</button>
+}
 
-function SubmittedReviewList({ reviews, onOpen }: { reviews: ReviewSubmissionSummary[]; onOpen?: (reviewID: string) => void }) {
+function ReviewDiagramComments({ review, comments, onOpen }: { review: ReviewPresentation; comments: ReviewSubmissionComment[]; onOpen: (comment: ReviewSubmissionComment) => void }) {
+  return (
+    <ul className="diagram-comment-list" aria-label="Diagram comments">
+      {comments.map((comment) => {
+        const context = reviewAnchorPresentation(review, comment.anchor)
+        return <li key={comment.id}><button type="button" onClick={() => onOpen(comment)}><span>{context.label}</span><strong>{comment.body}</strong></button></li>
+      })}
+    </ul>
+  )
+}
+
+function ReviewAnnotationCards({ groups, review, onClose }: { groups: ReviewAnnotationGroup[]; review: ReviewPresentation; onClose: (key: string) => void }) {
+  return (
+    <aside className="review-annotation-cards" aria-label="Open review comments">
+      {groups.map((group) => <article className="review-annotation-card" key={group.key}>
+        <header><strong>{group.label}</strong><button type="button" aria-label={`Close comments on ${group.label}`} onClick={() => onClose(group.key)}>×</button></header>
+        {group.comments.map((comment) => {
+          const context = reviewAnchorPresentation(review, comment.anchor)
+          return <section key={comment.id}><span>{context.label}</span>{context.excerpt !== undefined && <pre>{context.excerpt || ' '}</pre>}<MarkdownBody source={comment.body} /></section>
+        })}
+      </article>)}
+    </aside>
+  )
+}
+
+function SubmittedReviewList({ reviews, onOpen, compact = false }: { reviews: ReviewSubmissionSummary[]; onOpen?: (reviewID: string) => void; compact?: boolean }) {
   if (reviews.length === 0) return null
   return (
-    <section className="submitted-review-list" aria-label="Submitted reviews">
-      <h3>Submitted reviews</h3>
-      <ul>{reviews.map((item) => (
-        <li key={item.id}><button className="text-action" type="button" onClick={() => onOpen?.(item.id)}><strong>{verdictLabel(item.verdict)}</strong><span>{item.author} · {new Date(item.submitted_at).toLocaleString()} · version {item.binding.generation}{item.lifecycle === 'applied' ? ' · accepted proposal' : item.lifecycle === 'no_longer_active' ? ' · proposal no longer active' : item.current_generation ? '' : ' · earlier version'}{item.out_of_date ? ' · out of date' : ''}</span></button></li>
-      ))}</ul>
+    <section className={`submitted-review-list ${compact ? 'compact' : ''}`} aria-label="Submitted reviews">
+      <details>
+        <summary>Review history <span>{reviews.length}</span></summary>
+        <ul>{reviews.map((item) => (
+          <li key={item.id}><button className="text-action" type="button" onClick={() => onOpen?.(item.id)}><strong>{verdictLabel(item.verdict)}</strong><span>{item.author} · {new Date(item.submitted_at).toLocaleString()} · version {item.binding.generation}{item.lifecycle === 'applied' ? ' · accepted proposal' : item.lifecycle === 'no_longer_active' ? ' · proposal no longer active' : item.current_generation ? '' : ' · earlier version'}{item.out_of_date ? ' · out of date' : ''}</span></button></li>
+        ))}</ul>
+      </details>
     </section>
   )
 }
@@ -2593,90 +2918,81 @@ function reviewSourceLines(source: string) {
   return lines
 }
 
-function ReviewComposer({
-  review, proposal, selectedComponent, activeDiagram, focus, side, busy, onDirty, onSubmit,
+function InlineReviewCommentEditor({
+  target, onDirty, onSave, onCancel,
 }: {
-  review: ChangeReview
-  proposal: string
-  selectedComponent?: AuthoringComponent
-  activeDiagram?: DiagramProjection
-  focus?: ReviewFocus | null
-  side: ReviewSide
+  target: ReviewCommentTarget
+  onDirty: (dirty: boolean) => void
+  onSave: (body: string, anchor: ReviewAnchor) => void
+  onCancel: () => void
+}) {
+  const [body, setBody] = useState('')
+  const [startLine, setStartLine] = useState(target.anchor.start_line)
+  const [endLine, setEndLine] = useState(target.anchor.end_line)
+  const [anchorLine, setAnchorLine] = useState(target.anchor.start_line)
+  const lines = reviewSourceLines(target.source ?? '')
+  const lineAnchor = target.anchor.kind === 'proposal_markdown' || target.anchor.kind === 'component_markdown'
+  const selectedRange = Boolean(!lineAnchor || (startLine && endLine && endLine >= startLine && endLine <= lines.length))
+  useEffect(() => { onDirty(body !== ''); return () => onDirty(false) }, [body, onDirty])
+  const selectLine = (line: number, extend: boolean) => {
+    if (!anchorLine || (!extend && startLine !== endLine)) {
+      setAnchorLine(line)
+      setStartLine(line)
+      setEndLine(line)
+      return
+    }
+    setStartLine(Math.min(anchorLine, line))
+    setEndLine(Math.max(anchorLine, line))
+  }
+  const save = () => {
+    if (!body.trim() || !selectedRange) return
+    onSave(body, lineAnchor ? { ...target.anchor, start_line: startLine, end_line: endLine } : target.anchor)
+  }
+  return (
+    <section className="anchored-comment-composer" aria-label={`Comment on ${target.label}`}>
+      <div className="review-section-heading"><h4>Add comment</h4><span>{target.label}</span></div>
+      {lineAnchor && <div className="review-line-picker">
+        <p>Choose the first and last line. Shift-click also extends the selected range.</p>
+        <div className="review-source-lines" role="listbox" aria-label={`${target.label} source lines`} aria-multiselectable="true">
+          {lines.map((line, index) => {
+            const lineNumber = index + 1
+            const selected = Boolean(startLine && endLine && lineNumber >= startLine && lineNumber <= endLine)
+            return <button key={lineNumber} type="button" role="option" aria-selected={selected} onClick={(event) => selectLine(lineNumber, event.shiftKey)}><b>{lineNumber}</b><span>{line || ' '}</span></button>
+          })}
+        </div>
+      </div>}
+      <label>Comment<textarea rows={4} value={body} onChange={(event) => setBody(event.target.value)} /></label>
+      <div className="anchored-comment-actions"><button className="secondary-action" type="button" disabled={!body.trim() || !selectedRange} onClick={save}>Add comment</button><button className="text-action" type="button" onClick={onCancel}>Cancel</button></div>
+    </section>
+  )
+}
+
+function ReviewComposer({
+  comments, onComments, busy, onDirty, onSubmit,
+}: {
+  comments: LocalReviewComment[]
+  onComments: (comments: LocalReviewComment[]) => void
   busy: boolean
   onDirty: (dirty: boolean) => void
-  onSubmit: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: LocalReviewComment[] }) => void
+  onSubmit: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: { body: string; anchor: ReviewAnchor }[] }) => void
 }) {
   const [author, setAuthor] = useState('')
   const [verdict, setVerdict] = useState<ReviewSubmissionSummary['verdict']>('comment')
   const [body, setBody] = useState('')
-  const [comments, setComments] = useState<LocalReviewComment[]>([])
-  const [commentBody, setCommentBody] = useState('')
-  const [anchorKind, setAnchorKind] = useState('proposal')
-  const [startLine, setStartLine] = useState(1)
-  const [endLine, setEndLine] = useState(1)
-  const dirty = author !== '' || body !== '' || comments.length > 0 || commentBody !== '' || verdict !== 'comment'
+  const [editingIndex, setEditingIndex] = useState<number>()
+  const [editingBody, setEditingBody] = useState('')
+  const dirty = author !== '' || body !== '' || comments.length > 0 || editingBody !== '' || verdict !== 'comment'
   useEffect(() => { onDirty(dirty); return () => onDirty(false) }, [dirty, onDirty])
-
-  const architectureSide = side === 'with' ? 'with_changes' : 'before'
-  const componentSource = selectedComponent?.markdown_source ?? ''
-  const source = anchorKind === 'proposal_markdown' ? proposal : componentSource
-  const lines = reviewSourceLines(source)
-  const choices = [
-    { value: 'proposal', label: 'Whole proposal' },
-    ...(proposal ? [{ value: 'proposal_markdown', label: 'Proposal lines' }] : []),
-    ...(selectedComponent ? [{ value: 'component', label: 'Selected Component' }] : []),
-    ...(selectedComponent?.markdown_source ? [{ value: 'component_markdown', label: 'Selected Component lines' }] : []),
-    ...(activeDiagram ? [{ value: 'diagram', label: 'Current Diagram' }] : []),
-    ...(focus?.kind === 'diagram' && focus.componentID ? [{ value: 'composition', label: 'Selected Diagram placement' }] : []),
-    ...(focus?.kind === 'relationship' ? [{ value: 'relationship', label: 'Selected Relationship' }] : []),
-  ]
-  useEffect(() => {
-    if (!choices.some((choice) => choice.value === anchorKind)) setAnchorKind('proposal')
-  }, [anchorKind, choices.map((choice) => choice.value).join(':')])
-
-  const makeAnchor = (): ReviewAnchor | undefined => {
-    if (anchorKind === 'proposal') return { kind: 'proposal' }
-    if (anchorKind === 'proposal_markdown') return { kind: 'proposal_markdown', start_line: startLine, end_line: endLine }
-    if (anchorKind === 'component' && selectedComponent) return { kind: 'component', side: architectureSide, component_id: selectedComponent.id }
-    if (anchorKind === 'component_markdown' && selectedComponent) return { kind: 'component_markdown', side: architectureSide, component_id: selectedComponent.id, start_line: startLine, end_line: endLine }
-    if (anchorKind === 'diagram' && activeDiagram) return { kind: 'diagram', side: architectureSide, diagram_id: activeDiagram.id }
-    if (anchorKind === 'composition' && focus?.kind === 'diagram' && focus.componentID && focus.role) return {
-      kind: 'composition', side: focus.reviewSide === 'before' ? 'before' : focus.reviewSide === 'with' ? 'with_changes' : architectureSide, diagram_id: focus.diagramID, component_id: focus.componentID,
-      aspect: focus.compositionAspect ?? focus.role, ...(focus.compositionAspect === 'detail' && focus.detailDiagramID ? { detail_diagram_id: focus.detailDiagramID } : {}),
-    }
-    if (anchorKind === 'relationship' && focus?.kind === 'relationship') return {
-      kind: 'relationship', side: focus.review_side === 'before' ? 'before' : focus.review_side === 'with' ? 'with_changes' : architectureSide,
-      source_component_id: focus.source_id, target_component_id: focus.target_id, label: focus.label, occurrence: focus.occurrence,
-    }
-    return undefined
-  }
-  const lineAnchor = anchorKind === 'proposal_markdown' || anchorKind === 'component_markdown'
-  const lineSelectionInvalid = lineAnchor && (startLine < 1 || endLine < startLine || endLine > lines.length)
-  const addComment = () => {
-    const anchor = makeAnchor()
-    if (!anchor || !commentBody.trim() || lineSelectionInvalid) return
-    setComments((current) => [...current, { body: commentBody, anchor }])
-    setCommentBody('')
-  }
   const valid = author.trim() !== '' && (verdict !== 'comment' || body.trim() !== '' || comments.length > 0)
   return (
     <section className="review-composer" aria-labelledby="review-feedback-heading">
       <div className="review-section-heading"><h3 id="review-feedback-heading">Submit feedback</h3><span>Informational only</span></div>
+      <p className="review-submission-guidance">Add comments beside the exact proposal, Component, Diagram, placement, or Relationship above. They will be included here when you submit.</p>
       <label>Reviewer name<input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="Your name or agent label" /></label>
       <label>Conclusion<select value={verdict} onChange={(event) => setVerdict(event.target.value as ReviewSubmissionSummary['verdict'])}><option value="comment">Comment</option><option value="approve">Approve</option><option value="request_changes">Request changes</option></select></label>
-      <label>Overall note <span className="field-optional">Optional</span><textarea rows={4} value={body} onChange={(event) => setBody(event.target.value)} /></label>
-      <div className="anchored-comment-composer">
-        <div className="review-section-heading"><h4>Comment on this review</h4><span>Optional</span></div>
-        <label>Location<select value={anchorKind} onChange={(event) => setAnchorKind(event.target.value)}>{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>
-        {lineAnchor && <div className="review-line-picker">
-          <div><label>Start line<input type="number" min={1} max={Math.max(1, lines.length)} value={startLine} onChange={(event) => setStartLine(Number(event.target.value))} /></label><label>End line<input type="number" min={1} max={Math.max(1, lines.length)} value={endLine} onChange={(event) => setEndLine(Number(event.target.value))} /></label></div>
-          <pre>{lines.map((line, index) => <span key={index}><b>{index + 1}</b>{line || ' '}{'\n'}</span>)}</pre>
-        </div>}
-        <label>Comment<textarea rows={3} value={commentBody} onChange={(event) => setCommentBody(event.target.value)} /></label>
-        <button className="secondary-action" type="button" disabled={!commentBody.trim() || lineSelectionInvalid} onClick={addComment}>Add comment</button>
-      </div>
-      {comments.length > 0 && <ol className="review-comment-drafts">{comments.map((comment, index) => <li key={index}><span>{anchorLabel(comment.anchor)}</span><p>{comment.body}</p><button className="text-action" type="button" onClick={() => setComments((current) => current.filter((_, item) => item !== index))}>Remove</button></li>)}</ol>}
-      <button className="inline-action" type="button" disabled={busy || !valid} onClick={() => onSubmit({ author, verdict, body, comments })}>{busy ? 'Submitting…' : 'Submit review'}</button>
+      <label>Review summary <span className="field-optional">Optional</span><textarea rows={4} value={body} onChange={(event) => setBody(event.target.value)} /><span className="field-hint">Summarize the reason for your conclusion.</span></label>
+      {comments.length > 0 && <section className="review-draft-summary" aria-label="Comments to submit"><h4>Comments to submit <span>{comments.length}</span></h4><ol className="review-comment-drafts">{comments.map((comment, index) => <li key={comment.id}><span>{anchorLabel(comment.anchor)}</span>{editingIndex === index ? <><label>Edit comment<textarea rows={3} value={editingBody} onChange={(event) => setEditingBody(event.target.value)} /></label><div><button className="secondary-action" type="button" disabled={!editingBody.trim()} onClick={() => { onComments(comments.map((item, itemIndex) => itemIndex === index ? { ...item, body: editingBody } : item)); setEditingIndex(undefined); setEditingBody('') }}>Save</button><button className="text-action" type="button" onClick={() => { setEditingIndex(undefined); setEditingBody('') }}>Cancel</button></div></> : <><p>{comment.body}</p><div><button className="text-action" type="button" onClick={() => { setEditingIndex(index); setEditingBody(comment.body) }}>Edit</button><button className="text-action" type="button" onClick={() => onComments(comments.filter((_, item) => item !== index))}>Remove</button></div></>}</li>)}</ol></section>}
+      <button className="inline-action" type="button" disabled={busy || !valid} onClick={() => onSubmit({ author, verdict, body, comments: comments.map(({ body: commentBody, anchor }) => ({ body: commentBody, anchor })) })}>{busy ? 'Submitting…' : 'Submit review'}</button>
       <p className="field-hint">This records feedback on this exact version. It does not update Architecture.</p>
     </section>
   )
@@ -2686,25 +3002,53 @@ function ReviewContext({
   side,
   component,
   components,
+  diagram,
   focus,
   onClear,
+  onComment,
+  comments,
+  renderCommentEditor,
+  onOpenAnnotation,
 }: {
   side: ReviewSide
   component?: AuthoringComponent
   components: AuthoringComponent[]
+  diagram?: DiagramProjection
   focus?: ReviewFocus | null
   onClear: () => void
+  onComment?: (target: ReviewCommentTarget) => void
+  comments?: ReviewSubmissionComment[]
+  renderCommentEditor?: (contextKey: string) => ReactNode
+  onOpenAnnotation?: (group: ReviewAnnotationGroup) => void
 }) {
   const titles = new Map(components.map((candidate) => [candidate.id, candidate.title]))
+  const exactSide = reviewSideValue(side)
+  const openAnnotation = (group?: ReviewAnnotationGroup) => group && onOpenAnnotation?.(group)
   if (focus?.kind === 'diagram') {
+    const contextKey = `review-context:${focus.key}`
+    const focusSide = focus.reviewSide ? reviewSideValue(focus.reviewSide) : exactSide
+    const anchor: ReviewAnchor = focus.componentID && focus.role
+      ? { kind: 'composition', side: focusSide, diagram_id: focus.diagramID, component_id: focus.componentID,
+        aspect: focus.compositionAspect ?? focus.role, ...(focus.compositionAspect === 'detail' && focus.detailDiagramID ? { detail_diagram_id: focus.detailDiagramID } : {}) }
+      : { kind: 'diagram', side: focusSide, diagram_id: focus.diagramID }
+    const annotations = focus.componentID
+      ? compositionAnnotation(comments, focusSide, focus.diagramID, focus.componentID, focus.title)
+      : diagramAnnotation(comments, focusSide, focus.diagramID, focus.title)
     return (
       <section className="review-context" aria-label="Review context">
         <div className="review-context-heading"><div><p className="eyebrow">Diagram composition</p><h3>{focus.title}</h3></div><button className="text-action" type="button" onClick={onClear}>Clear focus</button></div>
         <p>{focus.status === 'added' ? 'This diagram is added with the changes.' : focus.status === 'title_changed' ? 'This diagram title changes.' : 'A component placement changes in this diagram.'}</p>
+        <div className="context-comment-actions">{onComment && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: focus.title, anchor })}>Add comment</button>}{annotations && <AnnotationMarker group={annotations} onToggle={() => openAnnotation(annotations)} />}</div>
+        {renderCommentEditor?.(contextKey)}
       </section>
     )
   }
   if (focus?.kind === 'relationship' && !component) {
+    const contextKey = `review-context:${focus.key}`
+    const focusSide = focus.review_side ? reviewSideValue(focus.review_side) : exactSide
+    const anchor: ReviewAnchor = { kind: 'relationship', side: focusSide, source_component_id: focus.source_id,
+      target_component_id: focus.target_id, label: focus.label, occurrence: focus.occurrence }
+    const annotations = relationshipAnnotation(comments, focusSide, focus.source_id, focus.target_id, focus.label, focus.occurrence, 'Relationship')
     return (
       <section className="review-context" aria-label="Review context">
         <div className="review-context-heading">
@@ -2714,6 +3058,8 @@ function ReviewContext({
         <p className={`review-relationship-summary review-${focus.status}`}>
           <span>{focus.source_title}</span><strong>{focus.label}</strong><span>{focus.target_title}</span>
         </p>
+        <div className="context-comment-actions">{onComment && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: `${focus.source_title} — ${focus.label} → ${focus.target_title}`, anchor })}>Add comment</button>}{annotations && <AnnotationMarker group={annotations} onToggle={() => openAnnotation(annotations)} />}</div>
+        {renderCommentEditor?.(contextKey)}
       </section>
     )
   }
@@ -2726,6 +3072,11 @@ function ReviewContext({
       </section>
     )
   }
+  const contextKey = `review-context:${exactSide}:${diagram?.id ?? ''}:${component.id}`
+  const componentAnnotations = component ? componentAnnotation(comments, exactSide, component.id, component.title) : undefined
+  const placementAnnotations = component && diagram ? compositionAnnotation(comments, exactSide, diagram.id, component.id, `${component.title} placement`) : undefined
+  const appearance = component && diagram ? diagram.appearances.find((candidate) => candidate.component_id === component.id) : undefined
+  const relationshipOccurrences = new Map<string, number>()
   return (
     <section className="review-context" aria-label="Review context">
       <div className="review-context-heading">
@@ -2735,6 +3086,16 @@ function ReviewContext({
         </div>
         <button className="text-action" type="button" onClick={onClear}>Clear focus</button>
       </div>
+      <div className="context-comment-actions">
+        {onComment && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: component.title, anchor: { kind: 'component', side: exactSide, component_id: component.id } })}>Comment on component</button>}
+        {onComment && component.markdown_source && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: `${component.title} lines`, anchor: { kind: 'component_markdown', side: exactSide, component_id: component.id }, source: component.markdown_source })}>Comment on lines</button>}
+        {onComment && diagram && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: diagram.title, anchor: { kind: 'diagram', side: exactSide, diagram_id: diagram.id } })}>Comment on diagram</button>}
+        {onComment && diagram && appearance && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: `${component.title} placement`, anchor: { kind: 'composition', side: exactSide, diagram_id: diagram.id, component_id: component.id, aspect: appearance.role } })}>Comment on placement</button>}
+        {onComment && diagram && appearance?.detail_diagram_id && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: `${component.title} detail diagram`, anchor: { kind: 'composition', side: exactSide, diagram_id: diagram.id, component_id: component.id, aspect: 'detail', detail_diagram_id: appearance.detail_diagram_id } })}>Comment on detail diagram</button>}
+        {componentAnnotations && <AnnotationMarker group={componentAnnotations} onToggle={() => openAnnotation(componentAnnotations)} />}
+        {placementAnnotations && <AnnotationMarker group={placementAnnotations} onToggle={() => openAnnotation(placementAnnotations)} label="Placement comments" />}
+      </div>
+      {renderCommentEditor?.(contextKey)}
       {focus?.kind === 'relationship' && (
         <p className={`review-relationship-summary review-${focus.status}`}>
           <span>{focus.source_title}</span><strong>{focus.label}</strong><span>{focus.target_title}</span>
@@ -2744,7 +3105,15 @@ function ReviewContext({
       {component.relationships.length > 0 && (
         <details className="review-relationships">
           <summary>Outgoing relationships ({component.relationships.length})</summary>
-          <ul>{component.relationships.map((relationship, index) => <li key={relationship.projection_key ?? `${relationship.target_id}:${index}`}><span>{relationship.label}</span> → <span>{titles.get(relationship.target_id) ?? 'Component unavailable'}</span></li>)}</ul>
+          <ul>{component.relationships.map((relationship, index) => {
+            const fact = `${component.id}\u0000${relationship.target_id}\u0000${relationship.label}`
+            const occurrence = (relationshipOccurrences.get(fact) ?? 0) + 1
+            relationshipOccurrences.set(fact, occurrence)
+            const targetTitle = titles.get(relationship.target_id) ?? 'Component unavailable'
+            const anchor: ReviewAnchor = { kind: 'relationship', side: exactSide, source_component_id: component.id, target_component_id: relationship.target_id, label: relationship.label, occurrence }
+            const annotations = relationshipAnnotation(comments, exactSide, component.id, relationship.target_id, relationship.label, occurrence, `${component.title} — ${relationship.label} → ${targetTitle}`)
+            return <li key={relationship.projection_key ?? `${relationship.target_id}:${index}`}><span>{relationship.label}</span> → <span>{targetTitle}</span><span className="relationship-comment-actions">{onComment && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: `${component.title} — ${relationship.label} → ${targetTitle}`, anchor })}>Add comment</button>}{annotations && <AnnotationMarker group={annotations} onToggle={() => openAnnotation(annotations)} />}</span></li>
+          })}</ul>
         </details>
       )}
     </section>

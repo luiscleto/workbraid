@@ -194,7 +194,7 @@ button:focus-visible {
 }
 
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.62;
 }
 
@@ -1126,6 +1126,53 @@ dd {
   text-transform: none;
 }
 
+.component-index .index-entry-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.component-index .index-entry-row > button:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.component-index .review-annotation-marker {
+  width: auto;
+  min-width: 42px;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--hairline);
+  padding: 7px 8px;
+  color: #75511b;
+  background: #efe0aa;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .67rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.component-index .review-annotation-marker:hover:not(:disabled) {
+  background: #e3ce83;
+}
+
+.commented-elsewhere {
+  margin-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.commented-elsewhere .index-heading {
+  min-height: 42px;
+  padding-block: 9px;
+  background: rgb(117 81 27 / 7%);
+}
+
+.commented-elsewhere li button small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted-ink);
+  font-size: .68rem;
+}
+
 .component-index li button:hover,
 .component-index li button.selected {
   background: rgb(49 91 61 / 10%);
@@ -1163,6 +1210,12 @@ dd {
   font-size: 0.67rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.component-index .appearance-note {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .index-empty {
@@ -1328,6 +1381,16 @@ dd {
   position: relative;
 }
 
+.map-surface.has-bottom-dock {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.map-surface.has-bottom-dock > .map-canvas {
+  min-height: 0;
+  height: auto;
+}
+
 .map-boundary-captions {
   position: absolute;
   z-index: 2;
@@ -1410,11 +1473,13 @@ dd {
 }
 
 .map-bottom-dock {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  left: 14px;
+  position: relative;
+  right: auto;
+  bottom: auto;
+  left: auto;
   z-index: 3;
+  min-width: 0;
+  margin: 0 14px 14px;
   border: 1px solid var(--hairline);
   background: rgb(248 240 220 / 96%);
   text-align: left;
@@ -1470,9 +1535,152 @@ dd {
 }
 
 .map-bottom-dock-body {
-  max-height: 170px;
+  max-height: min(360px, 40vh);
   overflow: auto;
   border-top: 1px solid var(--hairline);
+}
+
+.review-comments-dock {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.diagram-comment-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagram-comment-list li + li {
+  border-top: 1px solid var(--hairline);
+}
+
+.diagram-comment-list button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 3px;
+  border: 0;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: transparent;
+  font-family: "IBM Plex Sans", sans-serif;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+}
+
+.diagram-comment-list button:hover:not(:disabled) {
+  background: #e7dba9;
+}
+
+.diagram-comment-list span {
+  color: var(--muted-ink);
+  font-size: .66rem;
+}
+
+.diagram-comment-list strong {
+  font-size: .76rem;
+  font-weight: 500;
+}
+
+.review-annotation-cards {
+  box-sizing: border-box;
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 10px 10px 18px;
+  scrollbar-gutter: stable;
+}
+
+.review-annotation-card {
+  box-sizing: border-box;
+  width: min(350px, calc(100% - 20px));
+  min-width: min(300px, calc(100% - 20px));
+  max-height: 310px;
+  flex: 0 0 auto;
+  border: 1px solid #8b6721;
+  padding: 10px 12px 18px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  background: #f1dea2;
+  box-shadow: 3px 4px 0 rgb(32 33 27 / 18%);
+  color: var(--ink);
+}
+
+.review-annotation-card:nth-child(even) {
+  transform: rotate(-.2deg);
+}
+
+.review-comments-dock > .diagram-comment-list {
+  border-top: 1px solid var(--hairline);
+}
+
+.review-annotation-card header {
+  position: sticky;
+  z-index: 1;
+  top: -10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid rgb(117 81 27 / 40%);
+  padding-bottom: 6px;
+  padding-top: 10px;
+  background: #f1dea2;
+}
+
+.review-annotation-card header strong {
+  font-family: "Newsreader Variable", serif;
+  font-size: 1.05rem;
+}
+
+.review-annotation-card header button {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  border: 0;
+  padding: 0;
+  color: #68470f;
+  background: transparent;
+  font-size: 1.05rem;
+}
+
+.review-annotation-card section {
+  padding-top: 8px;
+}
+
+.review-annotation-card section + section {
+  margin-top: 8px;
+  border-top: 1px solid rgb(117 81 27 / 30%);
+}
+
+.review-annotation-card section > span {
+  color: #68470f;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .62rem;
+  letter-spacing: .03em;
+}
+
+.review-annotation-card pre {
+  max-height: 7rem;
+  overflow: auto;
+  margin: 6px 0;
+  padding: 6px;
+  background: rgb(255 252 232 / 55%);
+  font: .69rem/1.4 "IBM Plex Mono", monospace;
+  white-space: pre-wrap;
+}
+
+.review-annotation-card .markdown-body {
+  padding: 5px 0 0;
+  font-size: .78rem;
 }
 
 .map-review-key {
@@ -1509,8 +1717,10 @@ dd {
   font-size: 0.7rem;
   letter-spacing: 0;
   line-height: 1.3;
+  overflow-wrap: anywhere;
   text-align: left;
   text-transform: none;
+  white-space: normal;
 }
 
 .map-review-controls button:hover,
@@ -1519,6 +1729,7 @@ dd {
 }
 
 .map-empty {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: grid;
@@ -1528,12 +1739,22 @@ dd {
   text-align: center;
 }
 
+.map-empty .map-bottom-dock {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  margin: 0;
+}
+
 .working-pane {
   display: flex;
   flex-direction: column;
   padding: 28px clamp(20px, 2.4vw, 36px) 20px;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-wrap: anywhere;
+  scroll-padding-block: 28px;
 }
 
 .view-only-note {
@@ -1833,7 +2054,7 @@ dd {
 .review-composer,
 .submitted-review-details,
 .submitted-review-list {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--hairline);
   margin-top: 1.5rem;
   padding-top: 1.25rem;
 }
@@ -1841,6 +2062,7 @@ dd {
 .review-composer {
   display: grid;
   gap: 1rem;
+  min-width: 0;
 }
 
 .review-composer label,
@@ -1854,6 +2076,29 @@ dd {
 .review-composer textarea {
   box-sizing: border-box;
   width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--ink);
+  padding: .7rem .8rem;
+  color: var(--ink);
+  background: rgb(255 252 232 / 46%);
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: .88rem;
+  letter-spacing: normal;
+  line-height: 1.45;
+  scroll-margin-block: 64px;
+  text-transform: none;
+}
+
+.review-composer textarea {
+  resize: vertical;
+}
+
+.review-composer input:focus,
+.review-composer select:focus,
+.review-composer textarea:focus {
+  border-color: var(--accent);
+  outline: 3px solid rgb(49 91 61 / 18%);
+  outline-offset: -3px;
 }
 
 .field-optional,
@@ -1862,14 +2107,14 @@ dd {
 .submitted-review-list button span,
 .submitted-review-comments > li > span,
 .review-comment-drafts > li > span {
-  color: var(--muted);
+  color: var(--muted-ink);
   font-size: .78rem;
   letter-spacing: .03em;
 }
 
 .submitted-review-context {
   color: var(--muted);
-  font-family: var(--sans);
+  font-family: "IBM Plex Sans", sans-serif;
   font-size: .78rem;
   font-weight: 700;
   letter-spacing: .08em;
@@ -1904,7 +2149,7 @@ dd {
   padding: .5rem .7rem;
   background: color-mix(in srgb, var(--paper) 58%, transparent);
   color: var(--muted-ink);
-  font: .78rem/1.55 var(--mono);
+  font: .78rem/1.55 "IBM Plex Mono", monospace;
   white-space: pre-wrap;
 }
 
@@ -1916,38 +2161,238 @@ dd {
   text-align: left;
 }
 
+.submitted-review-list details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.submitted-review-list details > summary span {
+  display: inline-grid;
+  min-width: 1.55rem;
+  min-height: 1.55rem;
+  place-items: center;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  color: var(--muted-ink);
+}
+
+.submitted-review-list details:not([open]) > :not(summary) {
+  display: none;
+}
+
+.submitted-review-list.compact {
+  margin-top: .8rem;
+  padding-top: .8rem;
+}
+
+.submitted-review-navigation {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.submitted-review-navigation button {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  min-height: 32px;
+  margin: 0;
+  padding: 6px 7px;
+  font-size: .62rem;
+  white-space: nowrap;
+}
+
 .anchored-comment-composer {
-  background: color-mix(in srgb, var(--paper) 82%, var(--ink));
-  padding: 1rem;
+  min-width: 0;
+  margin: .65rem 0;
+  border: 1px solid var(--hairline);
+  padding: .8rem;
+  background: color-mix(in srgb, var(--paper) 88%, var(--ink));
 }
 
-.review-line-picker > div {
+.anchored-comment-composer label {
+  min-width: 0;
   display: grid;
-  gap: .75rem;
-  grid-template-columns: 1fr 1fr;
+  gap: .4rem;
+  margin: 0;
 }
 
-.review-line-picker pre {
+.anchored-comment-composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 88px;
+  border: 1px solid var(--ink);
+  padding: .7rem .8rem;
+  color: var(--ink);
+  background: rgb(255 252 232 / 46%);
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: .88rem;
+  letter-spacing: normal;
+  line-height: 1.45;
+  resize: vertical;
+  text-transform: none;
+}
+
+.anchored-comment-composer textarea:focus {
+  border-color: var(--accent);
+  outline: 3px solid rgb(49 91 61 / 18%);
+  outline-offset: -3px;
+}
+
+.review-line-picker > p,
+.review-comment-prompt {
+  margin: 0 0 .65rem;
+  color: var(--muted-ink);
+  font-size: .8rem;
+  line-height: 1.45;
+}
+
+.review-line-picker,
+.review-source-lines {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.review-source-lines {
+  box-sizing: border-box;
+  min-height: 8.5rem;
   background: var(--ink);
   color: var(--paper);
-  font-size: .78rem;
-  max-height: 15rem;
-  overflow: auto;
-  padding: .75rem;
-  white-space: pre-wrap;
+  max-height: min(36rem, 60vh);
+  overflow-x: auto;
+  overflow-y: auto;
+  padding: .65rem 0 1.75rem;
+  scrollbar-gutter: stable;
 }
 
-.review-line-picker pre span {
-  display: block;
+.review-submission-guidance {
+  margin: 0 0 1rem;
+  color: var(--muted-ink);
+  font-size: .8rem;
+  line-height: 1.45;
 }
 
-.review-line-picker pre b {
-  color: var(--muted-light, #b8b09e);
-  display: inline-block;
+.review-draft-summary {
+  margin: .9rem 0;
+  border-block: 1px solid var(--hairline);
+  padding: .8rem 0;
+}
+
+.review-draft-summary > h4 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  font: 600 .72rem/1.3 "IBM Plex Mono", monospace;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.review-draft-summary > h4 span {
+  display: inline-grid;
+  min-width: 1.45rem;
+  min-height: 1.45rem;
+  place-items: center;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+}
+
+.review-source-lines button {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  min-height: 2.25rem;
+  align-items: start;
+  grid-template-columns: 3.4rem max-content;
+  border: 0;
+  padding: .35rem .75rem;
+  color: var(--paper);
+  background: transparent;
+  font: .78rem/1.55 "IBM Plex Mono", monospace;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+}
+
+.review-source-lines button:last-child {
+  margin-bottom: .75rem;
+}
+
+.review-source-lines button:hover:not(:disabled),
+.review-source-lines button[aria-selected="true"] {
+  color: var(--ink);
+  background: #ecd88f;
+}
+
+.review-source-lines button b {
+  color: #b8b09e;
   font-weight: 400;
-  margin-right: .75rem;
   text-align: right;
-  width: 2.5rem;
+  padding-right: .9rem;
+}
+
+.review-source-lines button[aria-selected="true"] b {
+  color: #75511b;
+}
+
+.review-source-lines button span {
+  min-width: max-content;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.anchored-comment-actions,
+.review-comment-drafts li > div,
+.context-comment-actions,
+.relationship-comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.anchored-comment-actions button,
+.context-comment-actions button,
+.relationship-comment-actions button,
+.review-comment-drafts li > div button,
+.annotation-add-action {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 3px 0;
+}
+
+.context-comment-actions {
+  margin: .65rem 0;
+}
+
+.review-annotation-marker {
+  border: 1px solid #a77b25;
+  padding: 4px 7px !important;
+  color: #68470f;
+  background: #f2dea0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .68rem;
+  font-weight: 650;
+  letter-spacing: .03em;
+  text-transform: none;
+}
+
+.review-annotation-marker:hover:not(:disabled) {
+  color: #382609;
+  background: #e7ca6e;
 }
 
 .review-proposal-document > summary {
@@ -1998,11 +2443,37 @@ dd {
   padding: 5px 0;
 }
 
+.diagram-review-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 3px;
+}
+
+.diagram-review-target {
+  min-width: 0;
+}
+
+.diagram-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+}
+
 .diagram-review-summary button {
   max-width: 100%;
   min-height: 28px;
   overflow-wrap: anywhere;
   text-align: left;
+}
+
+.diagram-review-summary .annotation-add-action {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-size: .66rem;
 }
 
 .review-context {
@@ -2070,11 +2541,14 @@ dd {
 }
 
 .raw-diff-region {
+  min-width: 0;
+  max-width: 100%;
   min-height: 360px;
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
   margin-top: 14px;
+  overflow: hidden;
 }
 
 .review-section-heading {
@@ -2090,6 +2564,8 @@ dd {
 }
 
 .raw-diff {
+  width: 100%;
+  max-width: 100%;
   min-height: 300px;
   height: clamp(340px, 52vh, 620px);
   max-height: 72vh;
@@ -2108,7 +2584,7 @@ dd {
 
 .diff-line {
   display: block;
-  min-width: max-content;
+  min-width: 0;
   padding-inline: 10px;
   border-left: 3px solid transparent;
 }

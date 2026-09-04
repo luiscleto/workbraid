@@ -1,6 +1,6 @@
 # Architecture Change Sets 1 execution packet
 
-Status: Approved
+Status: Complete
 
 Target: durable named parallel Architecture proposals across browser, CLI, embedded skill, and MCP
 
@@ -389,3 +389,44 @@ This packet does not authorize:
 - Planning, Agent Control, or another vertical.
 
 Change Sets 1 completes only after ordinary checks, both weak-agent gates, independent canonical verification, and explicit human PASS. Record completion separately, verify the tree is clean and all processes are stopped, then stop before Architecture Reviews 1.
+
+## Execution result
+
+Status: Complete — human checkpoint **PASS** on 2026-09-04
+
+- Exact completed Agent Access 1 prerequisite: `540724919165ea95c9ee3088aca084d91eb8e1c3`.
+- Approved Change Sets baseline and roadmap: `c606822c360c4ef357449f515a67af6e2c21256b`.
+- Approved packet-inclusive worker base: `90866df1438f245da2c77a12d7093249a0fbc10d`.
+- Final integrated implementation: `5870941dc803ba5fd7c9a57d6b278223619e0471`.
+- The complete implementation range is `90866df1438f245da2c77a12d7093249a0fbc10d..5870941dc803ba5fd7c9a57d6b278223619e0471`.
+- Change Sets 1 replaces the process-wide anonymous pending set with project-scoped durable active/applied UUID records in the approved private-Git namespaces. Each active proposal retains its own name, exact base, generation, proposal Markdown, concrete pending facts, candidate validity/tree, and review binding while sharing the one Manager, candidate constructor, validator, accepted ref, and confirmation/CAS/publication authority.
+- Browser selection remains local view context. CLI and MCP use explicit store/change-set identities under `workbraid-agent-v2`; no process-wide agent selection, SQLite, second candidate interpretation, proposal database, worktree authority, review-comment model, or reconciliation behavior was introduced.
+- Acceptance atomically advances `refs/heads/accepted`, consumes only the accepted active ref, and creates the applied receipt. Other proposals remain exact, durable, editable/reviewable against their original bases, and unacceptably out of date until the deferred Reconciliation stage.
+
+### Independent review and automated evidence
+
+- The implementation worker first produced `f50579ba99344fce595c008d6df0f86b8d477365`. Fresh independent review found bounded authority, validation, and unavailable-name handling defects; corrections at `62a24e7fee8df8660cadcf8fd3fa31c07b93aa57` and `bee9571c062824526dbef5f2f2ce62e88202a8b5` received fresh rereview. The durable authority/Agent Access implementation verdict was **PASS**.
+- Review confirmed enumeration is restricted to `refs/workbraid/change-sets/active/*` and `refs/workbraid/change-sets/applied/*`; unrelated `refs/workbraid/*` namespaces are ignored; malformed owned records remain explicit; active names use the approved case-insensitive uniqueness rule; and an applied ref is durable acceptance evidence even after Accepted advances again.
+- Review also confirmed exact store plus Accepted-revision creation preconditions, independent per-record generations/review bindings, invalid Relationship repair after restart, candidate reconstruction equality, out-of-date-but-editable behavior, three-ref atomic acceptance, and no second Architecture authority.
+- Ordinary integrated checks passed: `git diff --check`; clean `git status --short`; `go test ./... -count=1`; `go test -race ./... -count=1`; `go vet ./...`; `go mod verify`; the repository `npm test`; `npm run build`; the bounded production-browser Change Sets scenario; and the Phase 2 production-browser regression. Tests used the repository-owned runner and one Playwright worker; no raw Vitest invocation or abnormal memory growth occurred.
+- The final review-handoff and route corrections increased the ordinary frontend result to 58/58 passing tests. On exact final head, `go test ./... -count=1`, `npm test`, `npm run build`, `npm run test:change-sets`, and `npm run test:p2.4` all passed.
+
+### Two-agent and canonical verification evidence
+
+- Two fresh independent weak-agent verifiers used the same running WorkBraid authority and one fresh project without repository source, private-store access, undocumented endpoints, or orchestrator command tutoring. The CLI verifier began with the embedded `workbraid --skill`; the MCP verifier used ordinary tool discovery. They independently created, documented, authored, and reviewed two proposals from the same Accepted base without changing one another's identities, generations, facts, or reviews.
+- Gate project: `Change Sets Agent Gate`; slug `change-sets-agent-gate`; store UUID `43f3c488-5a08-44b4-8bbc-ea469cfd4d05`; initial Accepted `26d363b21fd1a39ee642ddaf209ab1afb60f253a`; Accepted after Change A `d17790b00ec15e26928b561829f6968c1bcdc33f`.
+- Applied Change A: UUID `f236b936-05c7-49ab-b2d9-e77655563235`; name `Request processing backbone`; original base `26d363b21fd1a39ee642ddaf209ab1afb60f253a`; final generation `9`; reviewed candidate tree `c913cbf5cd027b9174311fcfaa82e1c11157ba09`; applied revision `d17790b00ec15e26928b561829f6968c1bcdc33f`.
+- Surviving Change B: UUID `52194895-e4d9-4b5e-8fb2-9d1f5cb8d271`; name `Observability model`; original base `26d363b21fd1a39ee642ddaf209ab1afb60f253a`; final generation `10`; reviewed candidate tree `82d9d01dc9523e20a6f559502065aed96d0de387`. After A's acceptance, B remained exact, durable, editable/reviewable and visibly out of date, while exact acceptance was rejected without changing Accepted.
+- A complete process stop/restart reconstructed Accepted, applied A, active B, proposal Markdown, exact bases/generations/candidates/reviews, Components, Relationships, Diagrams, homes, references, and boundaries from the private Git authority.
+- A stronger independent verifier checked the claimed accepted and Change Set refs/objects, closed envelope trees and modes, proposal bytes, candidate reconstruction, applied receipt, surviving out-of-date record, and fresh-process projections. Canonical verification result: **PASS**; no SQLite, hidden registry, source project, alternate Architecture projection, or second acceptance authority was found.
+
+### UX correction cycle and human checkpoint
+
+- The first human UI inspection stopped the gate because the initial context selector, proposal creation task, and active/applied proposal panes did not meet the approved drafting-workbench direction. At the human's direction, one dedicated UI correction worker owned the bounded presentation work in a separate Herdr workspace; this explicit correction cycle superseded the packet's ordinary single-worker handoff without changing domain/storage semantics.
+- Grok reviewed the running production browser at 1440×900 and 1280×800 for layout, terminology, proposal context, and public-facing readability. The corrected selector, right-pane creation task, proposal-first presentation, applied/read-only treatment, and Markdown containment received **UX PASS**.
+- Fresh technical review found bounded dirty-navigation, selector-keyboard, narrow-layout, and living-scenario issues. Corrections through `0241a34a26deabaa26b019cc1d6b25f0318b4e80` received fresh rereview and **PASS**.
+- The final human request added the proposal Markdown directly to Review and introduced stable identity routes: `/projects/<slug>/proposals/<change-set-uuid>` for proposal context and `/projects/<slug>/proposals/<change-set-uuid>/review` for its exact bound review. CLI/MCP review results also return the review URL without adding domain authority.
+- Independent review caught and corrected guarded-history, stale-route, accessibility, newly-created-proposal routing, and duplicate-history defects through `5870941dc803ba5fd7c9a57d6b278223619e0471`. Grok's final real-browser review and the fresh technical rereview both returned **PASS**.
+- The human inspected Accepted, applied A, and active out-of-date B; confirmed proposal Markdown and exact review context were understandable; confirmed the selector, direct proposal/review URLs, reload, Back/Forward, and read-only/update treatment; and gave explicit final **PASS**.
+
+Architecture Change Sets 1 is complete. Stop here; Architecture Reviews 1, Architecture Reconciliation 1, and rich-diagram Phase 3 remain unstarted.

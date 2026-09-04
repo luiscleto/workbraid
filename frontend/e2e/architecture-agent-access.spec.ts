@@ -161,10 +161,9 @@ async function createBrowserChangeSet(page: Page, name: string) {
 
 async function visibleNewChangesTask(page: Page) {
   const pane = page.getByRole('complementary', { name: 'Architecture task' })
-  const heading = pane.getByRole('heading', { name: 'New changes', level: 2 })
-  await expect(heading).toBeVisible()
-  const form = pane.locator('form').filter({ has: heading })
+  const form = pane.locator('form')
   await expect(form).toBeVisible()
+  await expect(form.getByRole('heading', { name: 'New changes', level: 2 })).toBeVisible()
   return form
 }
 

@@ -353,7 +353,15 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 
 	reviewA := runRealCLI(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", idA, "--generation", "15")
 	bindingA := reviewA.Result.(map[string]any)
-	runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2})
+	expectedReviewAURL := origin + "/projects/" + created.Context.Project.Slug + "/proposals/" + idA + "/review"
+	if bindingA["review_url"] != expectedReviewAURL {
+		t.Fatalf("CLI review URL = %#v, want %q", bindingA["review_url"], expectedReviewAURL)
+	}
+	reviewB := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 2})
+	expectedReviewBURL := origin + "/projects/" + created.Context.Project.Slug + "/proposals/" + idB + "/review"
+	if reviewB.Result.(map[string]any)["review_url"] != expectedReviewBURL {
+		t.Fatalf("MCP review URL = %#v, want %q", reviewB.Result, expectedReviewBURL)
+	}
 	updatedA := runRealCLI(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idA, "--base-revision", bindingA["base_revision"].(string), "--candidate-tree", bindingA["candidate_tree"].(string), "--generation", "15")
 	if !updatedA.OK || updatedA.Context.AcceptedRevision == nil || *updatedA.Context.AcceptedRevision == revision {
 		t.Fatalf("CLI update A: %+v", updatedA)
@@ -369,6 +377,9 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 		t.Fatalf("out-of-date edit: %+v", editedOutOfDate)
 	}
 	bindingB := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 3}).Result.(map[string]any)
+	if bindingB["review_url"] != expectedReviewBURL {
+		t.Fatalf("out-of-date MCP review URL = %#v, want %q", bindingB["review_url"], expectedReviewBURL)
+	}
 	rejected := runRealCLIError(t, binary, origin, "architecture", "update", "--store-id", storeID, "--change-set-id", idB, "--base-revision", bindingB["base_revision"].(string), "--candidate-tree", bindingB["candidate_tree"].(string), "--generation", "3")
 	if rejected.Error == nil || rejected.Error.Code != "change_set_out_of_date" {
 		t.Fatalf("out-of-date B update: %+v", rejected)
@@ -429,7 +440,7 @@ func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
 	if code := run([]string{"--help"}, &help, &stderr, bytes.NewReader(nil)); code != 0 {
 		t.Fatalf("help exit=%d", code)
 	}
-	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "--change-set-id <uuid>", "change_set_out_of_date", "Applied change sets are immutable evidence"} {
+	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "--change-set-id <uuid>", "change_set_out_of_date", "Applied change sets are immutable evidence", "review_url"} {
 		if !strings.Contains(skill.String(), exact) && !strings.Contains(help.String(), exact) {
 			t.Fatalf("v2 help/skill missing %q", exact)
 		}
@@ -485,7 +496,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	for _, exact := range []string{"Accepted Architecture", "durable named change sets", "change_set_id", "generation"} {
+	for _, exact := range []string{"Accepted Architecture", "durable named change sets", "change_set_id", "generation", "review_url"} {
 		if !strings.Contains(session.InitializeResult().Instructions, exact) {
 			t.Fatalf("MCP instructions missing %q: %q", exact, session.InitializeResult().Instructions)
 		}
@@ -504,6 +515,9 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		input, ok := tool.InputSchema.(map[string]any)
 		if !ok || input["type"] != "object" || input["additionalProperties"] != false || tool.OutputSchema == nil || tool.Description == "" || tool.Annotations == nil {
 			t.Fatalf("tool %q schema incomplete: %#v", tool.Name, tool.InputSchema)
+		}
+		if tool.Name == "change_set_review" && !strings.Contains(tool.Description, "review_url") {
+			t.Fatalf("review tool does not tell agents about review_url: %q", tool.Description)
 		}
 	}
 	slices.Sort(gotNames)

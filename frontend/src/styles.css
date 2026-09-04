@@ -1818,6 +1818,38 @@ dd {
   font-size: 0.86rem;
 }
 
+.review-proposal-document {
+  margin: 0 0 14px;
+  border-block: 1px solid var(--hairline);
+  padding: 10px 0;
+}
+
+.review-proposal-document > summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  list-style-position: inside;
+  text-transform: uppercase;
+}
+
+.review-proposal-document[open] > summary {
+  margin-bottom: 8px;
+}
+
+.review-proposal-document .markdown-body {
+  max-height: 20rem;
+  overflow: auto;
+  padding-bottom: 0;
+}
+
+.review-proposal-document .proposal-empty {
+  margin: 0;
+  color: var(--muted-ink);
+}
+
 .diagram-review-summary {
   margin: 0 0 14px;
   border-top: 1px solid var(--hairline);

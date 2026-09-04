@@ -84,8 +84,14 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByText('These changes have not updated Architecture yet.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'With changes' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Review changes' }).click()
+    const changeAReviewURL = `${application.origin}/projects/change-set-evidence/proposals/${changeA.id}/review`
+    await expect(page).toHaveURL(changeAReviewURL)
+    const reviewProposal = page.locator('details.review-proposal-document')
+    await expect(reviewProposal).toHaveAttribute('open', '')
+    await expect(reviewProposal.getByText('Route requests through a durable gateway.')).toBeVisible()
     await expect(page.getByTestId('raw-diff')).toContainText('Gateway')
     await page.getByRole('button', { name: 'Update architecture' }).click()
+    await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)
     await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
     await expect(page.getByText('Accepted proposal')).toBeVisible()
     await expect(page.getByText('This is the proposal that updated Architecture. It cannot be changed.')).toBeVisible()
@@ -112,6 +118,7 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     const reviewedB = agent(binary, application.origin, [
       'change-set', 'review', '--store-id', storeID, '--change-set-id', changeB.id, '--generation', String(repairedB.result!.generation),
     ])
+    expect(reviewedB.result!.review_url).toBe(`${application.origin}/projects/change-set-evidence/proposals/${changeB.id}/review`)
     const rejectedB = agentFailure(binary, application.origin, [
       'architecture', 'update', '--store-id', storeID, '--change-set-id', changeB.id,
       '--base-revision', reviewedB.result!.base_revision, '--candidate-tree', reviewedB.result!.candidate_tree,
@@ -123,20 +130,35 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await page.getByRole('button', { name: 'Refresh' }).click()
     await expect(page.getByRole('heading', { name: 'Change B', level: 2 })).toBeVisible()
     await page.getByRole('button', { name: 'Return to review' }).click()
+    const changeBReviewURL = `${application.origin}/projects/change-set-evidence/proposals/${changeB.id}/review`
+    await expect(page).toHaveURL(changeBReviewURL)
     await expect(page.getByRole('button', { name: 'With changes' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Showing Change B · Out of date' })).toBeVisible()
+    await expect(page.getByText('Out of date with Accepted. You can inspect this review, but it cannot update Architecture until the proposal matches Accepted.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
     await expect(page.getByText('Processes work.', { exact: true })).toBeVisible()
+    await expect(page.locator('details.review-proposal-document').getByText('Add an independent worker.', { exact: true })).toBeVisible()
+
+    await page.goBack()
+    await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)
+    await expect(page.getByRole('heading', { name: 'Change B', level: 2 })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'With changes' })).toHaveCount(0)
+    await page.goForward()
+    await expect(page).toHaveURL(changeBReviewURL)
+    await expect(page.getByRole('heading', { name: 'Review changes', level: 2 })).toBeVisible()
 
     await stopWorkBraid(application)
     application = undefined
     application = await startWorkBraid(binary, dataRoot, port, runtimeRoot, 'restart.log')
-    await page.goto(`${application.origin}/projects/change-set-evidence`)
+    await page.goto(changeAReviewURL)
     expect(await displayedRevision(page)).toBe(revisionR1)
-    await selectShowing(page, 'Change A')
-    await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Review changes', level: 2 })).toBeVisible()
     await expect(page.getByText('Accepted proposal')).toBeVisible()
-    await expect(page.getByText('Route requests through a durable gateway.')).toBeVisible()
+    await expect(page.getByText('Inspect the visual change and complete exact diff.')).toBeVisible()
+    await expect(page.locator('details.review-proposal-document').getByText('Route requests through a durable gateway.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'View proposal' }).click()
+    await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)
     await selectShowing(page, 'Change B · Out of date')
     await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
     await expect(page.getByText('Add an independent worker.', { exact: true })).toBeVisible()

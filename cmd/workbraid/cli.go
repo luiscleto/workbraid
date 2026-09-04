@@ -612,6 +612,7 @@ Review and deliberate update:
 
 The slug locates a project. Store, change-set, Component, and Diagram UUIDs are stable
 identity. Each change set has its own generation. Inspect after conflicts. Review returns
-the only ID/base/tree/generation binding accepted by Update. Run workbraid --skill for
-typed recovery, out-of-date rules, and a complete JSON workflow.
+the only ID/base/tree/generation binding accepted by Update and a review_url to give the
+reviewer. Run workbraid --skill for typed recovery, out-of-date rules, and a complete
+JSON workflow.
 `

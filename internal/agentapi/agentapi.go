@@ -240,7 +240,15 @@ func (client *Client) Call(ctx context.Context, operation string, input any) Env
 			return handshake
 		}
 	}
-	return client.call(ctx, operation, input)
+	envelope := client.call(ctx, operation, input)
+	if operation == "change_set_review" && envelope.OK && envelope.Context.Project != nil {
+		request, requestOK := input.(ChangeSetReviewRequest)
+		result, resultOK := envelope.Result.(map[string]any)
+		if requestOK && resultOK {
+			result["review_url"] = client.baseURL + "/projects/" + url.PathEscape(envelope.Context.Project.Slug) + "/proposals/" + url.PathEscape(request.ChangeSetID) + "/review"
+		}
+	}
+	return envelope
 }
 
 func (client *Client) call(ctx context.Context, operation string, input any) Envelope {

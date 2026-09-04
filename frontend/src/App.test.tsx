@@ -412,6 +412,109 @@ describe('slug workspace and reusable references', () => {
 })
 
 describe('candidate review regressions', () => {
+  it('restores a UUID-addressed review with safe proposal context and returns to its proposal task', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const value = reviewedArchitecture()
+    const changes = (value as unknown as { changes: Record<string, unknown> }).changes
+    changes.proposal_markdown = '# Review direction\n\nKeep the boundary.\n\n<script>alert(1)</script>'
+    vi.stubGlobal('fetch', vi.fn(() => response(value)))
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}/review`)
+    const proposal = screen.getByText('Proposal').closest('details')
+    expect(proposal).toHaveAttribute('open')
+    expect(within(proposal!).getByRole('heading', { name: 'Review direction' })).toBeInTheDocument()
+    expect(within(proposal!).getByText('Keep the boundary.')).toBeInTheDocument()
+    expect(container.querySelector('script')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Continue editing' }))
+    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+  })
+
+  it('restores review and proposal tasks across same-project history navigation', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    await selectProposal(user)
+    expect(window.location.pathname).toBe(reviewPath)
+
+    window.history.pushState({}, '', '/projects/example-project')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+
+    window.history.pushState({}, '', reviewPath)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(reviewPath)
+  })
+
+  it.each([
+    { kind: 'invalidated', value: architecture({ change_sets: [changeSet('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Steady lantern')] }), notice: 'This proposal has changed and needs to be reviewed again.', expectedHeading: 'Steady lantern' },
+    { kind: 'absent', value: architecture({ change_sets: [], unavailable_change_sets: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', reason: 'invalid metadata' }] }), notice: 'That review is no longer available.', expectedHeading: 'Worker' },
+  ])('normalizes an $kind direct review without manufacturing a replacement', async ({ value, notice, expectedHeading }) => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    vi.stubGlobal('fetch', vi.fn(() => response(value)))
+    render(<App />)
+
+    expect((await screen.findByText(notice)).closest('[role="alert"]')).toHaveTextContent(notice)
+    expect(screen.getByRole('heading', { name: expectedHeading })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+  })
+
+  it('protects an unsaved proposal when history requests its review route', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    await selectShowing(user, 'Steady lantern')
+    await user.type(screen.getByRole('textbox', { name: 'Proposal' }), 'Local direction')
+
+    window.history.pushState({}, '', reviewPath)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    expect(window.location.pathname).toBe('/projects/example-project')
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('textbox', { name: 'Proposal' })).toHaveValue('Local direction')
+
+    window.history.pushState({}, '', reviewPath)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(reviewPath)
+  })
+
+  it('opens an applied review read-only without an update action', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const value = reviewedArchitecture()
+    const changes = (value as unknown as { changes: Record<string, unknown> }).changes
+    changes.lifecycle = 'applied'
+    changes.applied_revision = 'c'.repeat(40)
+    vi.stubGlobal('fetch', vi.fn(() => response(value)))
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    expect(screen.getByText('Accepted proposal')).toBeInTheDocument()
+    expect(screen.getByText('No proposal document.')).toBeInTheDocument()
+    expect(screen.getByText('Inspect the visual change and complete exact diff.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View proposal' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue editing' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+  })
+
   it('names each changed Diagram and distinguishes home from reusable appearances', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const value = reviewedArchitecture()
@@ -710,6 +813,8 @@ describe('proposal workspace contexts', () => {
     await user.click(screen.getByRole('button', { name: 'Return to review' }))
     expect(pane.scrollTop).toBe(0)
     expect(screen.getByRole('button', { name: 'With changes' })).toBeInTheDocument()
+    expect(screen.getByText('Out of date with Accepted. You can inspect this review, but it cannot update Architecture until the proposal matches Accepted.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue editing' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
   })
 

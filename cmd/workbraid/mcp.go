@@ -11,7 +11,7 @@ import (
 
 type noToolInput struct{}
 
-const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. List or create change sets, then address every edit by exact change_set_id and generation. Review that same change set and Update only with its exact returned binding."
+const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. List or create change sets, then address every edit by exact change_set_id and generation. Review that same change set, give its returned review_url to the reviewer, and Update only with its exact returned binding."
 
 type nopWriteCloser struct{ io.Writer }
 
@@ -68,7 +68,7 @@ func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
 	addMCPTool[agentapi.ChangeSetInspectRequest](server, client, "change_set_inspect", "Inspect change set", "Inspect one exact active or applied change set, including proposal Markdown, base, generation, concrete facts, validity, candidate, out-of-date state, Review, and applied revision.", readAnnotations("Inspect change set"))
 	addMCPTool[agentapi.ChangeSetRenameRequest](server, client, "change_set_rename", "Rename change set", "Rename one active change set at its exact generation. Names select visually; the stable UUID remains identity.", mutationAnnotations("Rename change set", false, false))
 	addMCPTool[agentapi.ChangeSetEditProposalRequest](server, client, "change_set_edit_proposal", "Edit proposal", "Replace the exact Markdown proposal document for one active change set at its exact generation. This invalidates only that change set's Review.", mutationAnnotations("Edit proposal", false, false))
-	addMCPTool[agentapi.ChangeSetReviewRequest](server, client, "change_set_review", "Review change set", "Review one exact active generation against its original base and return the exact binding required by architecture_update. Out-of-date work remains reviewable.", mutationAnnotations("Review change set", false, true))
+	addMCPTool[agentapi.ChangeSetReviewRequest](server, client, "change_set_review", "Review change set", "Review one exact active generation against its original base and return the exact binding required by architecture_update plus a review_url to give the reviewer. Out-of-date work remains reviewable.", mutationAnnotations("Review change set", false, true))
 	addMCPTool[agentapi.ChangeSetDiscardRequest](server, client, "change_set_discard", "Delete change set", "Delete one whole active change set at its exact generation without changing Accepted or any other record. Partial discard and applied deletion do not exist.", mutationAnnotations("Delete change set", true, false))
 	addMCPTool[agentapi.ComponentCreateRequest](server, client, "component_create", "Create Component", "Create a Component in one explicitly addressed active change set. Pass its exact store UUID, change-set UUID, and generation, plus an explicit home Diagram when known.", mutationAnnotations("Create Component", false, false))
 	addMCPTool[agentapi.ComponentEditRequest](server, client, "component_edit", "Edit Component", "Edit structured Title and/or exact Markdown Description for a stable Component ID under exact state preconditions. Omit unchanged fields; the returned generation replaces the inspected one.", mutationAnnotations("Edit Component", false, false))

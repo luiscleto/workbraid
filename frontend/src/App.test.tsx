@@ -431,13 +431,14 @@ describe('candidate review regressions', () => {
     expect(container.querySelector('script')).toBeNull()
 
     await user.click(screen.getByRole('button', { name: 'Continue editing' }))
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}`)
     expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
   })
 
   it('restores review and proposal tasks across same-project history navigation', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${changeSetID}`
     const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
     window.history.replaceState({}, '', '/projects/example-project')
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
@@ -446,7 +447,7 @@ describe('candidate review regressions', () => {
     await selectProposal(user)
     expect(window.location.pathname).toBe(reviewPath)
 
-    window.history.pushState({}, '', '/projects/example-project')
+    window.history.pushState({}, '', proposalPath)
     window.dispatchEvent(new PopStateEvent('popstate'))
     expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
@@ -458,9 +459,9 @@ describe('candidate review regressions', () => {
   })
 
   it.each([
-    { kind: 'invalidated', value: architecture({ change_sets: [changeSet('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Steady lantern')] }), notice: 'This proposal has changed and needs to be reviewed again.', expectedHeading: 'Steady lantern' },
-    { kind: 'absent', value: architecture({ change_sets: [], unavailable_change_sets: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', reason: 'invalid metadata' }] }), notice: 'That review is no longer available.', expectedHeading: 'Worker' },
-  ])('normalizes an $kind direct review without manufacturing a replacement', async ({ value, notice, expectedHeading }) => {
+    { kind: 'invalidated', value: architecture({ change_sets: [changeSet('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Steady lantern')] }), notice: 'This proposal has changed and needs to be reviewed again.', expectedHeading: 'Steady lantern', expectedPath: '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' },
+    { kind: 'absent', value: architecture({ change_sets: [], unavailable_change_sets: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', reason: 'invalid metadata' }] }), notice: 'That review is no longer available.', expectedHeading: 'Worker', expectedPath: '/projects/example-project' },
+  ])('normalizes an $kind direct review without manufacturing a replacement', async ({ value, notice, expectedHeading, expectedPath }) => {
     window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
     vi.stubGlobal('fetch', vi.fn(() => response(value)))
     render(<App />)
@@ -468,11 +469,12 @@ describe('candidate review regressions', () => {
     expect((await screen.findByText(notice)).closest('[role="alert"]')).toHaveTextContent(notice)
     expect(screen.getByRole('heading', { name: expectedHeading })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe(expectedPath)
   })
 
   it('protects an unsaved proposal when history requests its review route', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${changeSetID}`
     const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
     window.history.replaceState({}, '', reviewPath)
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
@@ -480,15 +482,15 @@ describe('candidate review regressions', () => {
     render(<App />)
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Continue editing' }))
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe(proposalPath)
     await user.type(screen.getByRole('textbox', { name: 'Proposal' }), 'Local direction')
 
     act(() => window.history.back())
     let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe(proposalPath)
     await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByRole('textbox', { name: 'Proposal' })).toHaveValue('Local direction')
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe(proposalPath)
 
     act(() => window.history.back())
     guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
@@ -605,7 +607,7 @@ describe('candidate review regressions', () => {
     await selectProposal(user)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
     expect(await screen.findByText('The current architecture could not be loaded. This earlier view is read-only.')).toBeInTheDocument()
-    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(window.location.pathname).toBe('/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
     expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()
@@ -614,6 +616,75 @@ describe('candidate review regressions', () => {
 })
 
 describe('proposal workspace contexts', () => {
+  it.each([
+    { lifecycle: 'active', name: 'Open route', extra: {} },
+    { lifecycle: 'applied', name: 'Accepted route', extra: { lifecycle: 'applied', read_only: true, applied_revision: 'b'.repeat(40) } },
+  ])('restores a direct $lifecycle proposal task by UUID', async ({ name, extra }) => {
+    const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${proposalID}`
+    window.history.replaceState({}, '', proposalPath)
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(proposalID, name, extra)] }))))
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Showing ${name}` })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe(proposalPath)
+  })
+
+  it('normalizes a missing direct proposal to Accepted', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({
+      change_sets: [],
+      unavailable_change_sets: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', reason: 'invalid metadata' }],
+    }))))
+    render(<App />)
+
+    expect(await screen.findByText('That proposal is no longer available.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+  })
+
+  it('pushes Showing context routes and restores them with Back and Forward', async () => {
+    const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${proposalID}`
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(proposalID, 'Steady lantern')] }))))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await selectShowing(user, 'Steady lantern')
+    expect(window.location.pathname).toBe(proposalPath)
+    act(() => window.history.back())
+    expect(await screen.findByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+    act(() => window.history.forward())
+    expect(await screen.findByRole('button', { name: 'Showing Steady lantern' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(proposalPath)
+  })
+
+  it('preserves a dirty proposal route so Back can be retried deliberately', async () => {
+    const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${proposalID}`
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(proposalID, 'Steady lantern')] }))))
+    const user = userEvent.setup()
+    render(<App />)
+    await selectShowing(user, 'Steady lantern')
+    await user.type(screen.getByRole('textbox', { name: 'Proposal' }), 'Local direction')
+
+    act(() => window.history.back())
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    expect(window.location.pathname).toBe(proposalPath)
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('textbox', { name: 'Proposal' })).toHaveValue('Local direction')
+    act(() => window.history.back())
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(await screen.findByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
+  })
+
   it('creates a generated proposal from the right-pane New changes task', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const generatedID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'

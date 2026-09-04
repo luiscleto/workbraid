@@ -190,7 +190,7 @@ type NavigationIntent =
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
   | { kind: 'open-another' }
-  | { kind: 'route'; slug?: string; reviewChangeSetID?: string }
+  | { kind: 'route'; slug?: string; proposalChangeSetID?: string; reviewChangeSetID?: string }
   | { kind: 'refresh' }
   | { kind: 'clear' }
   | { kind: 'review-result'; result: ArchitectureResult }
@@ -444,7 +444,7 @@ function ShowingMenu({
         onClick={() => open ? setOpen(false) : showMenu()}
         onKeyDown={onTriggerKeyDown}
       >
-        <span>{options[selectedIndex].label}</span><span className="showing-chevron" aria-hidden="true">⌄</span>
+        <span>{options[selectedIndex].label}</span><span className="showing-chevron" aria-hidden="true">▾</span>
       </button>
       {open && (
         <div
@@ -529,6 +529,30 @@ export function App() {
     setWorkspaceTask(task ?? (selectedChangeSet ? 'changes' : result.components?.length ? 'documentation' : 'empty'))
   }, [selectedDiagramID])
 
+  function enterProposalRoute(result: ArchitectureResult, changeSetID: string, historyMode: 'push' | 'replace' | 'none') {
+    const selected = result.change_sets.find((changeSet) => changeSet.id === changeSetID)
+    setEditor(null)
+    setDiagramEditor(null)
+    setCreatingChangeSet(false)
+    setNewChangeSetName('')
+    setDiscardConfirming(false)
+    setChangeSetTextDirty(false)
+    if (selected) {
+      enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
+      setReviewVisible(false)
+      setArchitectureNotice('')
+      const path = proposalRoutePath(result.project_slug, changeSetID)
+      if (historyMode === 'push') window.history.pushState({}, '', path)
+      if (historyMode === 'replace') window.history.replaceState({}, '', path)
+    } else {
+      enterWorkspace({ ...result, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
+      setReviewVisible(false)
+      setArchitectureNotice('That proposal is no longer available.')
+      window.history.replaceState({}, '', projectRoutePath(result.project_slug))
+    }
+    resetWorkingPaneScroll()
+  }
+
   function enterReviewRoute(result: ArchitectureResult, changeSetID: string, historyMode: 'push' | 'replace' | 'none') {
     const selected = result.change_sets.find((changeSet) => changeSet.id === changeSetID)
     setEditor(null)
@@ -548,7 +572,7 @@ export function App() {
       enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(false)
       setArchitectureNotice('This proposal has changed and needs to be reviewed again.')
-      window.history.replaceState({}, '', projectRoutePath(result.project_slug))
+      window.history.replaceState({}, '', proposalRoutePath(result.project_slug, changeSetID))
     } else {
       enterWorkspace({ ...result, changes: undefined, action_change_set_id: undefined }, result.components.length ? 'documentation' : 'empty', 'accepted')
       setReviewVisible(false)
@@ -559,6 +583,10 @@ export function App() {
   }
 
   function leaveReviewRoute(result: ArchitectureResult, updateHistory: boolean) {
+    if (result.changes) {
+      enterProposalRoute(result, result.changes.id, updateHistory ? 'push' : 'none')
+      return
+    }
     setReviewVisible(false)
     setWorkspaceTask(result.changes ? 'changes' : result.components.length ? 'documentation' : 'empty')
     setArchitectureNotice('')
@@ -664,7 +692,7 @@ export function App() {
 
   useEffect(() => {
     const route = decodeProjectRoute(window.location.pathname)
-    if (route?.slug) void openProject(route.slug, true, route.reviewChangeSetID)
+    if (route?.slug) void openProject(route.slug, true, route.proposalChangeSetID, route.reviewChangeSetID)
     else void loadCatalog()
     const restoreHistoryRoute = () => {
       const target = decodeProjectRoute(window.location.pathname)
@@ -672,18 +700,22 @@ export function App() {
       if (current.kind === 'ready' && target?.slug === current.value.project_slug) {
         const alreadyShowingTarget = target.reviewChangeSetID
           ? reviewVisibleRef.current && current.value.changes?.id === target.reviewChangeSetID
-          : !reviewVisibleRef.current
+          : target.proposalChangeSetID
+            ? !reviewVisibleRef.current && current.value.changes?.id === target.proposalChangeSetID
+            : !reviewVisibleRef.current && selectedContextIDRef.current === 'accepted'
         if (alreadyShowingTarget) return
       }
       if (editorDirtyRef.current && current.kind === 'ready') {
         const currentPath = reviewVisibleRef.current && current.value.changes?.review
           ? reviewRoutePath(current.value.project_slug, current.value.changes.id)
-          : projectRoutePath(current.value.project_slug)
+          : current.value.changes
+            ? proposalRoutePath(current.value.project_slug, current.value.changes.id)
+            : projectRoutePath(current.value.project_slug)
         window.history.pushState({}, '', currentPath)
-        setNavigationIntent({ kind: 'route', slug: target?.slug, reviewChangeSetID: target?.reviewChangeSetID })
+        setNavigationIntent({ kind: 'route', slug: target?.slug, proposalChangeSetID: target?.proposalChangeSetID, reviewChangeSetID: target?.reviewChangeSetID })
         return
       }
-      void restoreRoute(target?.slug, target?.reviewChangeSetID)
+      void restoreRoute(target?.slug, target?.proposalChangeSetID, target?.reviewChangeSetID)
     }
     window.addEventListener('popstate', restoreHistoryRoute)
     return () => window.removeEventListener('popstate', restoreHistoryRoute)
@@ -704,7 +736,7 @@ export function App() {
     }
   }
 
-  async function openProject(slug: string, replaceRoute = false, reviewChangeSetID?: string) {
+  async function openProject(slug: string, replaceRoute = false, proposalChangeSetID?: string, reviewChangeSetID?: string) {
     setState({ kind: 'looking' })
     setArchitectureNotice('')
     try {
@@ -717,6 +749,8 @@ export function App() {
       }
       if (reviewChangeSetID) {
         enterReviewRoute(result, reviewChangeSetID, replaceRoute ? 'replace' : 'push')
+      } else if (proposalChangeSetID) {
+        enterProposalRoute(result, proposalChangeSetID, replaceRoute ? 'replace' : 'push')
       } else {
         window.history[replaceRoute ? 'replaceState' : 'pushState']({}, '', projectRoutePath(result.project_slug))
         enterWorkspace(result, undefined, 'accepted')
@@ -1083,9 +1117,11 @@ export function App() {
     if (intent.kind === 'context') {
       if (state.kind !== 'ready') return
       const selected = intent.id === 'accepted' ? undefined : state.value.change_sets.find((changeSet) => changeSet.id === intent.id)
-      if (window.location.pathname !== projectRoutePath(state.value.project_slug)) {
-        window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
+      if (selected) {
+        enterProposalRoute(state.value, selected.id, 'push')
+        return
       }
+      if (window.location.pathname !== projectRoutePath(state.value.project_slug)) window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
       enterWorkspace({ ...state.value, changes: selected, action_change_set_id: undefined }, selected ? 'changes' : state.value.components.length ? 'documentation' : 'empty', intent.id)
       setReviewVisible(false)
       setDiscardConfirming(false)
@@ -1114,7 +1150,7 @@ export function App() {
       return
     }
     if (intent.kind === 'route') {
-      await restoreRoute(intent.slug, intent.reviewChangeSetID)
+      await restoreRoute(intent.slug, intent.proposalChangeSetID, intent.reviewChangeSetID)
       return
     }
     if (state.kind !== 'ready') return
@@ -1142,17 +1178,27 @@ export function App() {
     }
   }
 
-  async function restoreRoute(slug?: string, reviewChangeSetID?: string) {
+  async function restoreRoute(slug?: string, proposalChangeSetID?: string, reviewChangeSetID?: string) {
     const current = stateRef.current
     if (slug) {
       if (current.kind === 'ready' && current.value.project_slug === slug) {
         if (reviewChangeSetID) enterReviewRoute(current.value, reviewChangeSetID, 'replace')
+        else if (proposalChangeSetID) enterProposalRoute(current.value, proposalChangeSetID, 'replace')
         else {
-          leaveReviewRoute(current.value, false)
+          setEditor(null)
+          setDiagramEditor(null)
+          setCreatingChangeSet(false)
+          setNewChangeSetName('')
+          setDiscardConfirming(false)
+          setChangeSetTextDirty(false)
+          setReviewVisible(false)
+          setArchitectureNotice('')
+          enterWorkspace({ ...current.value, changes: undefined, action_change_set_id: undefined }, current.value.components.length ? 'documentation' : 'empty', 'accepted')
           window.history.replaceState({}, '', projectRoutePath(current.value.project_slug))
+          resetWorkingPaneScroll()
         }
       } else {
-        await openProject(slug, true, reviewChangeSetID)
+        await openProject(slug, true, proposalChangeSetID, reviewChangeSetID)
       }
       return
     }
@@ -1229,6 +1275,9 @@ export function App() {
       const route = decodeProjectRoute(window.location.pathname)
       if (route?.reviewChangeSetID) {
         enterReviewRoute(payload, route.reviewChangeSetID, 'replace')
+        if (notice) setArchitectureNotice(notice)
+      } else if (route?.proposalChangeSetID) {
+        enterProposalRoute(payload, route.proposalChangeSetID, 'replace')
         if (notice) setArchitectureNotice(notice)
       } else {
         if (payload.project_slug !== result.project_slug) window.history.replaceState({}, '', projectRoutePath(payload.project_slug))
@@ -2403,15 +2452,21 @@ function projectRoutePath(slug: string) {
   return `/projects/${encodeURIComponent(slug)}`
 }
 
-function reviewRoutePath(slug: string, changeSetID: string) {
-  return `${projectRoutePath(slug)}/proposals/${encodeURIComponent(changeSetID)}/review`
+function proposalRoutePath(slug: string, changeSetID: string) {
+  return `${projectRoutePath(slug)}/proposals/${encodeURIComponent(changeSetID)}`
 }
 
-function decodeProjectRoute(pathname: string): { slug: string; reviewChangeSetID?: string } | undefined {
+function reviewRoutePath(slug: string, changeSetID: string) {
+  return `${proposalRoutePath(slug, changeSetID)}/review`
+}
+
+function decodeProjectRoute(pathname: string): { slug: string; proposalChangeSetID?: string; reviewChangeSetID?: string } | undefined {
   const reviewMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/review\/?$/.exec(pathname)
+  const proposalMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/?$/.exec(pathname)
   const projectMatch = /^\/projects\/([^/]+)\/?$/.exec(pathname)
   try {
     if (reviewMatch) return { slug: decodeURIComponent(reviewMatch[1]), reviewChangeSetID: decodeURIComponent(reviewMatch[2]) }
+    if (proposalMatch) return { slug: decodeURIComponent(proposalMatch[1]), proposalChangeSetID: decodeURIComponent(proposalMatch[2]) }
     if (projectMatch) return { slug: decodeURIComponent(projectMatch[1]) }
   } catch {
     return undefined

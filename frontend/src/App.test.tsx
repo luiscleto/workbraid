@@ -556,6 +556,33 @@ describe('proposal workspace contexts', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('guards a typed New changes name and drops it only after confirmed navigation', async () => {
+    window.history.replaceState({}, '', '/projects/example-project')
+    const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const fetchMock = vi.fn(() => response(architecture({ change_sets: [changeSet(proposalID, 'Steady lantern')] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'New changes' }))
+    await user.type(screen.getByLabelText('Name'), 'Local direction')
+    await selectShowing(user, 'Steady lantern')
+    let guard = screen.getByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('heading', { name: 'New changes' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('Local direction')
+    expect(screen.getByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+
+    await selectShowing(user, 'Steady lantern')
+    guard = screen.getByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(screen.getByRole('button', { name: 'Showing Steady lantern' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'New changes' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('switches Accepted, valid, and invalid contexts locally without overlaying snapshots', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const validID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -736,6 +763,14 @@ describe('proposal workspace contexts', () => {
     expect(trigger).toHaveAccessibleName('Showing Open work')
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByRole('heading', { name: 'Open work' })).toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    const reopened = screen.getByRole('listbox', { name: 'Showing' })
+    const preceding = within(reopened).getByRole('option', { name: 'Accepted' })
+    expect(reopened).toHaveAttribute('aria-activedescendant', preceding.id)
+    await user.keyboard('{Enter}')
+    expect(trigger).toHaveAccessibleName('Showing Accepted')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('explains an empty review without offering an Accepted update', async () => {

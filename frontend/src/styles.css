@@ -2303,6 +2303,12 @@ dd {
     gap: 8px;
   }
 
+  .application-frame > div:first-child,
+  .frame-actions {
+    width: 100%;
+    flex-basis: auto;
+  }
+
   .architecture-workbench {
     display: block;
     overflow: visible;

@@ -371,14 +371,13 @@ function ShowingMenu({
 
   useEffect(() => {
     if (!open) return
-    setActiveIndex(selectedIndex)
     listboxRef.current?.focus()
     const closeOnOutsidePress = (event: PointerEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false)
     }
     document.addEventListener('pointerdown', closeOnOutsidePress)
     return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
-  }, [open, selectedIndex])
+  }, [open])
 
   const showMenu = (index = selectedIndex) => {
     setActiveIndex(index)
@@ -540,8 +539,9 @@ export function App() {
   const diagramEditorDirty = diagramEditor !== null && (diagramEditor.kind === 'move'
     ? diagramEditor.diagramID !== ''
     : diagramEditor.title !== diagramEditor.initialTitle)
+  const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || newChangeSetNameDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -970,7 +970,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || newChangeSetNameDirty) {
       setNavigationIntent(intent)
       return
     }

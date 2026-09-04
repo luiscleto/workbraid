@@ -124,7 +124,7 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByRole('heading', { name: 'Change B', level: 2 })).toBeVisible()
     await page.getByRole('button', { name: 'Return to review' }).click()
     await expect(page.getByRole('button', { name: 'With changes' })).toBeVisible()
-    await expect(page.getByText(/Out of date with Accepted/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Showing Change B · Out of date' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
     await expect(page.getByText('Processes work.', { exact: true })).toBeVisible()
 

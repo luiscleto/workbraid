@@ -69,7 +69,7 @@ This is an interface layer over Architecture, not another vertical or authority.
 
 Architecture Agent Access 1 is complete at completion record `540724919165ea95c9ee3088aca084d91eb8e1c3`, with final implementation `0a82c89d2a214896fe6b7020fe312cdd109beaeb`.
 
-## Architecture Change Sets 1 — next stage
+## Architecture Change Sets 1 — complete
 
 Replace the one anonymous process-lifetime pending set with durable named parallel Architecture proposals:
 
@@ -80,9 +80,11 @@ Replace the one anonymous process-lifetime pending set with durable named parall
 - proposals which remain exact and editable against their original base when another proposal advances Accepted; and
 - browser, CLI, embedded skill, and MCP parity through explicit change-set IDs and generations.
 
-Change Sets 1 adds neither review comments nor reconciliation. `docs/architecture-change-sets-v0.md` contains the proposed contract.
+Change Sets 1 adds neither review comments nor reconciliation. `docs/architecture-change-sets-v0.md` contains its product contract.
 
-## Architecture Reviews 1 — later utility stage
+Architecture Change Sets 1 is complete at completion record `c28f817b8cbe2caa587b4312c1b14c87388b8d52`, with final implementation `5870941dc803ba5fd7c9a57d6b278223619e0471`.
+
+## Architecture Reviews 1 — next stage
 
 Add durable review submissions against one exact change-set revision. A review may contain comments anchored to:
 
@@ -96,7 +98,7 @@ Add durable review submissions against one exact change-set revision. A review m
 
 A submission may carry the lightweight verdict **Comment**, **Approve**, or **Request changes**. These verdicts do not gate editing or acceptance in this stage. CLI and MCP can read reviews so agents can iterate the same change set. Comments remain bound to the exact reviewed base, candidate tree, and generation; later edits must not silently present an old comment as feedback on new content.
 
-This roadmap records the stage only. Anchor schema, comment lifecycle, author identity, resolution behavior, and durable representation require their own product decision.
+Reviews use their own private-Git ref namespace and retain the exact reviewed Change Set state through a Git parent link so later proposal mutation, application, discard, restart, and ordinary garbage collection cannot retarget or lose the feedback. Review submissions remain separate from `Review changes`: the latter still prepares the exact candidate/binding used for acceptance, while a submission records informational feedback on that already-bound state. `docs/architecture-reviews-v0.md` contains the approved exact contract, including permanent direct access to submitted reviews after proposal discard without inventing a discarded Change Set lifecycle.
 
 ## Architecture Reconciliation 1 — later utility stage
 

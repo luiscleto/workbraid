@@ -256,6 +256,8 @@ type NavigationIntent =
   | { kind: 'refresh' }
   | { kind: 'clear' }
   | { kind: 'review-result'; result: ArchitectureResult }
+  | { kind: 'review-context-replacement'; apply: () => void }
+  | { kind: 'continue-editing' }
 
 type ErrorCode =
   | 'name_required'
@@ -606,6 +608,7 @@ export function App() {
   const [reviewVisible, setReviewVisible] = useState(false)
   const [selectedContextID, setSelectedContextID] = useState('accepted')
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
+  const [reviewContextTextDirty, setReviewContextTextDirty] = useState(false)
   const [creatingChangeSet, setCreatingChangeSet] = useState(false)
   const [newChangeSetName, setNewChangeSetName] = useState('')
   const [openReviewAnnotations, setOpenReviewAnnotations] = useState<Record<string, ReviewAnnotationGroup>>({})
@@ -1264,8 +1267,28 @@ export function App() {
     void performNavigation(intent)
   }
 
+  function requestReviewContextReplacement(apply: () => void) {
+    const intent: NavigationIntent = { kind: 'review-context-replacement', apply }
+    if (reviewContextTextDirty) {
+      setNavigationIntent(intent)
+      return
+    }
+    void performNavigation(intent)
+  }
+
   async function performNavigation(intent: NavigationIntent) {
     setNavigationIntent(null)
+    if (intent.kind === 'review-context-replacement') {
+      intent.apply()
+      return
+    }
+    if (intent.kind === 'continue-editing') {
+      if (state.kind === 'ready') {
+        setLocalReviewComments([])
+        leaveReviewRoute(state.value, true)
+      }
+      return
+    }
     if (intent.kind === 'new-changes') {
       if (editorDirtyRef.current) {
         setEditor(null)
@@ -1646,14 +1669,16 @@ export function App() {
         requestNavigation({ kind: 'component', id })
         return
       }
-      const component = activeComponents.find((candidate) => candidate.id === id)
-      if (!component) return
-      const change = componentReviewStatus.get(id)
-      setReviewSelectionCleared(false)
-      setSelectedComponentID(id)
-      setReviewFocus({
-        kind: 'component', key: `component:${id}`, componentID: id, title: component.title,
-        path: change?.path ?? canonicalReviewPath(component), status: change?.status ?? 'unchanged',
+      requestReviewContextReplacement(() => {
+        const component = activeComponents.find((candidate) => candidate.id === id)
+        if (!component) return
+        const change = componentReviewStatus.get(id)
+        setReviewSelectionCleared(false)
+        setSelectedComponentID(id)
+        setReviewFocus({
+          kind: 'component', key: `component:${id}`, componentID: id, title: component.title,
+          path: change?.path ?? canonicalReviewPath(component), status: change?.status ?? 'unchanged',
+        })
       })
     }
     const selectDiagram = (diagramID: string, focusComponentID?: string) => {
@@ -1661,16 +1686,18 @@ export function App() {
         requestNavigation({ kind: 'diagram', id: diagramID, focusComponentID })
         return
       }
-      const diagram = diagramProjection.diagrams?.find((candidate) => candidate.id === diagramID)
-      if (!diagram) return
-      setReviewSelectionCleared(false)
-      setSelectedDiagramID(diagram.id)
-      setSelectedComponentID(focusComponentID && diagram.appearances.some((appearance) => appearance.component_id === focusComponentID)
-        ? focusComponentID
-        : diagram.appearances[0]?.component_id)
-      setWorkspaceTask(diagram.appearances.length ? 'documentation' : 'empty')
-      setEditor(null)
-      setReviewFocus(null)
+      requestReviewContextReplacement(() => {
+        const diagram = diagramProjection.diagrams?.find((candidate) => candidate.id === diagramID)
+        if (!diagram) return
+        setReviewSelectionCleared(false)
+        setSelectedDiagramID(diagram.id)
+        setSelectedComponentID(focusComponentID && diagram.appearances.some((appearance) => appearance.component_id === focusComponentID)
+          ? focusComponentID
+          : diagram.appearances[0]?.component_id)
+        setWorkspaceTask(diagram.appearances.length ? 'documentation' : 'empty')
+        setEditor(null)
+        setReviewFocus(null)
+      })
     }
     const selectMapNode = (id: string) => {
       if (!activeDiagram) {
@@ -1685,35 +1712,44 @@ export function App() {
       selectComponent(id)
     }
     const selectRelationship = (relationship: ReviewRelationshipSelection) => {
-      const relationshipSide = relationship.review_side ?? reviewSide
-      const relationshipProjection = relationshipSide === 'with' ? review?.with_changes : review?.before
-      const relationshipDiagram = relationshipProjection?.format_version === 2
-        ? relationshipProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
-          ?? relationshipProjection.diagrams?.find((diagram) => diagram.id === relationshipProjection.root_diagram_id)
-        : undefined
-      const relationshipComponents = relationshipProjection && relationshipDiagram
-        ? componentsForDiagram(relationshipProjection, relationshipDiagram)
-        : relationshipProjection?.components ?? activeComponents
-      setReviewSelectionCleared(false)
-      if (relationship.review_side && relationship.review_side !== reviewSide) setReviewSide(relationship.review_side)
-      setSelectedComponentID(relationshipComponents.some((component) => component.id === relationship.source_id)
-        ? relationship.source_id
-        : undefined)
-      setReviewFocus({ kind: 'relationship', ...relationship })
+      requestReviewContextReplacement(() => {
+        const relationshipSide = relationship.review_side ?? reviewSide
+        const relationshipProjection = relationshipSide === 'with' ? review?.with_changes : review?.before
+        const relationshipDiagram = relationshipProjection?.format_version === 2
+          ? relationshipProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+            ?? relationshipProjection.diagrams?.find((diagram) => diagram.id === relationshipProjection.root_diagram_id)
+          : undefined
+        const relationshipComponents = relationshipProjection && relationshipDiagram
+          ? componentsForDiagram(relationshipProjection, relationshipDiagram)
+          : relationshipProjection?.components ?? activeComponents
+        setReviewSelectionCleared(false)
+        if (relationship.review_side && relationship.review_side !== reviewSide) setReviewSide(relationship.review_side)
+        setSelectedComponentID(relationshipComponents.some((component) => component.id === relationship.source_id)
+          ? relationship.source_id
+          : undefined)
+        setReviewFocus({ kind: 'relationship', ...relationship })
+      })
     }
     const switchReviewSide = (side: ReviewSide) => {
       if (!review || side === reviewSide) return
-      const nextProjection = side === 'with' ? review.with_changes : review.before
-      const nextDiagram = nextProjection.format_version === 2
-        ? nextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
-          ?? nextProjection.diagrams?.find((diagram) => diagram.id === nextProjection.root_diagram_id)
-        : undefined
-      const nextComponents = nextDiagram ? componentsForDiagram(nextProjection, nextDiagram) : nextProjection.components
-      setReviewSelectionCleared(false)
-      setReviewSide(side)
-      setReviewFocus((current) => current?.kind === 'diagram' && current.componentID && current.reviewSide &&
-        nextProjection.diagrams?.some((diagram) => diagram.id === current.diagramID) ? current : null)
-      setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)
+      requestReviewContextReplacement(() => {
+        const nextProjection = side === 'with' ? review.with_changes : review.before
+        const nextDiagram = nextProjection.format_version === 2
+          ? nextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
+            ?? nextProjection.diagrams?.find((diagram) => diagram.id === nextProjection.root_diagram_id)
+          : undefined
+        const nextComponents = nextDiagram ? componentsForDiagram(nextProjection, nextDiagram) : nextProjection.components
+        setReviewSelectionCleared(false)
+        setReviewSide(side)
+        setReviewFocus((current) => current?.kind === 'diagram' && current.componentID && current.reviewSide &&
+          nextProjection.diagrams?.some((diagram) => diagram.id === current.diagramID) ? current : null)
+        setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)
+      })
+    }
+    const openReviewAnnotation = (group: ReviewAnnotationGroup) => {
+      const targetSide = group.side === 'before' ? 'before' : group.side === 'with_changes' ? 'with' : undefined
+      if (targetSide && targetSide !== reviewSide) requestReviewContextReplacement(() => toggleReviewAnnotation(group))
+      else toggleReviewAnnotation(group)
     }
     const externalReferences = activeDiagram && activeDiagram.boundaries.length > 0 ? (
       <nav className="diagram-boundary-dock" aria-label="Components that live elsewhere">
@@ -1754,7 +1790,7 @@ export function App() {
         {dockListComments.length > 0 && <ReviewDiagramComments
           review={reviewPresentation}
           comments={dockListComments}
-          onOpen={(comment) => toggleReviewAnnotation({
+          onOpen={(comment) => openReviewAnnotation({
             key: `dock-comment:${comment.id}`,
             label: reviewAnchorPresentation(reviewPresentation, comment.anchor).label,
             side: comment.anchor.side,
@@ -1858,7 +1894,7 @@ export function App() {
                         {referenceContext && <small className="appearance-note">{referenceContext}</small>}
                         {statusLabel && <small className="index-review-status">{statusLabel}</small>}
                       </button>
-                      {comments && <AnnotationMarker group={comments} onToggle={() => { selectComponent(component.id); toggleReviewAnnotation(comments) }} />}
+                      {comments && <AnnotationMarker group={comments} onToggle={() => { selectComponent(component.id); openReviewAnnotation(comments) }} />}
                     </div>
                   </li>
                   )
@@ -1875,7 +1911,7 @@ export function App() {
                       <button type="button" aria-label={`${component.title}, in ${diagram.title}`} onClick={() => selectDiagram(diagram.id, component.id)}>
                         <span>{component.title}</span><small>In {diagram.title}</small>
                       </button>
-                      <AnnotationMarker group={group} onToggle={() => { selectDiagram(diagram.id, component.id); toggleReviewAnnotation(group) }} />
+                      <AnnotationMarker group={group} onToggle={() => { selectDiagram(diagram.id, component.id); openReviewAnnotation(group) }} />
                     </div>
                   </li>
                 })}</ul>
@@ -1934,11 +1970,11 @@ export function App() {
                 annotationRelationships={Object.fromEntries(Object.entries(relationshipAnnotationGroups).map(([key, group]) => [key, group.comments.length]))}
                 onSelectNodeAnnotation={(id) => {
                   const group = mapNodeAnnotationGroups[id]
-                  if (group) toggleReviewAnnotation(group)
+                  if (group) openReviewAnnotation(group)
                 }}
                 onSelectRelationshipAnnotation={(key) => {
                   const group = relationshipAnnotationGroups[key]
-                  if (group) toggleReviewAnnotation(group)
+                  if (group) openReviewAnnotation(group)
                 }}
                 externalReferences={externalReferences}
                 comments={reviewCommentsDock}
@@ -1978,18 +2014,19 @@ export function App() {
                 onOpenCurrentReview={currentProposalRecord?.review ? () => requestNavigation({ kind: 'review-result', result: { ...result, submitted_review: undefined, changes: currentProposalRecord } }) : undefined}
                 onOpenProposal={currentProposalRecord ? () => requestNavigation({ kind: 'context', id: currentProposalRecord.id }) : undefined}
                 onOpenAccepted={() => requestNavigation({ kind: 'context', id: 'accepted' })}
-                onOpenAnnotation={toggleReviewAnnotation}
+                onOpenAnnotation={openReviewAnnotation}
                 localReviewComments={localReviewComments}
                 onLocalReviewComments={setLocalReviewComments}
+                onContextTextDirty={setReviewContextTextDirty}
                 onSubmitReview={(input) => submitReviewFeedback(result, input)}
                 onReviewSide={switchReviewSide}
-                onContinueEditing={() => leaveReviewRoute(result, true)}
-                onClearReviewFocus={() => {
+                onContinueEditing={() => requestNavigation({ kind: 'continue-editing' })}
+                onClearReviewFocus={() => requestReviewContextReplacement(() => {
                   setReviewSelectionCleared(true)
                   setSelectedComponentID(undefined)
                   setReviewFocus(null)
-                }}
-                onFocusDiagram={(focus) => {
+                })}
+                onFocusDiagram={(focus) => requestReviewContextReplacement(() => {
                   setReviewSelectionCleared(false)
                   if (focus.reviewSide && focus.reviewSide !== reviewSide) setReviewSide(focus.reviewSide)
                   setSelectedDiagramID(focus.diagramID)
@@ -1999,7 +2036,7 @@ export function App() {
                     ? focus.componentID
                     : undefined)
                   setReviewFocus(focus)
-                }}
+                })}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
@@ -2041,6 +2078,7 @@ export function App() {
                 onOpenSubmittedReview={(reviewID) => requestNavigation({ kind: 'submitted-review', changeSetID: result.changes!.id, reviewID })}
                 localReviewComments={localReviewComments}
                 onLocalReviewComments={setLocalReviewComments}
+                onContextTextDirty={setReviewContextTextDirty}
                 onReturnToReview={currentReview && !acceptanceUnknown ? () => {
                   requestNavigation({ kind: 'review-result', result })
                 } : undefined}
@@ -2394,6 +2432,7 @@ function ChangesTask({
   onOpenAnnotation,
   localReviewComments,
   onLocalReviewComments,
+  onContextTextDirty,
   onSubmitReview,
   onReviewSide,
   onContinueEditing,
@@ -2433,6 +2472,7 @@ function ChangesTask({
   onOpenAnnotation?: (group: ReviewAnnotationGroup) => void
   localReviewComments: LocalReviewComment[]
   onLocalReviewComments: (comments: LocalReviewComment[]) => void
+  onContextTextDirty: (dirty: boolean) => void
   onSubmitReview?: (input: { author: string; verdict: ReviewSubmissionSummary['verdict']; body: string; comments: { body: string; anchor: ReviewAnchor }[] }) => void
   onReviewSide?: (side: ReviewSide) => void
   onContinueEditing?: () => void
@@ -2470,6 +2510,10 @@ function ChangesTask({
     if (!changes?.review || activeReviewSubmission) return
     onTextDirty(reviewFormDirty || inlineCommentDirty || localReviewComments.length > 0)
   }, [changes?.review, activeReviewSubmission, reviewFormDirty, inlineCommentDirty, localReviewComments.length, onTextDirty])
+  useEffect(() => {
+    onContextTextDirty(Boolean(changes?.review && !activeReviewSubmission && inlineCommentDirty))
+    return () => onContextTextDirty(false)
+  }, [changes?.review, activeReviewSubmission, inlineCommentDirty, onContextTextDirty])
   if (!changes) return null
   const readOnly = Boolean(result.stale || result.action_error === 'refresh_failed' || changes.stale || changes.read_only || changes.lifecycle === 'applied')
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field

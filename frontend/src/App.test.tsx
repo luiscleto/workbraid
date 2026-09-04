@@ -826,6 +826,79 @@ describe('candidate review regressions', () => {
     expect(window.location.pathname).toBe('/projects/example-project')
   })
 
+  it('protects unsent review feedback before continuing to proposal editing', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
+    window.history.replaceState({}, '', reviewPath)
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const author = await screen.findByRole('textbox', { name: 'Reviewer name' })
+    await user.type(author, 'Local reviewer')
+    await user.click(screen.getByRole('button', { name: 'Continue editing' }))
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(author).toHaveValue('Local reviewer')
+    expect(window.location.pathname).toBe(reviewPath)
+
+    await user.click(screen.getByRole('button', { name: 'Continue editing' }))
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Proposal' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${changeSetID}`)
+  })
+
+  it('protects a partially typed relationship comment before switching review sides', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Added relationship: Worker updated — invokes — External' }))
+    const context = screen.getByRole('region', { name: 'Review context' })
+    await user.click(within(context).getByRole('button', { name: 'Add comment' }))
+    const editor = screen.getByRole('region', { name: /Comment on Worker updated/ })
+    const comment = within(editor).getByRole('textbox', { name: 'Comment' })
+    await user.type(comment, 'Unsent relationship feedback')
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(comment).toHaveValue('Unsent relationship feedback')
+    expect(screen.getByRole('button', { name: 'With changes' })).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByText('Unsent relationship feedback')).not.toBeInTheDocument()
+  })
+
+  it('protects a partially typed component comment before changing selection', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const context = await screen.findByRole('region', { name: 'Review context' })
+    await user.click(within(context).getByRole('button', { name: 'Comment on component' }))
+    const editor = screen.getByRole('region', { name: /Comment on Worker updated/ })
+    const comment = within(editor).getByRole('textbox', { name: 'Comment' })
+    await user.type(comment, 'Unsent component feedback')
+    await user.click(screen.getByRole('button', { name: 'External, Included here · Lives in Detail' }))
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(comment).toHaveValue('Unsent component feedback')
+    expect(screen.getByRole('heading', { name: 'Worker updated' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'External, Included here · Lives in Detail' }))
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(screen.getByRole('heading', { name: 'External' })).toBeInTheDocument()
+    expect(screen.queryByText('Unsent component feedback')).not.toBeInTheDocument()
+  })
+
   it('protects unsent feedback before opening an earlier submitted review', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const reviewID = '77777777-7777-4777-8777-777777777777'

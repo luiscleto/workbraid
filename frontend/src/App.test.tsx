@@ -251,6 +251,7 @@ describe('slug workspace and reusable references', () => {
     await user.selectOptions(picker, external)
     expect(requestBody(fetchMock, 1)).toEqual({ project_slug: 'example-project', store_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', expected_revision: 'a'.repeat(40), pending_generation_observed: true, expected_pending_generation: null, diagram_id: root, component_id: external })
     expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
   })
 
   it('offers Stop showing here only for a canonical reference', async () => {
@@ -709,6 +710,7 @@ describe('proposal workspace contexts', () => {
     })
     expect(await screen.findByRole('heading', { name: 'quiet-harbor' })).toBeInTheDocument()
     expect(screen.getByText('These changes have not updated Architecture yet.')).toBeInTheDocument()
+    expect(window.location.pathname).toBe(`/projects/example-project/proposals/${generatedID}`)
   })
 
   it('cancels New changes back to the previous task and resets pane scroll', async () => {
@@ -757,6 +759,34 @@ describe('proposal workspace contexts', () => {
     await user.click(screen.getByRole('button', { name: 'New changes' }))
     expect(screen.getByLabelText('Name')).toHaveValue('')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a New changes name when Back to the prior proposal is canceled and permits the retry', async () => {
+    const proposalID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const proposalPath = `/projects/example-project/proposals/${proposalID}`
+    window.history.replaceState({}, '', '/projects/example-project')
+    vi.stubGlobal('fetch', vi.fn(() => response(architecture({ change_sets: [changeSet(proposalID, 'Steady lantern')] }))))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await selectShowing(user, 'Steady lantern')
+    await user.click(screen.getByRole('button', { name: 'New changes' }))
+    expect(window.location.pathname).toBe('/projects/example-project')
+    expect(screen.getByRole('button', { name: 'Showing Accepted' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Name'), 'Local direction')
+
+    act(() => window.history.back())
+    let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    expect(window.location.pathname).toBe('/projects/example-project')
+    await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('Local direction')
+    expect(window.location.pathname).toBe('/projects/example-project')
+
+    act(() => window.history.back())
+    guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
+    await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
+    expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe(proposalPath)
   })
 
   it('switches Accepted, valid, and invalid contexts locally without overlaying snapshots', async () => {

@@ -499,6 +499,7 @@ export function App() {
   const [creatingChangeSet, setCreatingChangeSet] = useState(false)
   const [newChangeSetName, setNewChangeSetName] = useState('')
   const workingPaneRef = useRef<HTMLElement>(null)
+  const newChangesReturnRef = useRef<{ changeSetID?: string; review: boolean }>({ review: false })
   const selectedContextIDRef = useRef(selectedContextID)
   selectedContextIDRef.current = selectedContextID
   const reviewVisibleRef = useRef(reviewVisible)
@@ -551,6 +552,16 @@ export function App() {
       window.history.replaceState({}, '', projectRoutePath(result.project_slug))
     }
     resetWorkingPaneScroll()
+  }
+
+  function enterProposalResult(result: ArchitectureResult, requestedChangeSetID?: string) {
+    const changeSetID = requestedChangeSetID ?? result.action_change_set_id ?? result.changes?.id
+    if (!changeSetID) {
+      enterWorkspace(result, 'changes')
+      return
+    }
+    const path = proposalRoutePath(result.project_slug, changeSetID)
+    enterProposalRoute(result, changeSetID, window.location.pathname === path ? 'none' : 'push')
   }
 
   function enterReviewRoute(result: ArchitectureResult, changeSetID: string, historyMode: 'push' | 'replace' | 'none') {
@@ -853,8 +864,7 @@ export function App() {
         setAuthoringError(messageForAuthoringError('code' in payload ? payload.code : undefined))
         return
       }
-      enterWorkspace(payload, 'changes')
-      setEditor(null)
+      enterProposalResult(payload)
     } catch {
       setAuthoringError("WorkBraid couldn't keep that change. Try again.")
     }
@@ -922,8 +932,7 @@ export function App() {
           : "WorkBraid couldn't keep that diagram change. Check the selection and try again.")
         return
       }
-      setDiagramEditor(null)
-      enterWorkspace(payload, 'changes')
+      enterProposalResult(payload)
     } catch {
       setAuthoringError("WorkBraid couldn't keep that diagram change. Try again.")
     }
@@ -950,7 +959,7 @@ export function App() {
         setArchitectureNotice(present ? "WorkBraid couldn't show that component here." : "WorkBraid couldn't stop showing that component here.")
         return
       }
-      enterWorkspace(payload, 'changes')
+      enterProposalResult(payload)
     } catch {
       setArchitectureNotice("WorkBraid couldn't keep that diagram change. Try again.")
     } finally {
@@ -1006,14 +1015,9 @@ export function App() {
         setArchitectureNotice("WorkBraid couldn't create that proposal. Choose a different open proposal name or Refresh.")
         return
       }
-      setCreatingChangeSet(false)
-      setNewChangeSetName('')
-      setEditor(null)
-      setDiagramEditor(null)
-      setReviewVisible(false)
-      setDiscardConfirming(false)
-      enterWorkspace(payload, 'changes', payload.action_change_set_id)
-      resetWorkingPaneScroll()
+      const changeSetID = payload.action_change_set_id ?? payload.changes?.id
+      if (changeSetID) enterProposalRoute(payload, changeSetID, 'push')
+      else enterWorkspace(payload, 'changes')
     } catch {
       setArchitectureNotice("WorkBraid couldn't create that proposal. Try again.")
     } finally {
@@ -1079,8 +1083,11 @@ export function App() {
         setChangeSetTextDirty(false)
       }
       setArchitectureNotice('')
-      if (state.kind === 'ready' && window.location.pathname !== projectRoutePath(state.value.project_slug)) {
-        window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
+      if (state.kind === 'ready') {
+        if (!creatingChangeSet) newChangesReturnRef.current = { changeSetID: state.value.changes?.id, review: reviewVisibleRef.current }
+        if (window.location.pathname !== projectRoutePath(state.value.project_slug)) window.history.pushState({}, '', projectRoutePath(state.value.project_slug))
+        enterWorkspace({ ...state.value, changes: undefined, action_change_set_id: undefined }, state.value.components.length ? 'documentation' : 'empty', 'accepted')
+        setReviewVisible(false)
       }
       setCreatingChangeSet(true)
       setNewChangeSetName('')
@@ -1613,9 +1620,14 @@ export function App() {
                 onName={setNewChangeSetName}
                 onCreate={() => createChangeSet(result)}
                 onCancel={() => {
-                  setCreatingChangeSet(false)
-                  setNewChangeSetName('')
-                  resetWorkingPaneScroll()
+                  const previous = newChangesReturnRef.current
+                  if (previous.review && previous.changeSetID) enterReviewRoute(result, previous.changeSetID, 'replace')
+                  else if (previous.changeSetID) enterProposalRoute(result, previous.changeSetID, 'replace')
+                  else {
+                    setCreatingChangeSet(false)
+                    setNewChangeSetName('')
+                    resetWorkingPaneScroll()
+                  }
                 }}
               />
             ) : review && result.changes ? (

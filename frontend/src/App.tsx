@@ -537,7 +537,7 @@ export function App() {
     setNewChangeSetName('')
     setDiscardConfirming(false)
     setChangeSetTextDirty(false)
-    if (selected?.review) {
+    if (selected?.review && !result.stale && !selected.stale) {
       enterWorkspace({ ...result, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(true)
       setArchitectureNotice('')
@@ -679,7 +679,7 @@ export function App() {
         const currentPath = reviewVisibleRef.current && current.value.changes?.review
           ? reviewRoutePath(current.value.project_slug, current.value.changes.id)
           : projectRoutePath(current.value.project_slug)
-        window.history.replaceState({}, '', currentPath)
+        window.history.pushState({}, '', currentPath)
         setNavigationIntent({ kind: 'route', slug: target?.slug, reviewChangeSetID: target?.reviewChangeSetID })
         return
       }

@@ -474,22 +474,23 @@ describe('candidate review regressions', () => {
   it('protects an unsaved proposal when history requests its review route', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const reviewPath = `/projects/example-project/proposals/${changeSetID}/review`
-    window.history.replaceState({}, '', '/projects/example-project')
+    window.history.replaceState({}, '', reviewPath)
     vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
     const user = userEvent.setup()
     render(<App />)
-    await selectShowing(user, 'Steady lantern')
+    expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Continue editing' }))
+    expect(window.location.pathname).toBe('/projects/example-project')
     await user.type(screen.getByRole('textbox', { name: 'Proposal' }), 'Local direction')
 
-    window.history.pushState({}, '', reviewPath)
-    window.dispatchEvent(new PopStateEvent('popstate'))
+    act(() => window.history.back())
     let guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
     expect(window.location.pathname).toBe('/projects/example-project')
     await user.click(within(guard).getByRole('button', { name: 'Keep editing' }))
     expect(screen.getByRole('textbox', { name: 'Proposal' })).toHaveValue('Local direction')
+    expect(window.location.pathname).toBe('/projects/example-project')
 
-    window.history.pushState({}, '', reviewPath)
-    window.dispatchEvent(new PopStateEvent('popstate'))
+    act(() => window.history.back())
     guard = await screen.findByRole('dialog', { name: 'Leave without keeping?' })
     await user.click(within(guard).getByRole('button', { name: 'Leave without keeping' }))
     expect(await screen.findByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
@@ -604,6 +605,7 @@ describe('candidate review regressions', () => {
     await selectProposal(user)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
     expect(await screen.findByText('The current architecture could not be loaded. This earlier view is read-only.')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project')
     expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()

@@ -80,7 +80,11 @@ func (h *Handler) agentReviewSubmissionSubmit(response http.ResponseWriter, requ
 		h.writeAgentErrorLocked(response, http.StatusConflict, "review_submission_not_allowed", agentMessage("review_submission_not_allowed"), nil)
 		return
 	}
-	if current.refObject != payload.ReviewedState || current.review == nil || current.review.baseRevision != payload.BaseRevision || current.review.candidateTree != payload.CandidateTree || current.review.generation != payload.Generation {
+	if current.review == nil {
+		h.writeAgentErrorLocked(response, http.StatusConflict, "review_submission_not_allowed", agentMessage("review_submission_not_allowed"), nil)
+		return
+	}
+	if current.refObject != payload.ReviewedState || current.review.baseRevision != payload.BaseRevision || current.review.candidateTree != payload.CandidateTree || current.review.generation != payload.Generation {
 		h.writeAgentErrorLocked(response, http.StatusConflict, "review_invalidated", agentMessage("review_invalidated"), nil)
 		return
 	}

@@ -137,7 +137,7 @@ function reviewedArchitecture(overrides: Record<string, unknown> = {}) {
             { key: 'removed-edge', before_key: 'edge', source_id: worker, target_id: external, label: 'calls', status: 'removed', path: 'components/worker.md', occurrence: 1, diagram_projections: [{ side: 'before', diagram_id: root, key: 'edge', source_node_key: worker, target_node_key: `boundary:${external}` }] },
             { key: 'edge-with', source_id: worker, target_id: external, label: 'invokes', status: 'added', path: 'components/worker.md', occurrence: 1, diagram_projections: [{ side: 'with', diagram_id: root, key: 'edge-with', source_node_key: worker, target_node_key: external }] },
           ],
-          diagrams: [], appearances: [{ diagram_id: root, component_id: external, role: 'reference', status: 'added', path: 'diagrams/root.yaml' }],
+          diagrams: [], appearances: [{ diagram_id: root, component_id: external, role: 'reference', status: 'added', side: 'with_changes', path: 'diagrams/root.yaml' }],
         },
       },
     },
@@ -539,6 +539,124 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('navigation', { name: 'Diagrams and components' })).not.toHaveTextContent('Later Worker')
   })
 
+  it('keeps earlier submitted feedback discoverable after proposal iteration invalidates Review changes', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}`)
+    const current = submittedReviewArchitecture({ current_generation: false }) as Record<string, any>
+    delete current.submitted_review
+    delete current.changes.review
+    current.changes.generation = 5
+    current.change_sets = [current.changes]
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(current))
+      .mockImplementationOnce(() => response(submittedReviewArchitecture({ current_generation: false })))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Steady lantern' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review changes' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Submitted reviews' })).toHaveTextContent('Changes requested')
+    expect(screen.getByRole('region', { name: 'Submitted reviews' })).toHaveTextContent('earlier version')
+    await user.click(within(screen.getByRole('region', { name: 'Submitted reviews' })).getByRole('button'))
+    expect(await screen.findByRole('heading', { name: 'Changes requested' })).toBeInTheDocument()
+  })
+
+  it('keeps a removed composition fact anchored to its exact Before side while toggling snapshots', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = reviewedArchitecture() as Record<string, any>
+    const beforeRoot = current.changes.review.before.diagrams.find((diagram: Record<string, any>) => diagram.id === root)
+    const withRoot = current.changes.review.with_changes.diagrams.find((diagram: Record<string, any>) => diagram.id === root)
+    beforeRoot.appearances.push({ component_id: external, role: 'reference' })
+    beforeRoot.boundaries = []
+    withRoot.appearances = withRoot.appearances.filter((appearance: Record<string, any>) => appearance.component_id !== external)
+    current.changes.review.comparison.appearances = [{
+      diagram_id: root, component_id: external, role: 'reference', status: 'removed', side: 'before', path: 'diagrams/root.yaml',
+    }]
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(current))
+      .mockImplementationOnce(() => response({ code: 'review_changed' }, 409))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: /External no longer shown in System/ }))
+    expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Composition reviewer')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'composition')
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    expect(screen.getByRole('combobox', { name: 'Location' })).toHaveValue('composition')
+    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Keep this placement.')
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+
+    expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{
+      body: 'Keep this placement.',
+      anchor: { kind: 'composition', side: 'before', diagram_id: root, component_id: external, aspect: 'reference' },
+    }] })
+  })
+
+  it('carries the exact detail child identity into a detail-link review comment', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = reviewedArchitecture() as Record<string, any>
+    const withRoot = current.changes.review.with_changes.diagrams.find((diagram: Record<string, any>) => diagram.id === root)
+    withRoot.appearances = withRoot.appearances.map((appearance: Record<string, any>) => appearance.component_id === worker
+      ? { component_id: worker, role: 'home' }
+      : appearance)
+    current.changes.review.comparison.appearances = [{
+      diagram_id: root, component_id: worker, role: 'home', status: 'detail_changed', side: 'before',
+      detail_diagram_id: detail, path: 'diagrams/root.yaml',
+    }]
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(current))
+      .mockImplementationOnce(() => response({ code: 'review_changed' }, 409))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: /Worker detail diagram link changed in System/ }))
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Hierarchy reviewer')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'composition')
+    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Keep the detail link.')
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+
+    expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{ anchor: {
+      kind: 'composition', side: 'before', diagram_id: root, component_id: worker,
+      aspect: 'detail', detail_diagram_id: detail,
+    } }] })
+  })
+
+  it('keeps an exact bound Review available for feedback while Accepted is known non-current', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    const current = reviewedArchitecture({ stale: true }) as Record<string, any>
+    current.changes.stale = true
+    vi.stubGlobal('fetch', vi.fn(() => response(current)))
+    render(<App />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('This earlier view is read-only')
+    expect(screen.getByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Reviewer name' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+  })
+
+  it('keeps exact feedback submission available while Accepted observation is indeterminate', async () => {
+    const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/review`)
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture({ action_error: 'refresh_failed' }))))
+    render(<App />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("couldn't check for architecture changes")
+    expect(screen.getByRole('textbox', { name: 'Reviewer name' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()
+  })
+
   it('keeps the exact submitted-review route and snapshot through Refresh', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const reviewID = '77777777-7777-4777-8777-777777777777'
@@ -796,7 +914,7 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('button', { name: 'Update architecture' })).toBeEnabled()
   })
 
-  it('removes stale review controls while preserving read-only changes', async () => {
+  it('preserves exact feedback controls but blocks Architecture actions when review authority becomes stale', async () => {
     window.history.replaceState({}, '', '/projects/example-project')
     const reviewed = reviewedArchitecture()
     const reviewedChanges = (reviewed as unknown as { changes: Record<string, unknown> }).changes
@@ -813,8 +931,9 @@ describe('candidate review regressions', () => {
     await selectProposal(user)
     await user.click(await screen.findByRole('button', { name: 'Refresh' }))
     expect(await screen.findByText('The current architecture could not be loaded. This earlier view is read-only.')).toBeInTheDocument()
-    expect(window.location.pathname).toBe('/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
-    expect(screen.queryByRole('button', { name: 'With changes' })).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe('/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    expect(screen.getByRole('button', { name: 'With changes' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Reviewer name' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New changes' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Delete proposal' })).not.toBeInTheDocument()

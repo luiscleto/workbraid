@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -107,6 +108,12 @@ func TestAgentV2ReviewSubmissionParityUsesExactBoundState(t *testing.T) {
 	}
 	state.Generation = uint64(resultMap(t, component)["generation"].(float64))
 	componentID := resultMap(t, component)["component_id"].(string)
+	unreviewed := agentapi.ReviewSubmissionSubmitRequest{
+		StoreID: created.StoreID, ChangeSetID: state.ChangeSetID, ReviewedState: strings.Repeat("c", 40),
+		BaseRevision: created.Revision, CandidateTree: strings.Repeat("d", 40), Generation: state.Generation,
+		Verdict: "approve", Author: "Early reviewer",
+	}
+	requireAgentErrorCode(t, postAgent(t, handler, "/api/agent/v2/review-submissions/submit", unreviewed), "review_submission_not_allowed")
 	reviewed := decodeAgentEnvelope(t, postAgent(t, handler, "/api/agent/v2/change-sets/review", agentapi.ChangeSetReviewRequest{StatePreconditions: state}))
 	if !reviewed.OK {
 		t.Fatalf("prepare review: %+v", reviewed)

@@ -78,11 +78,13 @@ type reviewDiagramChangeResponse struct {
 }
 
 type reviewAppearanceChangeResponse struct {
-	DiagramID   string `json:"diagram_id"`
-	ComponentID string `json:"component_id"`
-	Role        string `json:"role"`
-	Status      string `json:"status"`
-	Path        string `json:"path"`
+	DiagramID       string `json:"diagram_id"`
+	ComponentID     string `json:"component_id"`
+	Role            string `json:"role"`
+	Status          string `json:"status"`
+	Side            string `json:"side"`
+	DetailDiagramID string `json:"detail_diagram_id,omitempty"`
+	Path            string `json:"path"`
 }
 
 type reviewComponentChangeResponse struct {
@@ -283,10 +285,22 @@ func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewD
 			key := appearance.ComponentID + "\x00" + appearance.Role + "\x00" + appearance.DetailDiagramID
 			if _, unchanged := beforeAppearances[key]; !unchanged {
 				status := "added"
+				side := "with_changes"
+				detailDiagramID := ""
 				if appearanceIdentityExists(base.Appearances, appearance) {
 					status = "detail_changed"
+					detailDiagramID = appearance.DetailDiagramID
+					if detailDiagramID == "" {
+						side = "before"
+						for _, previous := range base.Appearances {
+							if previous.ComponentID == appearance.ComponentID && previous.Role == appearance.Role {
+								detailDiagramID = previous.DetailDiagramID
+								break
+							}
+						}
+					}
 				}
-				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: status, Path: "diagrams/" + current.Filename})
+				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: status, Side: side, DetailDiagramID: detailDiagramID, Path: "diagrams/" + current.Filename})
 			}
 		}
 	}
@@ -299,7 +313,7 @@ func compareDiagramProjections(before, withChanges []diagramResponse) ([]reviewD
 				if appearanceIdentityExists(candidate.Appearances, appearance) {
 					continue
 				}
-				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "removed", Path: "diagrams/" + current.Filename})
+				appearances = append(appearances, reviewAppearanceChangeResponse{DiagramID: current.ID, ComponentID: appearance.ComponentID, Role: appearance.Role, Status: "removed", Side: "before", Path: "diagrams/" + current.Filename})
 			}
 		}
 	}

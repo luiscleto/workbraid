@@ -57,6 +57,32 @@ func TestReviewComparisonRetainsContentAndRelationshipMultisetSemantics(t *testi
 	}
 }
 
+func TestDiagramAppearanceReviewCarriesExactAnchorSideAndDetail(t *testing.T) {
+	root, child := "root", "child"
+	before := []diagramResponse{{ID: root, Filename: "root.yaml", Appearances: []diagramAppearanceResponse{
+		{ComponentID: "anchor", Role: "home", DetailDiagramID: child},
+		{ComponentID: "removed", Role: "reference"},
+	}}}
+	withChanges := []diagramResponse{{ID: root, Filename: "root.yaml", Appearances: []diagramAppearanceResponse{
+		{ComponentID: "anchor", Role: "home"},
+		{ComponentID: "added", Role: "reference"},
+	}}}
+	_, appearances := compareDiagramProjections(before, withChanges)
+	byComponent := make(map[string]reviewAppearanceChangeResponse, len(appearances))
+	for _, appearance := range appearances {
+		byComponent[appearance.ComponentID] = appearance
+	}
+	if got := byComponent["anchor"]; got.Status != "detail_changed" || got.Side != "before" || got.DetailDiagramID != child {
+		t.Fatalf("removed detail link = %+v", got)
+	}
+	if got := byComponent["removed"]; got.Status != "removed" || got.Side != "before" || got.DetailDiagramID != "" {
+		t.Fatalf("removed appearance = %+v", got)
+	}
+	if got := byComponent["added"]; got.Status != "added" || got.Side != "with_changes" || got.DetailDiagramID != "" {
+		t.Fatalf("added appearance = %+v", got)
+	}
+}
+
 func TestVisualReviewCaptureRemainsCoherentAcrossConcurrentInvalidation(t *testing.T) {
 	for _, action := range []string{"mutation", "discard"} {
 		t.Run(action, func(t *testing.T) {

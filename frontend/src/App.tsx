@@ -142,7 +142,7 @@ type ChangeReview = {
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
-    appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed' | 'detail_changed'; path: string }[]
+    appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed' | 'detail_changed'; side: 'before' | 'with_changes'; detail_diagram_id?: string; path: string }[]
   }
 }
 
@@ -197,7 +197,7 @@ type ReviewSide = 'with' | 'before'
 type ReviewFocus =
   | { kind: 'component'; key: string; componentID: string; title: string; path: string; status: 'added' | 'content_changed' | 'unchanged' }
   | ({ kind: 'relationship' } & ReviewRelationshipSelection)
-  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed'; componentID?: string; role?: 'home' | 'reference'; compositionAspect?: 'home' | 'reference' | 'detail'; detailDiagramID?: string }
+  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed'; componentID?: string; role?: 'home' | 'reference'; compositionAspect?: 'home' | 'reference' | 'detail'; detailDiagramID?: string; reviewSide?: ReviewSide }
 
 type ComponentEditor = {
   kind: 'add' | 'edit'
@@ -618,10 +618,10 @@ export function App() {
     setNewChangeSetName('')
     setDiscardConfirming(false)
     setChangeSetTextDirty(false)
-    if (selected?.review && !result.stale && !selected.stale) {
+    if (selected?.review) {
       enterWorkspace({ ...result, submitted_review: undefined, changes: selected, action_change_set_id: undefined }, 'changes', changeSetID)
       setReviewVisible(true)
-      setArchitectureNotice('')
+      setArchitectureNotice(result.action_error ? messageForArchitectureAction(result.action_error) : '')
       const path = reviewRoutePath(result.project_slug, changeSetID)
       if (historyMode === 'push') window.history.pushState({}, '', path)
       if (historyMode === 'replace') window.history.replaceState({}, '', path)
@@ -682,9 +682,7 @@ export function App() {
   }
 
   const readyResult = state.kind === 'ready' ? state.value : undefined
-  const currentReview = readyResult?.submitted_review?.review ?? (readyResult?.stale || readyResult?.changes?.stale
-    ? undefined
-    : readyResult?.changes?.review)
+  const currentReview = readyResult?.submitted_review?.review ?? readyResult?.changes?.review
   const reviewIdentity = currentReview ? `${readyResult?.submitted_review?.id ?? ''}:${currentReview.base_revision}:${currentReview.candidate_tree}:${currentReview.generation}` : ''
   const editorDirty = editor !== null && (
     editor.title !== editor.initialTitle || editor.description !== editor.initialDescription ||
@@ -724,9 +722,7 @@ export function App() {
 
   useEffect(() => {
     if (state.kind !== 'ready') return
-    const heldReview = state.value.stale || state.value.changes?.stale
-      ? undefined
-      : state.value.changes?.review
+    const heldReview = state.value.changes?.review
     const review = reviewVisible ? heldReview : undefined
     if (review) {
       const projection = reviewSide === 'with' ? review.with_changes : review.before
@@ -1444,7 +1440,8 @@ export function App() {
       ? diagramProjection.diagrams?.find((diagram) => diagram.id === (candidateFallbackDiagramID ?? selectedDiagramID))
         ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
-    const authoringAvailable = !result.stale && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
+    const authorityIndeterminate = result.action_error === 'refresh_failed'
+    const authoringAvailable = !result.stale && !authorityIndeterminate && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
     const compositionDiagrams = result.changes?.diagram_options ?? compositionProjection.diagrams ?? result.diagrams ?? []
     const editorDiagrams = diagramEditor?.kind === 'move'
@@ -1563,7 +1560,8 @@ export function App() {
       const nextComponents = nextDiagram ? componentsForDiagram(nextProjection, nextDiagram) : nextProjection.components
       setReviewSelectionCleared(false)
       setReviewSide(side)
-      setReviewFocus(null)
+      setReviewFocus((current) => current?.kind === 'diagram' && current.componentID && current.reviewSide &&
+        nextProjection.diagrams?.some((diagram) => diagram.id === current.diagramID) ? current : null)
       setSelectedComponentID((current) => current && nextComponents.some((component) => component.id === current) ? current : undefined)
     }
     const externalReferences = activeDiagram && activeDiagram.boundaries.length > 0 ? (
@@ -1599,7 +1597,7 @@ export function App() {
             {result.submitted_review
               ? <span className="submitted-review-context">Submitted review</span>
               : <ShowingMenu changeSets={result.change_sets} selectedID={selectedContextID} onSelect={(id) => requestNavigation({ kind: 'context', id })} />}
-            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale} onClick={() => requestNavigation({ kind: 'new-changes' })}>New changes</button>
+            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown || result.stale || authorityIndeterminate} onClick={() => requestNavigation({ kind: 'new-changes' })}>New changes</button>
             <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'refresh' })}>
               Refresh
             </button>
@@ -1771,8 +1769,13 @@ export function App() {
                 }}
                 onFocusDiagram={(focus) => {
                   setReviewSelectionCleared(false)
+                  if (focus.reviewSide && focus.reviewSide !== reviewSide) setReviewSide(focus.reviewSide)
                   setSelectedDiagramID(focus.diagramID)
-                  setSelectedComponentID(undefined)
+                  const focusProjection = focus.reviewSide === 'before' ? review?.before : review?.with_changes
+                  const focusDiagram = focusProjection?.diagrams?.find((diagram) => diagram.id === focus.diagramID)
+                  setSelectedComponentID(focus.componentID && focusDiagram?.appearances.some((appearance) => appearance.component_id === focus.componentID)
+                    ? focus.componentID
+                    : undefined)
                   setReviewFocus(focus)
                 }}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
@@ -1813,6 +1816,7 @@ export function App() {
                 busy={architectureBusy}
                 acceptanceUnknown={acceptanceUnknown}
                 discardConfirming={discardConfirming}
+                onOpenSubmittedReview={(reviewID) => requestNavigation({ kind: 'submitted-review', changeSetID: result.changes!.id, reviewID })}
                 onReturnToReview={currentReview && !acceptanceUnknown ? () => {
                   requestNavigation({ kind: 'review-result', result })
                 } : undefined}
@@ -2218,7 +2222,7 @@ function ChangesTask({
 }) {
   const changes = result.changes
   if (!changes) return null
-  const readOnly = Boolean(result.stale || changes.stale || changes.read_only || changes.lifecycle === 'applied')
+  const readOnly = Boolean(result.stale || result.action_error === 'refresh_failed' || changes.stale || changes.read_only || changes.lifecycle === 'applied')
   const relationshipIssueComponent = changes.validation_relationship_position && changes.validation_relationship_field
     ? changes.components.find((component) => component.id === changes.validation_item)
     : undefined
@@ -2261,17 +2265,17 @@ function ChangesTask({
             <ul>
               {changes.review.comparison.diagrams?.map((diagram) => <li key={`${diagram.diagram_id}:${diagram.status}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `diagram:${diagram.diagram_id}`, diagramID: diagram.diagram_id, title: diagram.title, path: diagram.path, status: diagram.status })}><strong>{diagram.title}</strong> {diagram.status === 'added' ? 'added' : 'title changed'}</button></li>)}
               {changes.review.comparison.appearances?.map((appearance, index) => {
-                const projection = changes.review?.with_changes.components.find((component) => component.id === appearance.component_id)
-                  ?? changes.review?.before.components.find((component) => component.id === appearance.component_id)
-                const preferredDiagrams = appearance.status === 'removed' ? changes.review?.before.diagrams : changes.review?.with_changes.diagrams
-                const fallbackDiagrams = appearance.status === 'removed' ? changes.review?.with_changes.diagrams : changes.review?.before.diagrams
+                const exactSide = appearance.side === 'before' ? changes.review?.before : changes.review?.with_changes
+                const otherSide = appearance.side === 'before' ? changes.review?.with_changes : changes.review?.before
+                const projection = exactSide?.components.find((component) => component.id === appearance.component_id)
+                  ?? otherSide?.components.find((component) => component.id === appearance.component_id)
+                const preferredDiagrams = exactSide?.diagrams
+                const fallbackDiagrams = otherSide?.diagrams
                 const diagram = preferredDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                   ?? fallbackDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
                 const description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
-                const detailDiagramID = appearance.status === 'detail_changed' && appearance.role === 'home'
-                  ? diagram?.appearances.find((value) => value.component_id === appearance.component_id)?.detail_diagram_id
-                  : undefined
-                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
+                const detailDiagramID = appearance.status === 'detail_changed' ? appearance.detail_diagram_id : undefined
+                return <li key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><button className="text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID, reviewSide: appearance.side === 'before' ? 'before' : 'with' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button></li>
               })}
             </ul>
           </section>
@@ -2305,14 +2309,7 @@ function ChangesTask({
             onSubmit={onSubmitReview}
           />
         )}
-        {!activeReviewSubmission && (result.review_submissions?.some((item) => item.change_set_id === changes.id)) && (
-          <section className="submitted-review-list" aria-label="Submitted reviews">
-            <h3>Submitted reviews</h3>
-            <ul>{result.review_submissions?.filter((item) => item.change_set_id === changes.id).map((item) => (
-              <li key={item.id}><button className="text-action" type="button" onClick={() => onOpenSubmittedReview?.(item.id)}><strong>{verdictLabel(item.verdict)}</strong><span>{item.author} · {new Date(item.submitted_at).toLocaleString()} · version {item.binding.generation}{item.lifecycle === 'applied' ? ' · accepted proposal' : item.lifecycle === 'no_longer_active' ? ' · proposal no longer active' : item.current_generation ? '' : ' · earlier version'}{item.out_of_date ? ' · out of date' : ''}</span></button></li>
-            ))}</ul>
-          </section>
-        )}
+        {!activeReviewSubmission && <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />}
         <div className="change-actions">
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
           {!activeReviewSubmission && !readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
@@ -2342,6 +2339,7 @@ function ChangesTask({
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
           : 'These changes have not updated Architecture yet.'}</p>
       <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
+      <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />
       <h3 className="proposal-work-heading">Architecture work in this proposal</h3>
       <ul>
         {changes.components.map((component) => {
@@ -2576,6 +2574,18 @@ function SubmittedReviewDetails({ review }: { review: ReviewSubmission }) {
 
 type LocalReviewComment = { body: string; anchor: ReviewAnchor }
 
+function SubmittedReviewList({ reviews, onOpen }: { reviews: ReviewSubmissionSummary[]; onOpen?: (reviewID: string) => void }) {
+  if (reviews.length === 0) return null
+  return (
+    <section className="submitted-review-list" aria-label="Submitted reviews">
+      <h3>Submitted reviews</h3>
+      <ul>{reviews.map((item) => (
+        <li key={item.id}><button className="text-action" type="button" onClick={() => onOpen?.(item.id)}><strong>{verdictLabel(item.verdict)}</strong><span>{item.author} · {new Date(item.submitted_at).toLocaleString()} · version {item.binding.generation}{item.lifecycle === 'applied' ? ' · accepted proposal' : item.lifecycle === 'no_longer_active' ? ' · proposal no longer active' : item.current_generation ? '' : ' · earlier version'}{item.out_of_date ? ' · out of date' : ''}</span></button></li>
+      ))}</ul>
+    </section>
+  )
+}
+
 function reviewSourceLines(source: string) {
   if (!source) return []
   const lines = source.split('\n')
@@ -2631,7 +2641,7 @@ function ReviewComposer({
     if (anchorKind === 'component_markdown' && selectedComponent) return { kind: 'component_markdown', side: architectureSide, component_id: selectedComponent.id, start_line: startLine, end_line: endLine }
     if (anchorKind === 'diagram' && activeDiagram) return { kind: 'diagram', side: architectureSide, diagram_id: activeDiagram.id }
     if (anchorKind === 'composition' && focus?.kind === 'diagram' && focus.componentID && focus.role) return {
-      kind: 'composition', side: architectureSide, diagram_id: focus.diagramID, component_id: focus.componentID,
+      kind: 'composition', side: focus.reviewSide === 'before' ? 'before' : focus.reviewSide === 'with' ? 'with_changes' : architectureSide, diagram_id: focus.diagramID, component_id: focus.componentID,
       aspect: focus.compositionAspect ?? focus.role, ...(focus.compositionAspect === 'detail' && focus.detailDiagramID ? { detail_diagram_id: focus.detailDiagramID } : {}),
     }
     if (anchorKind === 'relationship' && focus?.kind === 'relationship') return {

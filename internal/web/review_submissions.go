@@ -178,7 +178,11 @@ func (h *Handler) submitReviewSubmission(response http.ResponseWriter, request *
 		writeJSON(response, http.StatusConflict, errorResponse{Code: "review_submission_not_allowed"})
 		return
 	}
-	if current.refObject != payload.ReviewedState || current.review == nil || current.review.baseRevision != payload.BaseRevision || current.review.candidateTree != payload.CandidateTree || current.review.generation != payload.Generation {
+	if current.review == nil {
+		writeJSON(response, http.StatusConflict, errorResponse{Code: "review_submission_not_allowed"})
+		return
+	}
+	if current.refObject != payload.ReviewedState || current.review.baseRevision != payload.BaseRevision || current.review.candidateTree != payload.CandidateTree || current.review.generation != payload.Generation {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorReviewChanged})
 		return
 	}

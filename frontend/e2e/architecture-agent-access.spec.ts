@@ -40,9 +40,7 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     const revisionR0 = acceptedR0.context.accepted_revision!
 
     await page.getByRole('button', { name: 'New changes' }).click()
-    const canceledTask = page.locator('form.new-changes-task')
-    await expect(canceledTask).toBeVisible()
-    await expect(canceledTask.locator('xpath=ancestor::*[contains(@class, "working-pane")]')).toBeVisible()
+    const canceledTask = await visibleNewChangesTask(page)
     await canceledTask.getByLabel('Name').fill('Not created')
     await canceledTask.getByRole('button', { name: 'Cancel' }).click()
     await expect(canceledTask).toHaveCount(0)
@@ -154,12 +152,20 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
 
 async function createBrowserChangeSet(page: Page, name: string) {
   await page.getByRole('button', { name: 'New changes' }).click()
-  const form = page.locator('form.new-changes-task')
-  await expect(form.locator('xpath=ancestor::*[contains(@class, "working-pane")]')).toBeVisible()
+  const form = await visibleNewChangesTask(page)
   await form.getByLabel('Name').fill(name)
   await form.getByRole('button', { name: 'Create' }).click()
   await expect(page.getByRole('heading', { name, level: 2 })).toBeVisible()
   await expect(page.getByText('Open proposal')).toBeVisible()
+}
+
+async function visibleNewChangesTask(page: Page) {
+  const pane = page.getByRole('complementary', { name: 'Architecture task' })
+  const heading = pane.getByRole('heading', { name: 'New changes', level: 2 })
+  await expect(heading).toBeVisible()
+  const form = pane.locator('form').filter({ has: heading })
+  await expect(form).toBeVisible()
+  return form
 }
 
 async function openShowing(page: Page) {

@@ -47,13 +47,14 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
 
     await createBrowserChangeSet(page, 'Change A')
-    await page.getByRole('textbox', { name: 'Proposal' }).fill('# Change A\n\nRoute requests through a durable gateway.\n\n- Preserve retry state\n\n| Decision | Owner |\n| --- | --- |\n| Durable routing | Gateway |\n')
-    await page.getByRole('button', { name: 'Save proposal' }).click()
+    await saveBrowserProposal(page, '# Change A\n\nRoute requests through a durable gateway.\n\n- Preserve retry state\n\n| Decision | Owner |\n| --- | --- |\n| Durable routing | Gateway |\n')
     await addBrowserComponent(page, 'Gateway', 'Routes requests.\n')
+    await selectShowing(page, 'Accepted')
+    await expect(page.getByRole('dialog', { name: 'Leave without keeping?' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Showing Accepted' })).toBeVisible()
 
     await createBrowserChangeSet(page, 'Change B')
-    await page.getByRole('textbox', { name: 'Proposal' }).fill('# Change B\n\nAdd an independent worker.\n')
-    await page.getByRole('button', { name: 'Save proposal' }).click()
+    await saveBrowserProposal(page, '# Change B\n\nAdd an independent worker.\n')
     await addBrowserComponent(page, 'Worker', 'Processes work.\n')
 
     const listed = agent(binary, application.origin, ['change-set', 'list', '--store-id', storeID])
@@ -181,11 +182,23 @@ async function selectShowing(page: Page, name: string) {
   await expect(trigger).toHaveAttribute('aria-expanded', 'false')
 }
 
+async function saveBrowserProposal(page: Page, source: string) {
+  await page.getByRole('textbox', { name: 'Proposal' }).fill(source)
+  const save = page.getByRole('button', { name: 'Save proposal' })
+  await save.click()
+  await expect(save).toHaveCount(0)
+}
+
 async function addBrowserComponent(page: Page, title: string, description: string) {
   await page.locator('.pending-diagram-row').first().getByRole('button', { name: 'Add component' }).click()
-  await page.getByLabel('Title').fill(title)
-  await page.getByLabel('Description').fill(description)
-  await page.getByRole('button', { name: 'Keep change' }).click()
+  const pane = page.getByRole('complementary', { name: 'Architecture task' })
+  const editor = pane.locator('form')
+  await expect(editor.getByRole('heading', { name: 'Add component', level: 2 })).toBeVisible()
+  await editor.getByLabel('Title').fill(title)
+  await editor.getByLabel('Description').fill(description)
+  await editor.getByRole('button', { name: 'Keep change' }).click()
+  await expect(pane.getByRole('heading', { name: 'Add component', level: 2 })).toHaveCount(0)
+  await expect(pane.getByRole('heading', { name: 'Architecture work in this proposal', level: 3 })).toBeVisible()
 }
 
 function agent(binary: string, origin: string, arguments_: string[]): AgentEnvelope {

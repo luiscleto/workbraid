@@ -1,6 +1,6 @@
 # Architecture Reviews 1 execution packet
 
-Status: Approved
+Status: Complete
 
 Target: durable, exact-snapshot review submissions and anchored feedback across browser, CLI, embedded skill, and MCP
 
@@ -390,3 +390,68 @@ This packet does not authorize:
 - persisted/manual Diagram layout, routing, bend points, shapes, annotations, graphical editing, Diagram kinds, UML, isometric rendering, or rich-diagram Phase 3 work.
 
 Reviews 1 completes only after ordinary checks, the weak-agent iteration gate, independent canonical/GC verification, and explicit human PASS. Record completion separately, verify the tree is clean and every runtime/test process is stopped, then stop before Architecture Reconciliation 1.
+
+## Execution result
+
+Status: Complete — final human checkpoint **PASS** on 2026-09-05.
+
+### Exact provenance
+
+- Completed Change Sets 1 prerequisite: `c28f817b8cbe2caa587b4312c1b14c87388b8d52`.
+- Approved Reviews baseline and roadmap: `b7eb0e206c3d40b6de8d58742a6314854078573f`.
+- Approved packet-inclusive worker base: `cc7b93596d3f6e3de724ae702b61105eb8e2d5bd`.
+- Initial implementation: `9a471c308f91a7f62e2e8793dd73376d91f9890d`.
+- Exact-context correction: `ee17a9555908196359c9f48aade00215a3081021`.
+- Contextual UI/navigation corrections: `42068dfa0d79655c1c06ab4c75be4e8aab5d4004` and `bed66837d90bae4c8bcdce4ca32f12e0442a1231`.
+- Final human-approved UI correction: `7e1bf045066ed33da5dfff2a8c7016253faaa89e`.
+- Final integrated implementation, including the living browser-scenario update: `892f3254ad13b0fdabe02202e0070ac153f07bb8`; tree `a6a88f5a90e8ea0b9100bffb955c5a1f1852ab65`.
+- Complete implementation range: `cc7b93596d3f6e3de724ae702b61105eb8e2d5bd..892f3254ad13b0fdabe02202e0070ac153f07bb8`.
+
+Review submissions use the approved Reviews-owned refs and one-parent records. They preserve the existing Change Set constructor, validator, exact review preparation, and acceptance authority. Informational verdicts do not gate acceptance. No reconciliation, additional Architecture interpretation, SQLite, or rich-diagram state was added.
+
+### Independent review and corrections
+
+- The implementation and bounded authority/context corrections received independent technical review before the agent and human gates. Review covered exact parent reconstruction without live active-ref dependence, GC reachability, exact submission preconditions, repeated-review no-op behavior, anchor fidelity, and CLI/MCP parity.
+- Initial human inspection passed behavior but rejected review-authoring ergonomics. That was a failed human UX gate, not completion. At the human's direction, the correction cycle addressed review navigation, contextual comment creation, source-line selection, and map annotations. Earlier Grok approval did not override those findings; Grok was not used for the final correction review.
+- The paused worker's saved frontend correction was continued by the orchestrator after the worker session was no longer available. No new Architecture authority or implementation increment was dispatched. A separate Herdr workspace housed the fresh technical reviewer.
+- Final independent frontend reviewer `wb_reviews_inline_check` (Herdr session `01a06ecf-11db-7e83-823c-bb2a7db7be6b`) returned **PASS** after bounded correction/rereview. Findings fixed shared comment-edit coordination, range-only dirty detection, explicit discard/reopen resetting, live pinned-note membership, cross-Diagram reopening, and exact Before/With note isolation. Map and summary editing now share one browser-local active comment editor and save/remove path.
+- The final UI presents independently openable map notes, selected-item add/comment markers, Diagram comment affordances even with no existing feedback, wrapped exact logical source lines, clear actions, and guarded unsent edits. Component details do not contain unrelated Diagram/placement authoring controls. Long map notes scroll internally. Historical annotations remain on their exact reviewed side.
+- The final closeout commit updates only the executable browser scenario to those approved controls and wording. It changes no product code, storage contract, or historical record.
+
+### Automated and production-browser evidence
+
+- Ordinary Go checks passed: `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`, and `go mod verify`. All four packages passed normal/race tests and all modules verified.
+- Final repository `npm test`: **80/80 tests**, four files. `npm run build` and `git diff --check`: **PASS**. The existing bundle-size advisory remains non-gating. Browser tests use runner-owned cases; no manual repeated render/unmount lifecycle or unbounded test retry was introduced.
+- Real built-browser checks against the existing Go/Git gate fixture exercised empty-Diagram commenting, browser-local Component and Relationship notes, multiple open notes while panning, unchanged map instance/pan/zoom during commenting, wrapped source lines, and historical-review annotations. Those visual checks submitted no extra feedback and changed neither proposal nor Accepted.
+- At closeout, `npm run test:change-sets` exposed obsolete selectors for the replaced review form and an ambiguous author assertion shared with collapsed history. The test was updated to use the actual selected-Component line picker and scoped submitted-review presentation, retaining its exact-anchor and restart assertions. Final result: **one production-browser scenario PASS**, one worker, including browser feedback submission, exact source excerpt, direct review URL, history navigation, full Go-process restart, applied/out-of-date proposal behavior, and unchanged Accepted.
+- Local evidence: `/tmp/workbraid-review-full.log`, `/tmp/workbraid-review-build.log`, `/tmp/workbraid-reviews-close-go-{test,race,vet,mod}.log`, `/tmp/workbraid-reviews-close-browser.log`, and `/tmp/wb-ux-review/` screenshots/browser log. These are temporary verification artifacts; exact durable identities and outcomes are recorded below.
+
+### Weak-agent iteration and canonical truth
+
+- Separate fresh weak-agent author/reviewer contexts used the documented CLI/embedded skill and configured MCP discovery against one running WorkBraid authority, without repository/private-Git access or command/anchor tutoring. The reviewer submitted request-changes feedback, a fresh author discovered and addressed its exact comments, and a separate reviewer submitted approval of the later exact generation. An interrupted server made an initial author attempt report typed `connection_failed` without mutation; restoring the runtime and retrying the same business task required no product workaround.
+- Project: **Reviews Agent Gate**; slug `reviews-agent-gate`; store UUID `df588ba2-cf38-4f98-a6fc-80d3f97e1b72`.
+- Proposal: **Reliable ingestion path**; Change Set UUID `e10f85ff-92f4-4edf-a46b-94b13ddd5d77`.
+- Accepted stayed exactly `845fbfeadd34113d4e748cc2d1906df51bb3e5cf` throughout authoring, both feedback submissions, restart/GC verification, the UI gate, and the final ref observation. Review approval did not accept the proposal.
+
+| Feedback | Review UUID | Review commit | Exact reviewed state | Generation | Candidate tree |
+| --- | --- | --- | --- | --- | --- |
+| Request changes | `28825862-5d7d-45ba-b469-181bd8249d08` | `72b2a9c15232dec2bb72718a16671313ea5c5bf1` | `97a20097c580806ca054e5c2baee77ad59268d0c` | 8 | `3a66bc4138163a5136724d914c4d93a4f828b5d1` |
+| Approve | `9b426e60-c963-44b5-a646-f215babb3636` | `b67502e5bf54fcf0e80f693ae102787c4db6476d` | `0a5cfcc5f80f4390d1639d4e464ec2cf737ae18c` | 11 | `29bad342713a868eb627e52318213d27054782be` |
+
+Both bindings use base `845fbfeadd34113d4e748cc2d1906df51bb3e5cf`. The final active ref remains the generation-11 state above.
+
+- Request-changes comment `e6535267-da40-4487-8c17-8aa3bb5c2f64` anchors `with_changes` Component Markdown lines 2–2 on Queue Worker `3be835bf-e3c3-4c96-b9ea-b22e836dc0ef`, whose exact old text is `Processes queued jobs.`
+- Comment `5c632580-422d-413e-839c-6680039c09e0` anchors the exact `with_changes` fact from that Worker to Event Store `b3d4caa8-9e3a-4232-9e50-4cc27715342d`, label `writes event`, occurrence 1.
+- The author expanded retry/backoff, acknowledgement, dead-letter/replay and idempotency documentation; edited the relationship label to `durably commits event before ack; deduplicates by ingestion idempotency key`; and updated proposal Markdown. Generation 11 addressed both comments while generation 8 and its original anchors remained exact and visibly historical. The later approval has an overall Markdown note and zero anchored comments.
+- The stronger independent canonical verifier returned **PASS**. Each review commit has exactly one parent: its own reviewed active-form state, whose parent is the original base. Closed trees, modes, comment ordering/pairs, bodies, proposal bytes, candidate-tree equality and refs matched the public claims. Neither historical loading nor GC depended on an active ref still pointing to generation 8.
+- Authorized `git gc --prune=now` on only the throwaway gate store changed 107 loose objects to 39 packed reachable objects. All four authoritative refs, exact object identities, and sorted reachability manifests were unchanged; both historical candidates remained reachable and inspectable. `git fsck --full` passed; the unused unborn bare `HEAD` notice was not an integrity failure.
+- Full process restart reconstructed current proposal/review and both immutable submissions. Public CLI inspection after GC reported generation 8 as earlier feedback and generation 11 as current. No database/registry or non-Git application data appeared. Final read-only ref inspection after the human gate confirmed the same Accepted, active proposal, and two review refs.
+- Detailed agent and independent verifier results are retained locally under `/tmp/workbraid-reviews1-gate.QPJkf7/{reviewer,author-b,reviewer-approve,verifier}/`.
+
+### Human checkpoint and stop
+
+The human inspected the agent-created current and historical review behavior, then requested the bounded UX corrections above. After reviewing the final built UI, the human gave explicit **“Pass. GOod work”**. This is the final human acceptance of Reviews 1; earlier behavior-only/partial passes did not close it.
+
+The human gate runtime on `127.0.0.1:18428` was stopped after PASS. The final browser regression terminated its own temporary Go/browser processes; the independent-review Herdr workspace was closed. Gate data and verification artifacts were retained. Implementation was committed separately from this completion record, with a clean implementation worktree verified before recording completion.
+
+Architecture Reviews 1 is complete. Stop here. Architecture Reconciliation 1 and rich-diagram Phase 3 remain unstarted.

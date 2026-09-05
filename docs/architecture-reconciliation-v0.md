@@ -71,9 +71,9 @@ detail_reassignments: []
 
 The six original sequences retain their exact version-1 schemas. The new item has exactly the two keys above. Unknown/missing keys, duplicate Diagram entries, malformed UUIDs, a reassignment entry for a newly-created Diagram, and unsupported versions are rejected through the existing closed operational-state validation. Domain eligibility remains complete-candidate validation, not YAML interpretation in clients.
 
-Newly written states use operational version 2. Existing operational version-1 states remain readable, supplying an empty reassignment sequence to the same constructor. This is necessary for real submitted Reviews retaining old state commits, not a migration subsystem. Reads never rewrite records. Repeated exact Review changes must still return the same reviewed state object, including a version-1 record. A subsequent real mutation or newly established review may write the current encoding normally.
+Newly written states use operational version 2. WorkBraid is an alpha with no users or valuable legacy stores: backward compatibility with pre-increment operational records is not a requirement. Do not add migrations, old-serializer behavior, record conversion, or a compatibility reconstruction path. An older record may remain readable if the ordinary reader and current constructor already reconstruct it exactly; otherwise report it unavailable through existing handling without rewriting or deleting it. This includes proposals and submitted Reviews produced by the former unterminated-H1 Description-loss bug. Preserving that bug is explicitly not required.
 
-The Change Set envelope version, active/applied refs, one-parent state-commit rule, proposal Markdown, Review storage, and portable Architecture format-v2 tree do not change. No metadata file enters accepted Architecture. Historical reconstruction of version-1 states must retain exact candidate-tree equality; do not fork the Architecture interpretation by operational encoding version.
+The Change Set envelope version, active/applied refs, one-parent state-commit rule, proposal Markdown, Review storage, and portable Architecture format-v2 tree do not change. No metadata file enters accepted Architecture. Every loaded record must still pass exact candidate-tree equality through the one current constructor; never bypass that check for legacy data. New valid records and their submitted Reviews retain all exact reconstruction, immutable feedback, reachability and lifecycle guarantees across later iteration, reconciliation, application and restart. Repeated exact Review changes on a supported unchanged record remains a durable state-object no-op. Completed historical evidence documents are not rewritten.
 
 ### 2.4 Ordinary UX and agent parity
 
@@ -281,7 +281,7 @@ Update CLI help, the embedded server-independent `--skill`, MCP descriptions and
 
 ## 8. Evidence and completion gate
 
-The execution packet requires real Git/backend/browser and transport evidence for semantic units, reassignment, fidelity/equality, races and historical Reviews. Include existing version-1 reviewed-state reconstruction and new version-2 operational records. A returned preview or green unit tests alone do not constitute completion.
+The execution packet requires real Git/backend/browser and transport evidence for semantic units, reassignment, fidelity/equality, races and historical Reviews created through the current product's version-2 operational records. Pre-increment alpha compatibility is not a gate and requires no migration or legacy-fixture matrix. A returned preview or green unit tests alone do not constitute completion.
 
 Bounded cases must distinguish body-whitespace Description changes from source-only H1/YAML/path/mode fidelity, reject divergent new-UUID Component/Diagram collisions including dependent-fact divergence, and prove that response loss after successful Apply followed by an old-S retry performs exactly one reconciliation mutation.
 

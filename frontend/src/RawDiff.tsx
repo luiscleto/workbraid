@@ -16,17 +16,21 @@ type DiffLine = {
 export function RawDiff({ diff, focusPath, focusToken }: RawDiffProps) {
   const lines = useMemo(() => rawDiffLines(diff), [diff])
   const fileAnchors = useRef(new Map<string, HTMLSpanElement>())
+  const container = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
     if (!focusPath) return
     const target = fileAnchors.current.get(focusPath)
     if (!target) return
-    target.focus()
-    target.scrollIntoView?.({ block: 'nearest' })
+    // Follow the selected file inside the diff without scrolling the whole
+    // working pane away from the Component or comment the person selected.
+    const diffBox = container.current
+    target.focus({ preventScroll: true })
+    if (diffBox) diffBox.scrollTop += target.getBoundingClientRect().top - diffBox.getBoundingClientRect().top
   }, [focusPath, focusToken, diff])
 
   return (
-    <pre className="raw-diff" data-testid="raw-diff" aria-label="Complete architecture diff">
+    <pre ref={container} className="raw-diff" data-testid="raw-diff" aria-label="Complete architecture diff">
       {lines.map((line, index) => (
         <span
           className={`diff-line diff-${line.kind}`}

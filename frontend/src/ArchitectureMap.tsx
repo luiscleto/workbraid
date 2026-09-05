@@ -66,15 +66,16 @@ type ArchitectureMapProps = {
   selectedRelationshipKey?: string
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
   externalReferences?: ReactNode
-  comments?: ReactNode
-  commentsOpenSignal?: number
+  annotationOverlay?: ReactNode
   annotationNodes?: Record<string, number>
   annotationRelationships?: Record<string, number>
+  annotationAddNodeID?: string
+  annotationAddRelationshipKey?: string
   onSelectNodeAnnotation?: (id: string) => void
   onSelectRelationshipAnnotation?: (key: string) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
   revision,
@@ -90,24 +91,26 @@ export function ArchitectureMap({
   selectedRelationshipKey,
   onSelectRelationship,
   externalReferences,
-  comments,
-  commentsOpenSignal,
+  annotationOverlay,
   annotationNodes = {},
   annotationRelationships = {},
+  annotationAddNodeID,
+  annotationAddRelationshipKey,
   onSelectNodeAnnotation,
   onSelectRelationshipAnnotation,
 }: ArchitectureMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
+  const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
-  const syncBoundaryCaptions = useRef<() => void>(() => undefined)
+  const syncOverlays = useRef<() => void>(() => undefined)
   const selectHandler = useRef(onSelect)
   const relationshipHandler = useRef(onSelectRelationship)
   const nodeAnnotationHandler = useRef(onSelectNodeAnnotation)
   const relationshipAnnotationHandler = useRef(onSelectRelationshipAnnotation)
   const [renderFailed, setRenderFailed] = useState(false)
   const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))].sort().join('\u0000')
-  const annotationKey = JSON.stringify([annotationNodes, annotationRelationships])
+  const annotationKey = JSON.stringify([annotationNodes, annotationRelationships, annotationAddNodeID, annotationAddRelationshipKey])
   // A revision-pinned projection intentionally ignores response-object churn
   // caused by pending edits at the same accepted revision. A review revision is
   // the bound candidate tree or base commit and carries one stable layout basis.
@@ -117,9 +120,7 @@ export function ArchitectureMap({
     reviewComponents,
     reviewRelationships,
     reviewDiagramID,
-    annotationNodes,
-    annotationRelationships,
-  }), [revision, reviewSide, layoutKey, annotationKey])
+  }), [revision, reviewSide, layoutKey])
 
   useEffect(() => {
     selectHandler.current = onSelect
@@ -152,11 +153,9 @@ export function ArchitectureMap({
           return
         }
         selectHandler.current(event.target.id())
-        if (data.annotationCount) nodeAnnotationHandler.current?.(event.target.id())
       })
       instance.on('tap', 'edge', (event) => {
         const data = event.target.data() as ReviewRelationshipSelection & { reviewStatus?: string; annotationCount?: number }
-        if (data.annotationCount) relationshipAnnotationHandler.current?.(data.key)
         if (data.reviewStatus && relationshipHandler.current) {
           relationshipHandler.current({
             key: data.key,
@@ -185,21 +184,79 @@ export function ArchitectureMap({
           caption.style.top = `${position.y + node.renderedHeight() / 2 + 5}px`
         })
       }
-      syncBoundaryCaptions.current = updateBoundaryCaptions
-      instance.on('pan zoom resize render', updateBoundaryCaptions)
-      updateBoundaryCaptions()
-      const animationFrame = requestAnimationFrame(updateBoundaryCaptions)
+      const updateAnnotationCards = () => {
+        const layer = annotationLayer.current
+        const canvas = container.current
+        if (!layer || !canvas || !instance) return
+        const currentInstance = instance
+        const layerRect = layer.getBoundingClientRect()
+        const canvasRect = canvas.getBoundingClientRect()
+        const cards = [...layer.querySelectorAll<HTMLElement>('[data-map-annotation-kind][data-map-annotation-id]')]
+        const occupied: { left: number; top: number; right: number; bottom: number }[] = []
+        cards.forEach((card, index) => {
+          const kind = card.dataset.mapAnnotationKind
+          const id = card.dataset.mapAnnotationId
+          if (!id) return
+          const target = currentInstance.getElementById(id)
+          card.hidden = target.empty()
+          if (target.empty()) return
+          const position = kind === 'relationship'
+            ? target.renderedMidpoint()
+            : target.renderedPosition()
+          const width = Math.min(card.offsetWidth || 250, Math.max(180, canvasRect.width - 24))
+          const height = Math.min(card.offsetHeight || 190, Math.max(120, canvasRect.height - 24))
+          const anchorX = canvasRect.left - layerRect.left + position.x
+          const anchorY = canvasRect.top - layerRect.top + position.y
+          const canvasLeft = canvasRect.left - layerRect.left + 10
+          const canvasTop = canvasRect.top - layerRect.top + 10
+          const canvasRight = canvasRect.right - layerRect.left - 10
+          const canvasBottom = canvasRect.bottom - layerRect.top - 10
+          let left = anchorX + 42
+          if (left + width > canvasRight) left = anchorX - width - 42
+          left = Math.max(canvasLeft, Math.min(left, canvasRight - width))
+          let top = Math.max(canvasTop, Math.min(anchorY - 24, canvasBottom - height))
+          // Prefer space beside the item, then the other side or a free vertical
+          // slot. All positions are disposable browser presentation.
+          const slots = [
+            { left, top },
+            { left: Math.max(canvasLeft, Math.min(anchorX - width - 42, canvasRight - width)), top },
+            ...occupied.flatMap(prior => [
+              { left, top: prior.bottom + 10 },
+              { left, top: prior.top - height - 10 },
+              { left: prior.right + 10, top: canvasTop },
+              { left: prior.left - width - 10, top: canvasTop },
+            ]),
+          ]
+          const free = slots.find(slot => slot.left >= canvasLeft && slot.left + width <= canvasRight &&
+            slot.top >= canvasTop && slot.top + height <= canvasBottom &&
+            occupied.every(prior => slot.left >= prior.right + 8 || slot.left + width <= prior.left - 8 ||
+              slot.top >= prior.bottom + 8 || slot.top + height <= prior.top - 8))
+          if (free) { left = free.left; top = free.top }
+          else top = Math.max(canvasTop, Math.min(top + index * 24, canvasBottom - height))
+          card.style.left = `${left}px`
+          card.style.top = `${Math.max(canvasTop, top)}px`
+          occupied.push({ left, top, right: left + width, bottom: top + height })
+        })
+      }
+      const updateOverlays = () => {
+        updateBoundaryCaptions()
+        updateAnnotationCards()
+      }
+      syncOverlays.current = updateOverlays
+      instance.on('pan zoom resize render position', updateOverlays)
+      updateOverlays()
+      const animationFrame = requestAnimationFrame(updateOverlays)
       const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
         instance?.resize()
-        updateBoundaryCaptions()
+        updateOverlays()
       })
       resizeObserver?.observe(container.current)
       graph.current = instance
       return () => {
         cancelAnimationFrame(animationFrame)
         resizeObserver?.disconnect()
-        instance?.off('pan zoom resize render', updateBoundaryCaptions)
-        syncBoundaryCaptions.current = () => undefined
+        instance?.off('pan zoom resize render position', updateOverlays)
+        syncOverlays.current = () => undefined
         graph.current = null
         instance?.destroy()
       }
@@ -208,7 +265,7 @@ export function ArchitectureMap({
       setRenderFailed(true)
     }
     return () => {
-      syncBoundaryCaptions.current = () => undefined
+      syncOverlays.current = () => undefined
       graph.current = null
       instance?.destroy()
     }
@@ -217,10 +274,41 @@ export function ArchitectureMap({
   useEffect(() => {
     const instance = graph.current
     if (!instance) return
+    // Updating comment badges must not reconstruct or re-fit the map.
+    instance.batch(() => {
+      instance.nodes('[uiAnnotation]').remove()
+      const markers = projectionElements(components, {
+        reviewSide, reviewComponents, reviewRelationships, reviewDiagramID,
+        annotationNodes, annotationRelationships, annotationAddNodeID, annotationAddRelationshipKey,
+      }).filter(element => element.data.uiAnnotation)
+      instance.add(markers).ungrabify().unselectify()
+    })
+    const positionMarkers = () => {
+      instance.nodes('[uiAnnotation]').forEach(marker => {
+        const data = marker.data()
+        const target = instance.getElementById(data.annotationNodeID ?? data.annotationRelationshipKey)
+        if (target.empty()) return
+        const point = data.annotationNodeID ? target.position() : target.midpoint()
+        marker.position({ x: point.x + (data.annotationNodeID ? 58 : 0), y: point.y - (data.annotationNodeID ? 34 : 18) })
+      })
+    }
+    positionMarkers()
+    instance.on('position', 'node[!uiAnnotation]', positionMarkers)
+    return () => { instance.off('position', 'node[!uiAnnotation]', positionMarkers) }
+  }, [elements, annotationKey])
+
+  useEffect(() => {
+    const instance = graph.current
+    if (!instance) return
     instance.$(':selected').unselect()
     if (selectedRelationshipKey) instance.getElementById(selectedRelationshipKey).select()
     else if (selectedID) instance.getElementById(selectedID).select()
   }, [selectedID, selectedRelationshipKey])
+
+  useEffect(() => {
+    const animationFrame = requestAnimationFrame(() => syncOverlays.current())
+    return () => cancelAnimationFrame(animationFrame)
+  })
 
   const reviewControls = reviewSide ? (
     <ReviewChangeControls
@@ -235,9 +323,8 @@ export function ArchitectureMap({
   ) : null
   const hasExternalReferences = Boolean(externalReferences)
   const hasReviewControls = Boolean(reviewControls)
-  const hasComments = Boolean(comments)
   const reviewDockIdentity = reviewSide ? revision : ''
-  const [dockPane, setDockPane] = useState<'changes' | 'external' | 'comments'>('changes')
+  const [dockPane, setDockPane] = useState<'changes' | 'external'>('changes')
   const [dockCollapsed, setDockCollapsed] = useState(false)
 
   useEffect(() => {
@@ -246,32 +333,24 @@ export function ArchitectureMap({
       return
     }
     if (!hasReviewControls && hasExternalReferences) setDockPane('external')
-    else if (!hasReviewControls && !hasExternalReferences && hasComments) setDockPane('comments')
-  }, [reviewDockIdentity, hasReviewControls, hasExternalReferences, hasComments])
-
-  useEffect(() => {
-    if (!commentsOpenSignal || !hasComments) return
-    setDockPane('comments')
-    setDockCollapsed(false)
-  }, [commentsOpenSignal, hasComments])
+  }, [reviewDockIdentity, hasReviewControls, hasExternalReferences])
 
   const visibleDockPane = dockPane === 'changes' && hasReviewControls
     ? 'changes'
     : dockPane === 'external' && hasExternalReferences
       ? 'external'
-      : hasComments ? 'comments' : hasExternalReferences ? 'external' : 'changes'
+      : hasExternalReferences ? 'external' : 'changes'
   useEffect(() => {
     const animationFrame = requestAnimationFrame(() => {
       graph.current?.resize()
       graph.current?.fit(undefined, 72)
-      syncBoundaryCaptions.current()
+      syncOverlays.current()
     })
     return () => cancelAnimationFrame(animationFrame)
-  }, [dockCollapsed, visibleDockPane, hasComments, hasExternalReferences, hasReviewControls])
+  }, [dockCollapsed, visibleDockPane, hasExternalReferences, hasReviewControls])
   const dockPanes = [
     ...(hasReviewControls ? [{ id: 'changes' as const, label: 'Changes' }] : []),
     ...(hasExternalReferences ? [{ id: 'external' as const, label: 'External references' }] : []),
-    ...(hasComments ? [{ id: 'comments' as const, label: 'Comments' }] : []),
   ]
   const bottomDock = dockPanes.length ? (
     <div className={`map-bottom-dock ${dockCollapsed ? 'collapsed' : ''}`}>
@@ -285,7 +364,7 @@ export function ArchitectureMap({
       </div>
       {!dockCollapsed && (
         <div className="map-bottom-dock-body" id="map-bottom-dock-panel" role={dockPanes.length > 1 ? 'tabpanel' : 'region'} aria-label={dockPanes.find((pane) => pane.id === visibleDockPane)?.label}>
-          {visibleDockPane === 'changes' ? reviewControls : visibleDockPane === 'external' ? externalReferences : comments}
+          {visibleDockPane === 'changes' ? reviewControls : externalReferences}
         </div>
       )}
     </div>
@@ -314,9 +393,10 @@ export function ArchitectureMap({
           {boundaryCaptions.map((component) => <span className="map-boundary-caption" data-boundary-node-id={component.id} key={component.id}>Lives in {component.boundary_home_title}</span>)}
         </div>
       )}
+      {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
         graph.current?.fit(undefined, 72)
-        syncBoundaryCaptions.current()
+        syncOverlays.current()
       }}>Fit map</button>}
       {bottomDock}
     </section>
@@ -512,21 +592,23 @@ export function projectionElements(components: MapComponent[], options: Projecti
   const annotationMarkers: ElementDefinition[] = []
   for (const node of nodes) {
     const count = Number(node.data.annotationCount ?? 0)
-    if (!count) continue
+    const add = node.data.id === options.annotationAddNodeID && !count
+    if (!count && !add) continue
     const position = node.position ?? { x: 0, y: 0 }
     annotationMarkers.push({
-      data: { id: `annotation-node:${node.data.id}`, displayLabel: `✎ ${count}`, uiAnnotation: true, annotationNodeID: node.data.id },
+      data: { id: `annotation-node:${node.data.id}`, displayLabel: count ? `✎ ${count}` : '✎ +', uiAnnotation: true, ...(add ? { annotationAdd: true } : {}), annotationNodeID: node.data.id },
       position: { x: position.x + 58, y: position.y - 34 },
     })
   }
   for (const edge of edges) {
     const count = Number(edge.data.annotationCount ?? 0)
-    if (!count) continue
+    const add = edge.data.key === options.annotationAddRelationshipKey && !count
+    if (!count && !add) continue
     const source = positionsByNodeID.get(String(edge.data.source))
     const target = positionsByNodeID.get(String(edge.data.target))
     if (!source || !target) continue
     annotationMarkers.push({
-      data: { id: `annotation-relationship:${edge.data.id}`, displayLabel: `✎ ${count}`, uiAnnotation: true, annotationRelationshipKey: edge.data.key },
+      data: { id: `annotation-relationship:${edge.data.id}`, displayLabel: count ? `✎ ${count}` : '✎ +', uiAnnotation: true, ...(add ? { annotationAdd: true } : {}), annotationRelationshipKey: edge.data.key },
       position: { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 - 18 },
     })
   }
@@ -587,6 +669,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },
   { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 5, 'border-style': 'dashed', opacity: 1 } },
   { selector: 'node[uiAnnotation]', style: { width: 32, height: 20, shape: 'round-rectangle', label: 'data(displayLabel)', color: '#68470f', 'background-color': '#f2dea0', 'border-color': '#a77b25', 'border-width': 1, 'font-size': 9, 'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center', opacity: 1, 'z-index': 20 } },
+  { selector: 'node[uiAnnotation][annotationAdd]', style: { opacity: 0.58, 'background-color': '#f8f0dc', 'border-style': 'dashed' } },
   {
     selector: 'edge',
     style: {

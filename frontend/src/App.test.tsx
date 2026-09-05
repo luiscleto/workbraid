@@ -5,6 +5,7 @@ import { App } from './App'
 
 const graphHarness = vi.hoisted(() => ({
   calls: [] as Array<{ elements?: Array<{ data: Record<string, unknown> }> }>,
+  annotationMarkers: [] as Array<{ data: Record<string, unknown> }>,
   nodeSelect: undefined as undefined | ((event: { target: { id: () => string; data?: () => unknown } }) => void),
   edgeSelect: undefined as undefined | ((event: { target: { data: () => unknown } }) => void),
   fail: false,
@@ -15,17 +16,22 @@ vi.mock('cytoscape', () => ({
     if (graphHarness.fail) throw new Error('canvas unavailable')
     graphHarness.calls.push(options)
     return {
+      batch: (apply: () => void) => apply(),
+      add: (elements: Array<{ data: Record<string, unknown> }>) => {
+        graphHarness.annotationMarkers = elements
+        return { ungrabify: () => ({ unselectify: () => undefined }) }
+      },
       on: (_event: string, selector: string | (() => void), callback?: unknown) => {
         if (selector === 'node') graphHarness.nodeSelect = callback as typeof graphHarness.nodeSelect
         if (selector === 'edge') graphHarness.edgeSelect = callback as typeof graphHarness.edgeSelect
       },
       off: () => undefined,
-      nodes: () => [],
+      nodes: () => Object.assign([], { remove: () => undefined }),
       resize: () => undefined,
       destroy: () => undefined,
       fit: () => undefined,
       $: () => ({ unselect: () => undefined }),
-      getElementById: () => ({ select: () => undefined }),
+      getElementById: () => ({ select: () => undefined, empty: () => false, renderedPosition: () => ({ x: 200, y: 200 }), renderedMidpoint: () => ({ x: 200, y: 200 }) }),
     }
   },
 }))
@@ -560,7 +566,7 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('heading', { name: 'Review changes' })).toBeInTheDocument()
   })
 
-  it('marks exact submitted comments in the navigator, map and Diagram comments dock', async () => {
+  it('marks exact submitted comments in navigation and opens independent notes on the map', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const reviewID = '77777777-7777-4777-8777-777777777777'
     window.history.replaceState({}, '', `/projects/example-project/proposals/${changeSetID}/reviews/${reviewID}`)
@@ -585,24 +591,29 @@ describe('candidate review regressions', () => {
     const diagramMarker = within(navigator).getByRole('button', { name: '1 review comment on System' })
     expect(within(navigator).getByRole('button', { name: '2 review comments on Worker updated' })).toBeInTheDocument()
     await user.click(diagramMarker)
-    expect(screen.getByRole('tab', { name: 'Comments' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('list', { name: 'Diagram comments' })).toHaveTextContent('Diagram note.')
+    expect(screen.queryByRole('tab', { name: 'Comments' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Comments on System')).toHaveTextContent('Diagram note.')
+    await user.click(within(navigator).getByRole('button', { name: 'Detail' }))
+    expect(screen.queryByLabelText('Comments on System')).not.toBeInTheDocument()
+    await user.click(diagramMarker)
+    expect(screen.getByLabelText('Comments on System')).toHaveTextContent('Diagram note.')
+    await user.click(screen.getByRole('button', { name: 'Close comments on System' }))
 
     await waitFor(() => expect(graphHarness.calls.length).toBeGreaterThan(0))
-    let elements = graphHarness.calls.at(-1)?.elements ?? []
-    const workerNode = elements.find((element) => element.data.id === worker)
-    expect(workerNode?.data.annotationCount).toBe(2)
-    act(() => graphHarness.nodeSelect?.({ target: { id: () => worker, data: () => workerNode?.data } }))
+    const workerMarker = graphHarness.annotationMarkers.find(element => element.data.annotationNodeID === worker)!
+    expect(workerMarker.data.displayLabel).toBe('✎ 2')
+    const graphCount = graphHarness.calls.length
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => String(workerMarker.data.id), data: () => workerMarker.data } }))
     expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(1)
     expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Component note.')
     expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Placement note.')
 
-    elements = graphHarness.calls.at(-1)?.elements ?? []
-    const relationshipEdge = elements.find((element) => element.data.key === 'edge-with')
-    expect(relationshipEdge?.data.annotationCount).toBe(1)
-    act(() => graphHarness.edgeSelect?.({ target: { data: () => relationshipEdge?.data } }))
+    const relationshipMarker = graphHarness.annotationMarkers.find(element => element.data.annotationRelationshipKey === 'edge-with')!
+    expect(relationshipMarker.data.displayLabel).toBe('✎ 1')
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => String(relationshipMarker.data.id), data: () => relationshipMarker.data } }))
     expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(2)
     expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Relationship note.')
+    expect(graphHarness.calls).toHaveLength(graphCount)
 
     await user.click(screen.getByRole('button', { name: 'Close comments on Worker updated' }))
     expect(within(screen.getByLabelText('Open review comments')).getAllByRole('article')).toHaveLength(1)
@@ -617,6 +628,156 @@ describe('candidate review regressions', () => {
 
     await user.click(screen.getByRole('button', { name: 'Before changes' }))
     expect(screen.queryByLabelText('Open review comments')).not.toBeInTheDocument()
+  })
+
+  it('starts a Diagram comment without existing feedback and submits its exact anchor', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    const fetchMock = vi.fn(() => response(reviewedArchitecture()))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigator).getByRole('button', { name: 'Comment on System' }))
+    const editor = screen.getByRole('region', { name: 'Comment on System' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Clarify this diagram.')
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Reviewer')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
+    expect(screen.getByRole('button', { name: 'Submit review' })).toBeDisabled()
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    expect(screen.getByLabelText('Comments on System')).toHaveTextContent('Clarify this diagram.')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+    expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{
+      body: 'Clarify this diagram.', anchor: { kind: 'diagram', side: 'with_changes', diagram_id: root },
+    }] })
+  })
+
+  it('keeps pinned comments live and edits by local identity when another comment is removed', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    const fetchMock = vi.fn(() => response(reviewedArchitecture()))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    const context = await screen.findByRole('region', { name: 'Review context' })
+    await user.click(within(context).getByRole('button', { name: 'Comment on component' }))
+    let editor = screen.getByRole('region', { name: 'Comment on Worker updated' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'First note.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    const marker = graphHarness.annotationMarkers.find(element => element.data.annotationNodeID === worker)!
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => String(marker.data.id), data: () => marker.data } }))
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('First note.')
+
+    await user.click(within(context).getByRole('button', { name: 'Comment on component' }))
+    editor = screen.getByRole('region', { name: 'Comment on Worker updated' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Second note.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Second note.')
+    const summary = screen.getByRole('region', { name: 'Comments to submit' })
+    const second = within(summary).getByText('Second note.').closest('li')!
+    await user.click(within(second).getByRole('button', { name: 'Edit' }))
+    await user.clear(within(second).getByRole('textbox', { name: 'Comment' }))
+    await user.type(within(second).getByRole('textbox', { name: 'Comment' }), 'Updated second note.')
+    const note = within(screen.getByLabelText('Open review comments')).getByText('First note.').closest('section')!
+    await user.click(within(note).getByRole('button', { name: 'Remove' }))
+    await user.click(within(summary).getByRole('button', { name: 'Save comment' }))
+    expect(screen.getByLabelText('Open review comments')).toHaveTextContent('Updated second note.')
+    expect(screen.getByLabelText('Open review comments')).not.toHaveTextContent('First note.')
+
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Reviewer')
+    const openNote = screen.getByLabelText('Open review comments')
+    await user.click(within(openNote).getByRole('button', { name: 'Edit' }))
+    editor = screen.getByRole('region', { name: 'Comment on Worker updated' })
+    await user.clear(within(editor).getByRole('textbox', { name: 'Comment' }))
+    expect(screen.getByRole('button', { name: 'Submit review' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Keep editing' }))
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Final second note.')
+    await user.click(within(editor).getByRole('button', { name: 'Save comment' }))
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+    expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{
+      body: 'Final second note.', anchor: { kind: 'component', side: 'with_changes', component_id: worker },
+    }] })
+  })
+
+  it('keeps Before and With Diagram notes separate when a summary edit happens on the other side', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+    const navigator = await screen.findByRole('navigation', { name: 'Diagrams and components' })
+    await user.click(within(navigator).getByRole('button', { name: 'Comment on System' }))
+    let editor = screen.getByRole('region', { name: 'Comment on System' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'With note.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    await user.click(within(navigator).getByRole('button', { name: 'Comment on System' }))
+    editor = screen.getByRole('region', { name: 'Comment on System' })
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Before note.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    const summary = screen.getByRole('region', { name: 'Comments to submit' })
+    const beforeNote = within(summary).getByText('Before note.').closest('li')!
+    await user.click(within(beforeNote).getByRole('button', { name: 'Edit' }))
+    await user.clear(within(beforeNote).getByRole('textbox', { name: 'Comment' }))
+    await user.type(within(beforeNote).getByRole('textbox', { name: 'Comment' }), 'Edited Before note.')
+    await user.click(within(beforeNote).getByRole('button', { name: 'Save comment' }))
+    expect(screen.getByLabelText('Comments on System')).toHaveTextContent('With note.')
+    expect(screen.getByLabelText('Comments on System')).not.toHaveTextContent('Edited Before note.')
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    expect(screen.getByLabelText('Comments on System')).toHaveTextContent('Edited Before note.')
+    expect(screen.getByLabelText('Comments on System')).not.toHaveTextContent('With note.')
+  })
+
+  it('resets the same comment target after explicit discard and guards further edits again', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    vi.stubGlobal('fetch', vi.fn(() => response(reviewedArchitecture())))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const context = await screen.findByRole('region', { name: 'Review context' })
+    const add = within(context).getByRole('button', { name: 'Comment on component' })
+    await user.click(add)
+    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Do not retain this.')
+    await user.click(add)
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Leave without keeping' }))
+    expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('')
+    await user.type(screen.getByRole('textbox', { name: 'Comment' }), 'Keep this instead.')
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Keep this instead.')
+  })
+
+  it('guards an existing line comment when only its exact range changes', async () => {
+    window.history.replaceState({}, '', '/projects/example-project/proposals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/review')
+    const current = reviewedArchitecture() as Record<string, any>
+    current.changes.review.with_changes.components[0].markdown_source = '# Worker\n\nDoes work.\n'
+    const fetchMock = vi.fn(() => response(current))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+
+    const context = await screen.findByRole('region', { name: 'Review context' })
+    await user.click(within(context).getByRole('button', { name: 'Comment on lines' }))
+    let editor = screen.getByRole('region', { name: 'Comment on Worker updated lines' })
+    await user.click(within(editor).getAllByRole('option')[0])
+    await user.type(within(editor).getByRole('textbox', { name: 'Comment' }), 'Explain this.')
+    await user.click(within(editor).getByRole('button', { name: 'Add comment' }))
+    const marker = graphHarness.annotationMarkers.find(element => element.data.annotationNodeID === worker)!
+    act(() => graphHarness.nodeSelect?.({ target: { id: () => String(marker.data.id), data: () => marker.data } }))
+    await user.click(within(screen.getByLabelText('Open review comments')).getByRole('button', { name: 'Edit' }))
+    editor = screen.getByRole('region', { name: 'Comment on Worker updated' })
+    await user.click(within(editor).getAllByRole('option')[2])
+    await user.click(screen.getByRole('button', { name: 'Before changes' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Keep editing' }))
+    expect(within(editor).getByRole('textbox', { name: 'Comment' })).toHaveValue('Explain this.')
+    await user.click(within(editor).getByRole('button', { name: 'Save comment' }))
+    await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Reviewer')
+    await user.click(screen.getByRole('button', { name: 'Submit review' }))
+    expect(requestBody(fetchMock, 1)).toMatchObject({ comments: [{
+      body: 'Explain this.', anchor: { kind: 'component_markdown', side: 'with_changes', component_id: worker, start_line: 1, end_line: 3 },
+    }] })
   })
 
   it('selects, edits and removes an exact proposal Markdown line-range comment', async () => {
@@ -647,10 +808,10 @@ describe('candidate review regressions', () => {
     expect(draft).not.toBeNull()
     expect(draft).toHaveTextContent('Proposal lines 1–3')
     await user.click(within(draft!).getByRole('button', { name: 'Edit' }))
-    const editComment = within(draft!).getByRole('textbox', { name: 'Edit comment' })
+    const editComment = within(draft!).getByRole('textbox', { name: 'Comment' })
     await user.clear(editComment)
     await user.type(editComment, 'Clarify all three lines.')
-    await user.click(within(draft!).getByRole('button', { name: 'Save' }))
+    await user.click(within(draft!).getByRole('button', { name: 'Save comment' }))
     const updatedDraft = screen.getByText('Clarify all three lines.').closest('li')
     expect(updatedDraft).not.toBeNull()
     await user.click(within(updatedDraft!).getByRole('button', { name: 'Remove' }))
@@ -705,11 +866,12 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Composition reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
-    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Add comment' }))
-    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Comment on this change' }))
     const commentEditor = screen.getByRole('region', { name: /^Comment on/ })
     expect(commentEditor).toBeInTheDocument()
     await user.type(within(commentEditor).getByRole('textbox', { name: 'Comment' }), 'Keep this placement.')
+    await user.click(screen.getByRole('button', { name: 'With changes' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Keep editing' }))
     await user.click(within(commentEditor).getByRole('button', { name: 'Add comment' }))
     await user.click(screen.getByRole('button', { name: 'Submit review' }))
 
@@ -741,7 +903,7 @@ describe('candidate review regressions', () => {
     await user.click(await screen.findByRole('button', { name: /Worker detail diagram link changed in System/ }))
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Hierarchy reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
-    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Add comment' }))
+    await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Comment on this change' }))
     const commentEditor = screen.getByRole('region', { name: /^Comment on/ })
     await user.type(within(commentEditor).getByRole('textbox', { name: 'Comment' }), 'Keep the detail link.')
     await user.click(within(commentEditor).getByRole('button', { name: 'Add comment' }))
@@ -1079,7 +1241,7 @@ describe('candidate review regressions', () => {
     await selectProposal(user)
     expect(await screen.findByRole('button', { name: 'With changes' })).toHaveAttribute('aria-pressed', 'true')
     const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
-    expect(within(navigation).getByRole('button', { name: /Worker updated/ })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Worker updated, Content changed' })).toBeInTheDocument()
     expect(screen.getByText('Candidate documentation.')).toBeInTheDocument()
     const withElements = graphHarness.calls.at(-1)?.elements ?? []
     expect(withElements.find((element) => element.data.id === 'edge-with')?.data.reviewStatus).toBe('added')

@@ -375,11 +375,12 @@ type ComponentChange struct {
 // one candidate-construction path. The owning pending Architecture change set
 // supplies it alongside its Component edits.
 type CandidateComposition struct {
-	NewComponentHomes []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
-	DetailDiagrams    []DetailDiagramChange       `json:"detail_diagrams" yaml:"detail_diagrams"`
-	DiagramTitles     []DiagramTitleChange        `json:"diagram_titles" yaml:"diagram_titles"`
-	HomeMoves         []ComponentHomeMove         `json:"home_moves" yaml:"home_moves"`
-	References        []ReferenceAppearanceChange `json:"references" yaml:"references"`
+	DetailReassignments []DetailReassignment        `json:"detail_reassignments" yaml:"detail_reassignments"`
+	NewComponentHomes   []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
+	DetailDiagrams      []DetailDiagramChange       `json:"detail_diagrams" yaml:"detail_diagrams"`
+	DiagramTitles       []DiagramTitleChange        `json:"diagram_titles" yaml:"diagram_titles"`
+	HomeMoves           []ComponentHomeMove         `json:"home_moves" yaml:"home_moves"`
+	References          []ReferenceAppearanceChange `json:"references" yaml:"references"`
 }
 
 // ReferenceAppearanceChange is the final intended reference state for one
@@ -1471,33 +1472,6 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 				return Candidate{}, fmt.Errorf("%w: new Component is missing its home Diagram", ErrInvalid)
 			}
 		}
-		for _, addition := range composition.DetailDiagrams {
-			detailID := uuid.MustParse(addition.ID)
-			anchorID := uuid.MustParse(addition.AnchorComponentID)
-			found := false
-			for diagramID, current := range diagrams {
-				for index := range current.appearances {
-					appearance := &current.appearances[index]
-					if appearance.component != anchorID || appearance.role != "home" {
-						continue
-					}
-					if appearance.hasDetailLink {
-						return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "detail", Err: ErrDiagramHomeInvalid}
-					}
-					appearance.detailDiagram, appearance.hasDetailLink = detailID, true
-					diagrams[diagramID] = current
-					changedDiagrams[diagramID] = struct{}{}
-					found = true
-					break
-				}
-				if found {
-					break
-				}
-			}
-			if !found {
-				return Candidate{}, &DiagramValidationError{DiagramID: addition.ID, ComponentID: addition.AnchorComponentID, Field: "detail", Err: ErrDiagramHomeInvalid}
-			}
-		}
 		for _, move := range composition.HomeMoves {
 			componentID, componentErr := uuid.Parse(move.ComponentID)
 			destinationID, diagramErr := uuid.Parse(move.DiagramID)
@@ -1555,6 +1529,9 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 			}
 			diagrams[destinationID] = destination
 			changedDiagrams[destinationID] = struct{}{}
+		}
+		if err := applyDetailAssignments(base, composition, diagrams, changedDiagrams); err != nil {
+			return Candidate{}, err
 		}
 		seenReferences := make(map[string]struct{}, len(composition.References))
 		for _, change := range composition.References {

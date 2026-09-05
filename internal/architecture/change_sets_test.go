@@ -276,7 +276,7 @@ func TestChangeSetLoaderIsolatesClosedSchemaAndIdentityConflicts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				blob, err := manager.git.writeBlob(context.Background(), storePath, []byte(strings.Replace(string(contents), "version: 1\n", "version: wrong\n", 1)))
+				blob, err := manager.git.writeBlob(context.Background(), storePath, []byte(strings.Replace(string(contents), "version: 2\n", "version: wrong\n", 1)))
 				if err != nil {
 					t.Fatal(err)
 				}

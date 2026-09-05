@@ -71,14 +71,15 @@ type changeSetReview struct {
 }
 
 type changeState struct {
-	Format            string                      `yaml:"format"`
-	Version           int                         `yaml:"version"`
-	Components        []changeStateComponent      `yaml:"components"`
-	NewComponentHomes []NewComponentHome          `yaml:"new_component_homes"`
-	DetailDiagrams    []DetailDiagramChange       `yaml:"detail_diagrams"`
-	DiagramTitles     []DiagramTitleChange        `yaml:"diagram_titles"`
-	HomeMoves         []ComponentHomeMove         `yaml:"home_moves"`
-	References        []ReferenceAppearanceChange `yaml:"references"`
+	DetailReassignments []DetailReassignment        `yaml:"detail_reassignments"`
+	Format              string                      `yaml:"format"`
+	Version             int                         `yaml:"version"`
+	Components          []changeStateComponent      `yaml:"components"`
+	NewComponentHomes   []NewComponentHome          `yaml:"new_component_homes"`
+	DetailDiagrams      []DetailDiagramChange       `yaml:"detail_diagrams"`
+	DiagramTitles       []DiagramTitleChange        `yaml:"diagram_titles"`
+	HomeMoves           []ComponentHomeMove         `yaml:"home_moves"`
+	References          []ReferenceAppearanceChange `yaml:"references"`
 }
 
 type changeStateComponent struct {
@@ -532,6 +533,19 @@ func (manager *Manager) DeleteActiveChangeSet(ctx context.Context, storeID, id, 
 	return manager.git.deleteRef(ctx, storePath, changeSetRef("active", id), expectedObject)
 }
 
+// ObserveActiveChangeSet reads the real active ref without interpreting a
+// cached generation as authority. Callers retain the application mutex.
+func (manager *Manager) ObserveActiveChangeSet(ctx context.Context, storeID, id string) (string, bool, error) {
+	if !canonicalUUID(id) {
+		return "", false, errors.New("invalid change-set identity")
+	}
+	storePath, err := manager.StorePath(storeID)
+	if err != nil {
+		return "", false, err
+	}
+	return manager.git.resolveRef(ctx, storePath, changeSetRef("active", id))
+}
+
 func (manager *Manager) AcceptChangeSet(ctx context.Context, storeID, base, successor, id, activeObject, appliedObject string) error {
 	storePath, err := manager.StorePath(storeID)
 	if err != nil {
@@ -600,9 +614,10 @@ func validObjectID(value string) bool {
 }
 
 func marshalChangeState(changes []ComponentChange, composition CandidateComposition) ([]byte, error) {
-	state := changeState{Format: "workbraid-change-state", Version: 1,
-		Components:        make([]changeStateComponent, len(changes)),
-		NewComponentHomes: nonNilHomes(composition.NewComponentHomes), DetailDiagrams: nonNilDetails(composition.DetailDiagrams),
+	state := changeState{Format: "workbraid-change-state", Version: 2,
+		DetailReassignments: append([]DetailReassignment{}, composition.DetailReassignments...),
+		Components:          make([]changeStateComponent, len(changes)),
+		NewComponentHomes:   nonNilHomes(composition.NewComponentHomes), DetailDiagrams: nonNilDetails(composition.DetailDiagrams),
 		DiagramTitles: nonNilTitles(composition.DiagramTitles), HomeMoves: nonNilMoves(composition.HomeMoves), References: nonNilReferences(composition.References),
 	}
 	for index, change := range changes {
@@ -640,7 +655,7 @@ func parseChangeState(contents []byte) ([]ComponentChange, CandidateComposition,
 			TitleChanged: item.TitleChanged, DescriptionChanged: item.DescriptionChanged, RelationshipsChanged: item.RelationshipsChanged, Relationships: relationships,
 		}
 	}
-	composition := CandidateComposition{NewComponentHomes: state.NewComponentHomes, DetailDiagrams: state.DetailDiagrams, DiagramTitles: state.DiagramTitles, HomeMoves: state.HomeMoves, References: state.References}
+	composition := CandidateComposition{DetailReassignments: state.DetailReassignments, NewComponentHomes: state.NewComponentHomes, DetailDiagrams: state.DetailDiagrams, DiagramTitles: state.DiagramTitles, HomeMoves: state.HomeMoves, References: state.References}
 	if err := validateChangeState(changes, composition); err != nil {
 		return nil, CandidateComposition{}, err
 	}
@@ -757,12 +772,22 @@ func validateChangeSetMetadataYAML(root *yaml.Node) error {
 
 func validateChangeStateYAML(root *yaml.Node) error {
 	required := map[string]string{"format": "!!str", "version": "!!int", "components": "!!seq", "new_component_homes": "!!seq", "detail_diagrams": "!!seq", "diagram_titles": "!!seq", "home_moves": "!!seq", "references": "!!seq"}
-	seen, err := validateClosedMapping(root, "changes.yaml", required, nil)
+	seen, err := validateClosedMapping(root, "changes.yaml", required, map[string]string{"detail_reassignments": "!!seq"})
 	if err != nil {
 		return err
 	}
-	if scalarValue(seen["format"]) != "workbraid-change-state" || scalarValue(seen["version"]) != "1" {
+	if scalarValue(seen["format"]) != "workbraid-change-state" || (scalarValue(seen["version"]) != "1" && scalarValue(seen["version"]) != "2") {
 		return errors.New("changes.yaml format or version is unsupported")
+	}
+	if (scalarValue(seen["version"]) == "2") != (seen["detail_reassignments"] != nil) {
+		return errors.New("changes.yaml detail_reassignments is required only in version 2")
+	}
+	if sequence := seen["detail_reassignments"]; sequence != nil {
+		for _, item := range sequence.Content {
+			if _, err := validateClosedMapping(item, "detail reassignment", map[string]string{"diagram_id": "!!str", "anchor_component_id": "!!str"}, nil); err != nil {
+				return err
+			}
+		}
 	}
 	for index, item := range seen["components"].Content {
 		fields, err := validateClosedMapping(item, fmt.Sprintf("changes.yaml component %d", index+1), map[string]string{
@@ -866,6 +891,14 @@ func validateChangeState(changes []ComponentChange, composition CandidateComposi
 			return errors.New("changes.yaml contains duplicate detail Diagram")
 		}
 		seenDetails[value.ID] = struct{}{}
+	}
+	seenReassignments := make(map[string]bool)
+	for _, value := range composition.DetailReassignments {
+		_, isNew := seenDetails[value.DiagramID]
+		if !canonicalUUID(value.DiagramID) || !canonicalUUID(value.AnchorComponentID) || isNew || seenReassignments[value.DiagramID] {
+			return errors.New("changes.yaml detail reassignment must uniquely name a base Diagram and anchor")
+		}
+		seenReassignments[value.DiagramID] = true
 	}
 	if duplicateFieldID(composition.DiagramTitles, func(value DiagramTitleChange) string { return value.DiagramID }) || duplicateFieldID(composition.HomeMoves, func(value ComponentHomeMove) string { return value.ComponentID }) {
 		return errors.New("changes.yaml contains duplicate title or home changes")

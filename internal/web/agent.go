@@ -44,25 +44,27 @@ type agentValidationProjection struct {
 }
 
 type agentChangeSetProjection struct {
-	ID              string                                   `json:"id"`
-	Name            string                                   `json:"name"`
-	Lifecycle       string                                   `json:"lifecycle"`
-	BaseRevision    string                                   `json:"base_revision"`
-	Generation      uint64                                   `json:"generation"`
-	Proposal        string                                   `json:"proposal_markdown"`
-	AppliedRevision string                                   `json:"applied_revision,omitempty"`
-	Components      []pendingComponentResponse               `json:"components"`
-	NewHomes        []architecture.NewComponentHome          `json:"new_component_homes"`
-	DetailDiagrams  []architecture.DetailDiagramChange       `json:"detail_diagrams"`
-	DiagramTitles   []architecture.DiagramTitleChange        `json:"diagram_titles"`
-	HomeMoves       []architecture.ComponentHomeMove         `json:"home_moves"`
-	References      []architecture.ReferenceAppearanceChange `json:"references"`
-	Valid           bool                                     `json:"valid"`
-	CandidateTree   string                                   `json:"candidate_tree,omitempty"`
-	Candidate       *agentArchitectureProjection             `json:"candidate"`
-	Validation      *agentValidationProjection               `json:"validation"`
-	OutOfDate       bool                                     `json:"out_of_date"`
-	Review          *agentReviewIdentity                     `json:"review"`
+	StateObject         string                                   `json:"change_set_state"`
+	DetailReassignments []architecture.DetailReassignment        `json:"detail_reassignments"`
+	ID                  string                                   `json:"id"`
+	Name                string                                   `json:"name"`
+	Lifecycle           string                                   `json:"lifecycle"`
+	BaseRevision        string                                   `json:"base_revision"`
+	Generation          uint64                                   `json:"generation"`
+	Proposal            string                                   `json:"proposal_markdown"`
+	AppliedRevision     string                                   `json:"applied_revision,omitempty"`
+	Components          []pendingComponentResponse               `json:"components"`
+	NewHomes            []architecture.NewComponentHome          `json:"new_component_homes"`
+	DetailDiagrams      []architecture.DetailDiagramChange       `json:"detail_diagrams"`
+	DiagramTitles       []architecture.DiagramTitleChange        `json:"diagram_titles"`
+	HomeMoves           []architecture.ComponentHomeMove         `json:"home_moves"`
+	References          []architecture.ReferenceAppearanceChange `json:"references"`
+	Valid               bool                                     `json:"valid"`
+	CandidateTree       string                                   `json:"candidate_tree,omitempty"`
+	Candidate           *agentArchitectureProjection             `json:"candidate"`
+	Validation          *agentValidationProjection               `json:"validation"`
+	OutOfDate           bool                                     `json:"out_of_date"`
+	Review              *agentReviewIdentity                     `json:"review"`
 }
 
 type agentReviewIdentity struct {
@@ -106,6 +108,8 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/relationships/edit", h.agentRelationshipEdit)
 	mux.HandleFunc("POST /api/agent/v2/relationships/remove", h.agentRelationshipRemove)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/create-detail", h.agentDiagramCreateDetail)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/parent-options", h.agentDetailParentOptions)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/reassign-detail", h.agentReassignDetail)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/show-component", h.agentDiagramShowComponent)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/stop-showing-component", h.agentDiagramStopShowingComponent)
@@ -214,6 +218,8 @@ func (h *Handler) writeAgentError(response http.ResponseWriter, status int, code
 
 func agentMessage(code string) string {
 	switch code {
+	case "change_set_state_mismatch":
+		return "The proposal changed. Inspect it before preparing again."
 	case "project_not_found":
 		return "That project is not in the WorkBraid catalog. List projects or create it deliberately."
 	case "project_conflict":
@@ -425,7 +431,9 @@ func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agen
 		}
 	}
 	value := agentChangeSetProjection{
-		ID: pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,
+		StateObject:         pending.refObject,
+		DetailReassignments: append([]architecture.DetailReassignment{}, pending.detailReassignments...),
+		ID:                  pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,
 		BaseRevision: pending.baseRevision, Generation: pending.generation, Components: components,
 		NewHomes:       append([]architecture.NewComponentHome{}, pending.newComponentHomes...),
 		DetailDiagrams: append([]architecture.DetailDiagramChange{}, pending.detailDiagrams...),

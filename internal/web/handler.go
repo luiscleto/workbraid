@@ -73,6 +73,7 @@ type loadedProject struct {
 }
 
 type pendingChangeSet struct {
+	detailReassignments            []architecture.DetailReassignment
 	id                             string
 	name                           string
 	lifecycle                      string
@@ -129,6 +130,8 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/components/add", handler.addComponent)
 	mux.HandleFunc("POST /api/architecture/components/edit", handler.editComponent)
 	mux.HandleFunc("POST /api/architecture/diagrams/detail", handler.createDetailDiagram)
+	mux.HandleFunc("POST /api/architecture/diagrams/parent-options", handler.browserDetailParentOptions)
+	mux.HandleFunc("POST /api/architecture/diagrams/reassign-detail", handler.browserReassignDetail)
 	mux.HandleFunc("POST /api/architecture/diagrams/title", handler.editDiagramTitle)
 	mux.HandleFunc("POST /api/architecture/components/move-home", handler.moveComponentHome)
 	mux.HandleFunc("POST /api/architecture/diagrams/show-component", handler.showComponentHere)
@@ -384,6 +387,9 @@ type relationshipTargetResponse struct {
 }
 
 type changesResponse struct {
+	StateObject                    string                                   `json:"change_set_state"`
+	CandidateTree                  string                                   `json:"candidate_tree,omitempty"`
+	DetailReassignments            []architecture.DetailReassignment        `json:"detail_reassignments,omitempty"`
 	ID                             string                                   `json:"id"`
 	Name                           string                                   `json:"name"`
 	Lifecycle                      string                                   `json:"lifecycle"`
@@ -503,6 +509,8 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 			}
 		}
 		result.Changes = &changesResponse{
+			StateObject:                    pending.refObject,
+			DetailReassignments:            append([]architecture.DetailReassignment(nil), pending.detailReassignments...),
 			ID:                             pending.id,
 			Name:                           pending.name,
 			Lifecycle:                      pending.lifecycle,
@@ -532,6 +540,7 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 		if pending.candidate != nil {
 			candidateProjection := projectSnapshot(pending.candidate.Snapshot(), "")
 			result.Changes.Candidate = &candidateProjection
+			result.Changes.CandidateTree = pending.candidate.Tree()
 			result.HomeMoveDestinations = componentHomeDestinations(pending.candidate.Snapshot())
 			result.ReferenceChoices = referenceChoices(pending.candidate.Snapshot())
 		}
@@ -834,7 +843,8 @@ func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architectur
 
 func pendingFromDurableChangeSet(durable architecture.ChangeSet) *pendingChangeSet {
 	record := &pendingChangeSet{
-		id: durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
+		detailReassignments: append([]architecture.DetailReassignment(nil), durable.Composition.DetailReassignments...),
+		id:                  durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
 		appliedRevision: durable.AppliedRevision, refObject: durable.RefObject,
 		storeID: durable.BaseSnapshot.StoreID(), baseRevision: durable.BaseRevision, baseSnapshot: durable.BaseSnapshot,
 		changes:           append([]architecture.ComponentChange(nil), durable.Changes...),
@@ -857,7 +867,7 @@ func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.Change
 		AppliedRevision: record.appliedRevision, RefObject: record.refObject,
 		BaseRevision: record.baseRevision, Generation: record.generation, BaseSnapshot: record.baseSnapshot,
 		Changes:     record.changes,
-		Composition: architecture.CandidateComposition{NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
+		Composition: architecture.CandidateComposition{DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
 		Candidate:   record.candidate,
 	}
 	if record.review != nil {
@@ -871,6 +881,7 @@ func clonePending(record *pendingChangeSet) *pendingChangeSet {
 		return nil
 	}
 	clone := *record
+	clone.detailReassignments = append([]architecture.DetailReassignment(nil), record.detailReassignments...)
 	clone.changes = append([]architecture.ComponentChange(nil), record.changes...)
 	for index := range clone.changes {
 		clone.changes[index].Relationships = append([]architecture.AuthoringRelationship(nil), record.changes[index].Relationships...)
@@ -1518,15 +1529,17 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 		}
 	}
 	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
-		NewComponentHomes: pending.newComponentHomes,
-		DetailDiagrams:    pending.detailDiagrams,
-		DiagramTitles:     pending.diagramTitles,
-		HomeMoves:         pending.homeMoves,
-		References:        pending.references,
+		DetailReassignments: pending.detailReassignments,
+		NewComponentHomes:   pending.newComponentHomes,
+		DetailDiagrams:      pending.detailDiagrams,
+		DiagramTitles:       pending.diagramTitles,
+		HomeMoves:           pending.homeMoves,
+		References:          pending.references,
 	})
 }
 
 type diagramMutationRequest struct {
+	AnchorComponentID         string  `json:"anchor_component_id,omitempty"`
 	ProjectSlug               string  `json:"project_slug"`
 	StoreID                   string  `json:"store_id"`
 	ExpectedRevision          string  `json:"expected_revision"`
@@ -1934,7 +1947,7 @@ func homeMovesWithoutComponent(moves []architecture.ComponentHomeMove, component
 
 func pendingChangeSetEmpty(pending *pendingChangeSet) bool {
 	return len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
-		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 && len(pending.references) == 0
+		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 && len(pending.references) == 0 && len(pending.detailReassignments) == 0
 }
 
 func referenceChangesWithoutPair(changes []architecture.ReferenceAppearanceChange, diagramID, componentID string) []architecture.ReferenceAppearanceChange {

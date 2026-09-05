@@ -293,6 +293,8 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipEdit(flags, actionArgs, stdin, invalid)
 	case "relationship_remove":
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
+	case "diagram_parent_options", "diagram_reassign_detail":
+		return parseDetailParentCommand(operation, flags, actionArgs, invalid)
 	case "diagram_create_detail", "diagram_edit_title", "diagram_show_component", "diagram_stop_showing_component":
 		return parseDiagramCommand(operation, flags, actionArgs, invalid)
 	default:
@@ -605,6 +607,30 @@ func parseRelationshipRemove(flags *flag.FlagSet, args []string, stdin io.Reader
 	return "relationship_remove", agentapi.RelationshipRemoveRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *revision, Generation: *parsed}, SourceID: *sourceID, TargetID: target.value, Label: text, Occurrence: *occurrence}, nil
 }
 
+func parseDetailParentCommand(operation string, flags *flag.FlagSet, args []string, invalid invalidCommand) (string, any, *agentapi.Envelope) {
+	storeID, changeSetID, generation := addStateFlags(flags)
+	var diagramID, anchorID string
+	flags.StringVar(&diagramID, "diagram-id", "", "non-root child Diagram UUID")
+	if operation == "diagram_reassign_detail" {
+		flags.StringVar(&anchorID, "anchor-component-id", "", "eligible destination Component UUID")
+	}
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*storeID, *changeSetID, *generation, diagramID) {
+		return invalid("Parent commands require exact state and --diagram-id.")
+	}
+	parsed, err := parseRequiredGeneration(*generation)
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
+	}
+	state := agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *changeSetID, Generation: *parsed}
+	if operation == "diagram_parent_options" {
+		return operation, agentapi.DiagramParentOptionsRequest{StatePreconditions: state, DiagramID: diagramID}, nil
+	}
+	if anchorID == "" {
+		return invalid("Reassign-detail requires --anchor-component-id from parent-options.")
+	}
+	return operation, agentapi.DiagramReassignDetailRequest{StatePreconditions: state, DiagramID: diagramID, AnchorComponentID: anchorID}, nil
+}
+
 func parseDiagramCommand(operation string, flags *flag.FlagSet, args []string, invalid invalidCommand) (string, any, *agentapi.Envelope) {
 	storeID, revision, generation := addStateFlags(flags)
 	var componentID, diagramID string
@@ -681,6 +707,8 @@ Authoring commands:
   relationship add <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->)
   relationship edit <state> --source-id <uuid> --old-target-id <raw> (--old-label <raw>|--old-label-file <path|->) [--occurrence <n>] --target-id <raw> (--label <raw>|--label-file <path|->)
   relationship remove <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->) [--occurrence <n>]
+  diagram parent-options <state> --diagram-id <uuid>
+  diagram reassign-detail <state> --diagram-id <uuid> --anchor-component-id <uuid>
   diagram create-detail <state> --component-id <uuid> --title <text>
   diagram edit-title <state> --diagram-id <uuid> --title <text>
   diagram show-component <state> --diagram-id <uuid> --component-id <uuid>

@@ -3152,3 +3152,11 @@ button.catalog-project:hover { border-color: var(--ink); }
   outline: 3px solid rgb(49 91 61 / 18%);
   outline-offset: 1px;
 }
+.diagram-context-actions { display: flex; flex-direction: column; align-items: flex-end; gap: .45rem; max-width: 11rem; }
+.diagram-context-actions button { white-space: normal; text-align: right; }
+.parent-choices { border: 0; border-top: 1px solid var(--line, #d8d1c4); margin: 1rem 0; padding: .6rem 0; min-width: 0; }
+.parent-choices legend { color: var(--muted, #696358); font-size: .8rem; padding-right: .5rem; }
+.parent-choice { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: .65rem; padding: .65rem .2rem; cursor: pointer; overflow-wrap: anywhere; }
+.parent-choice input { flex: 0 0 auto; width: auto; margin-top: .3rem; }
+.parent-choice span { min-width: 0; }
+.parent-choice small { display: block; color: var(--muted, #696358); }

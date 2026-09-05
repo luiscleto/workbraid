@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 29 {
+	if err != nil || len(tools.Tools) != 31 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -555,7 +555,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	wantNames := []string{
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_rename", "change_set_review", "change_sets_list",
-		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
+		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))

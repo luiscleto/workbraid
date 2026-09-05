@@ -63,6 +63,8 @@ workbraid component move-home <state> --component-id <uuid> --diagram-id <uuid>
 workbraid relationship add <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->)
 workbraid relationship edit <state> --source-id <uuid> --old-target-id <raw> (--old-label <raw>|--old-label-file <path|->) [--occurrence <n>] --target-id <raw> (--label <raw>|--label-file <path|->)
 workbraid relationship remove <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->) [--occurrence <n>]
+workbraid diagram parent-options <state> --diagram-id <uuid>
+workbraid diagram reassign-detail <state> --diagram-id <uuid> --anchor-component-id <uuid>
 workbraid diagram create-detail <state> --component-id <uuid> --title <text>
 workbraid diagram edit-title <state> --diagram-id <uuid> --title <text>
 workbraid diagram show-component <state> --diagram-id <uuid> --component-id <uuid>
@@ -70,6 +72,8 @@ workbraid diagram stop-showing-component <state> --diagram-id <uuid> --component
 ```
 
 Here `<state>` is `--store-id <uuid> --change-set-id <uuid> --generation <n>`. Component creation may omit `--diagram-id` only for deliberate root fallback. File values are exact UTF-8; `-` reads stdin; literal and file forms are mutually exclusive. Relationship edit/remove uses the exact raw source/target/label plus one-based occurrence. Empty or malformed raw selectors remain valid inputs so invalid rows can be repaired without deleting the change set.
+
+To change a Diagram’s parent Component, read `diagram parent-options` for its exact proposal generation and choose a returned eligible Component UUID. `diagram reassign-detail` keeps the Diagram and its full subtree; it moves only its parent link. This differs from `component move-home`, which moves where a Component lives. Root cannot change parent, and an occupied or descendant anchor is unavailable. With no eligible parent, keep the original proposal and add a suitable Component through ordinary authoring if intended.
 
 Creation starts at generation 0 with a valid candidate equal to its exact Accepted base. Rename, proposal edit, and semantic edits increment only that change set and invalidate only its Review. `change-set review` returns the complete unified Architecture diff, Before/With projections, exact ID/base/tree/generation binding, `reviewed_state`, and a `review_url`; give that URL to the reviewer. Repeating it on the unchanged generation returns the same `reviewed_state`. `architecture update` accepts only that binding. There is no force, accept-latest, automatic review, rebase, merge, or combined mutate-and-accept action.
 

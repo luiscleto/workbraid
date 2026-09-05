@@ -51,6 +51,17 @@ type StatePreconditions struct {
 	Generation  uint64 `json:"generation" jsonschema:"Exact generation inspected for that change set."`
 }
 
+type DiagramParentOptionsRequest struct {
+	StatePreconditions
+	DiagramID string `json:"diagram_id" jsonschema:"Exact non-root child Diagram UUID in the complete proposal."`
+}
+
+type DiagramReassignDetailRequest struct {
+	StatePreconditions
+	DiagramID         string `json:"diagram_id" jsonschema:"Exact non-root Diagram UUID whose parent link will move."`
+	AnchorComponentID string `json:"anchor_component_id" jsonschema:"Eligible destination Component UUID from diagram_parent_options. Its home will own the child link."`
+}
+
 // RequiresExactGeneration marks requests whose generation field must be
 // present even when its valid value is zero.
 func (StatePreconditions) RequiresExactGeneration() {}
@@ -250,6 +261,8 @@ var operationPaths = map[string]string{
 	"relationship_add":               "/api/agent/v2/relationships/add",
 	"relationship_edit":              "/api/agent/v2/relationships/edit",
 	"relationship_remove":            "/api/agent/v2/relationships/remove",
+	"diagram_parent_options":         "/api/agent/v2/diagrams/parent-options",
+	"diagram_reassign_detail":        "/api/agent/v2/diagrams/reassign-detail",
 	"diagram_create_detail":          "/api/agent/v2/diagrams/create-detail",
 	"diagram_edit_title":             "/api/agent/v2/diagrams/edit-title",
 	"diagram_show_component":         "/api/agent/v2/diagrams/show-component",

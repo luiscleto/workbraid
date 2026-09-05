@@ -240,7 +240,11 @@ type ComponentEditor = {
   readOnly?: boolean
 }
 
+type ParentOption = { component_id: string; title: string; home_diagram_id: string; home_diagram_title: string; filename: string }
+type ParentOptions = { diagram_id: string; title: string; current_anchor: ParentOption; eligible: ParentOption[]; candidate_tree: string; generation: number | null }
+
 type DiagramEditor =
+  | { kind: 'parent'; diagramID: string; options: ParentOptions; anchorID: string }
   | { kind: 'detail'; componentID: string; title: string; initialTitle: string; invalid?: boolean }
   | { kind: 'title'; diagramID: string; title: string; initialTitle: string; invalid?: boolean }
   | { kind: 'move'; componentID: string; componentTitle: string; diagramID: string; currentDiagramTitle: string }
@@ -255,6 +259,7 @@ type NavigationIntent =
   | { kind: 'new-changes' }
   | { kind: 'add' }
   | { kind: 'edit-diagram-title'; id: string; title: string }
+  | { kind: 'change-parent'; id: string }
   | { kind: 'submitted-review'; changeSetID: string; reviewID: string }
   | { kind: 'open-another' }
   | { kind: 'route'; slug?: string; proposalChangeSetID?: string; reviewChangeSetID?: string; submittedReviewID?: string }
@@ -780,7 +785,7 @@ export function App() {
     editor.title !== editor.initialTitle || editor.description !== editor.initialDescription ||
     !sameRelationships(relationshipValues(editor.relationships), editor.initialRelationships)
   )
-  const diagramEditorDirty = diagramEditor !== null && (diagramEditor.kind === 'move'
+  const diagramEditorDirty = diagramEditor !== null && (diagramEditor.kind === 'parent' ? diagramEditor.anchorID !== '' : diagramEditor.kind === 'move'
     ? diagramEditor.diagramID !== ''
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
@@ -1107,7 +1112,7 @@ export function App() {
   async function submitDiagramChange(event: FormEvent<HTMLFormElement>, result: ArchitectureResult) {
     event.preventDefault()
     if (!diagramEditor) return
-    const endpoint = diagramEditor.kind === 'detail'
+    const endpoint = diagramEditor.kind === 'parent' ? '/api/architecture/diagrams/reassign-detail' : diagramEditor.kind === 'detail'
       ? '/api/architecture/diagrams/detail'
       : diagramEditor.kind === 'title'
         ? '/api/architecture/diagrams/title'
@@ -1121,6 +1126,7 @@ export function App() {
         expected_revision: result.revision,
         pending_generation_observed: true,
         expected_pending_generation: result.changes?.generation ?? null,
+        ...(diagramEditor.kind === 'parent' ? { diagram_id: diagramEditor.diagramID, anchor_component_id: diagramEditor.anchorID } : {}),
         ...(diagramEditor.kind === 'detail' ? { component_id: diagramEditor.componentID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'title' ? { diagram_id: diagramEditor.diagramID, title: diagramEditor.title } : {}),
         ...(diagramEditor.kind === 'move' ? { component_id: diagramEditor.componentID, diagram_id: diagramEditor.diagramID } : {}),
@@ -1372,6 +1378,23 @@ export function App() {
     }
     if (intent.kind === 'add') {
       addComponent(selectedDiagramID)
+      return
+    }
+    if (intent.kind === 'change-parent') {
+      if (state.kind !== 'ready') return
+      const result = state.value
+      try {
+        const response = await postJSON('/api/architecture/diagrams/parent-options', {
+          project_slug: result.project_slug, store_id: result.store_id,
+          expected_revision: result.revision, change_set_id: result.changes?.id,
+          pending_generation_observed: true, expected_pending_generation: result.changes?.generation ?? null,
+          diagram_id: intent.id,
+        })
+        const options = await response.json() as ParentOptions
+        if (stateRef.current !== state) return
+        if (!response.ok) { setArchitectureNotice('Parent choices could not be read. Inspect the proposal and try again.'); return }
+        setDiagramEditor({ kind: 'parent', diagramID: intent.id, options, anchorID: '' })
+      } catch { setArchitectureNotice('Parent choices could not be read. Try again.') }
       return
     }
     if (intent.kind === 'edit-diagram-title') {
@@ -1941,7 +1964,7 @@ export function App() {
                 <div className="index-heading">
                   <h1>Diagrams</h1>
                   {!review && authoringAvailable && activeDiagram && (
-                    <button className="index-add diagram-title-edit" type="button" onClick={() => requestNavigation({ kind: 'edit-diagram-title', id: activeDiagram.id, title: activeDiagram.title })}>Edit title</button>
+                    <div className="diagram-context-actions"><button className="index-add diagram-title-edit" type="button" onClick={() => requestNavigation({ kind: 'edit-diagram-title', id: activeDiagram.id, title: activeDiagram.title })}>Edit title</button>{activeDiagram.parent_anchor_component_id && <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'change-parent', id: activeDiagram.id })}>Change parent component</button>}</div>
                   )}
                 </div>
                 <ul className="diagram-tree">
@@ -2523,6 +2546,23 @@ function DiagramEditorForm({
   onCancel: () => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }) {
+  if (editor.kind === 'parent') {
+    const groups = [...new Set(editor.options.eligible.map((option) => option.home_diagram_id))]
+    return <form className="component-form diagram-editor" onSubmit={onSubmit}>
+      <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>Change parent component for “{editor.options.title}”</h2></div>
+      <p>Currently under {editor.options.current_anchor.title} · {editor.options.current_anchor.home_diagram_title}.</p>
+      {groups.length === 0 && <p className="empty-note">No free parent component is available outside this Diagram’s subtree. Add a suitable Component to the proposal, then try again.</p>}
+      {groups.map((home) => <fieldset className="parent-choices" key={home}>
+        <legend>Lives in {editor.options.eligible.find((option) => option.home_diagram_id === home)?.home_diagram_title}</legend>
+        {editor.options.eligible.filter((option) => option.home_diagram_id === home).map((option) => <label className="parent-choice" key={option.component_id}>
+          <input type="radio" name="parent-component" checked={editor.anchorID === option.component_id} onChange={() => setEditor({ ...editor, anchorID: option.component_id })} />
+          <span>{option.title}{editor.options.eligible.filter((other) => other.title === option.title).length > 1 && <small>{option.filename}</small>}</span>
+        </label>)}
+      </fieldset>)}
+      {error && <p className="authoring-error" role="alert">{error}</p>}
+      <div className="button-group"><button className="secondary-action" type="button" onClick={onCancel}>Cancel</button><button className="inline-action" type="submit" disabled={!editor.anchorID}>Keep change</button></div>
+    </form>
+  }
   return (
     <form className="component-form diagram-editor" onSubmit={onSubmit}>
       <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>{editor.kind === 'detail' ? 'Create detail diagram' : editor.kind === 'title' ? 'Edit diagram title' : `Change where ${editor.componentTitle} lives`}</h2></div>

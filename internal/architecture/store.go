@@ -1827,6 +1827,11 @@ func editedComponentSource(accepted component, change ComponentChange) ([]byte, 
 	source := make([]byte, 0, len(accepted.source)+len(change.Title)+len(change.Description))
 	source = append(source, accepted.source[:accepted.headingStart]...)
 	source = append(source, heading...)
+	// An unterminated preserved H1 needs its own structural terminator.
+	// Never consume the first Description newline to terminate the heading.
+	if len(body) > 0 && len(heading) > 0 && heading[len(heading)-1] != '\n' && heading[len(heading)-1] != '\r' {
+		source = append(source, '\n')
+	}
 	source = append(source, body...)
 	if change.RelationshipsChanged {
 		frontmatter, err := marshalComponentFrontmatter(change.ID, change.Relationships)

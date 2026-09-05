@@ -14,7 +14,11 @@ Original packet-inclusive worker base: `802562170b56cd48eb8dc4bb1cec5436145ad0bc
 
 Approved ordinary Component serializer baseline amendment: `a332f64b4d04fbe001c21b56672373c49ca99fbd`, committed on the original worker base after the real-Git round-trip stop below
 
-Corrected packet-inclusive worker base: the exact clean commit produced by committing this packet amendment alone on that serializer baseline amendment; record the full SHA before resuming the same worker
+Serializer-corrected packet-inclusive worker base: `1e2b499f3a66529d4e60639e56b4f6b1e0702381`
+
+Approved alpha compatibility amendment: `510065236f21b919424ade4b537d33cbf3d68e72`
+
+Resumed packet-inclusive worker base: the exact clean commit produced by committing this packet amendment alone on the alpha compatibility amendment; record that SHA and carry the same worker's existing fix and unfinished work forward without discarding either
 
 The human has approved this one implementation/review/gate cycle. Dispatch only from the exact packet-inclusive worker base. Do not begin rich-diagram Phase 3.
 
@@ -42,6 +46,8 @@ The worker stopped before implementation when real candidate construction expose
 The human approved the narrow ordinary-serializer correction now recorded in the living Architecture baseline. Commit that clarification first, then this packet amendment, and fast-forward the same clean worker to the corrected packet-inclusive base. Do not dispatch a second implementation worker or create another increment. Fix and verify this broken ordinary round trip before continuing feature implementation. Historical completed records and the original baseline/dispatch provenance remain unchanged.
 
 Whenever serialization preserves an unchanged ATX or Setext H1 block without a terminating line break and a non-empty exact Description must follow, append exactly one LF structural heading terminator, then append every Description byte unchanged. Empty Description inserts nothing; whitespace/newline-only Description is non-empty; an already-terminated H1 gains no additional separator. The inserted byte is always LF, without newline-style detection, and never replaces or normalizes Description LF/CRLF/leading whitespace. This is the shared ordinary Component serializer, not a Reconciliation branch, new storage field, raw-source override, second candidate representation, lossless-Markdown subsystem or newline-normalization framework.
+
+The human subsequently confirmed that pre-increment alpha compatibility is not required. Old bug-produced proposals/Reviews whose stored trees no longer match the corrected constructor may remain unavailable; no migration, old-serializer branch, record repair or compatibility reconstruction is authorized or needed. Do not turn that consequence into another feature stop. Every loaded record still requires exact tree equality. Historical feedback created through the current product must remain exact across ordinary iteration, reconciliation, application and restart. Completed historical documents remain untouched.
 
 ## 2. Exact worker brief
 
@@ -79,8 +85,8 @@ One server owns all state. No CLI/MCP private-store access, second Manager, per-
 Implement the approved ordinary capability before using it for reconciliation:
 
 - Add `detail_reassignments` as final Diagram-to-anchor values for base-existing non-root Diagrams. For a proposal-new Diagram, update its creation's final anchor instead.
-- Write the approved operational `changes.yaml` version 2, with the original six required sequences and the new seventh sequence. Read version 1 into the same constructor with no reassignments, without rewriting historical state. Keep envelope, Review and portable Architecture versions unchanged.
-- Preserve exact historical version-1 candidate reconstruction and repeated exact Review-changes state-object no-op. No second constructor or old/new Architecture interpretation is allowed.
+- Write the approved operational `changes.yaml` version 2, with the original six required sequences and the new seventh sequence. Pre-increment alpha compatibility is not required; add no migration or legacy serialization path. Keep envelope, Review and portable Architecture versions unchanged.
+- Preserve exact reconstruction of current-product records and repeated exact Review-changes state-object no-op. Any older record still loaded must pass the same current constructor and equality checks. No second constructor or old/new Architecture interpretation is allowed.
 - Resolve destinations from the complete candidate. Provide the concrete ordinary parent-options read and structured reassignment through browser, CLI and MCP with exact store/Change Set/generation preconditions.
 - Preserve the child UUID/path/blob/mode/subtree and all unrelated Component/Diagram entries. Change only the old/new parent-owned links, plus independently authored changes.
 - Enforce root prohibition, current-anchor no-op, unoccupied destination, valid home, no descendant cycle, unique parents and reachability. Reject invalid direct actions without persisting a detached state or losing other pending work.
@@ -143,7 +149,7 @@ Use real temporary private Git stores, the real executable and production Manage
 | --- | --- |
 | Ordinary reassignment | Base-existing child; pending-new child updates creation fact; candidate-only destination Component; destination home in root allowed; repeated moves normalize to one final fact; return-to-base residual removal; current-anchor no-op; root child/occupied/descendant/missing target rejection. |
 | Atomic composition | Full subtree identities and exact child/unrelated blobs/modes retained; home plus anchor changes together; valid explicit joint anchor swap; invalid cycle/occupancy leaves original durable proposal exact. |
-| Operational encoding | New seven-sequence version-2 round trip; closed-key/version validation; existing version-1 active/applied and review-retained historical states reconstruct exactly; repeated reviewed-state no-op still exact. |
+| Operational encoding | New seven-sequence version-2 round trip; closed-key/version validation; current-product active/applied and review-retained historical states reconstruct exactly; repeated reviewed-state no-op still exact. No legacy-fixture or migration matrix is required. |
 | Scalar rules | A-only, P-only, equal-result and divergent Title/Description/Diagram title. Body whitespace/Markdown-source changes are exact Description differences; source-only H1 formatting with the same structured Title is not a Title difference. |
 | Ordinary H1/Description round trip | Unterminated ATX H1 with `\nBody\n`, `Body\n`, whitespace/newline-only non-empty Description and exact empty Description; already-terminated H1 without an extra separator; Setext equivalents; Description LF/CRLF/leading whitespace preserved. Assert exact source bytes and reparsed intended Title/Description, including unchanged normalized Title. Prove ordinary Component Description editing uses this same serializer. Retain the original real-Git B/A/P failure as a regression: residual construction against unterminated A, reparse, durable write/load and exact reconstructed candidate-tree equality must pass without changing Accepted. No Reconciliation-only escape hatch. |
 | Identity collisions | Distinct additions combine; identical same-new-UUID complete Component/Diagram facts coalesce using A fidelity; divergent content or dependent Relationship/home/reference/detail context returns `reconciliation_unsupported` / `replace_identity`, offers no side/manual resolution, and mutates no ref. No UUID remapping or dependency migration. |
@@ -166,7 +172,7 @@ Run focused tests during development. Ordinary integrated checks, from the corre
 
 Review the complete exact implementation range, not only test summaries. Confirm:
 
-1. There is one candidate/parser/validator interpretation. Residual state relative to A reconstructs the exact candidate, not a separately built merged tree. Version-1 retained Reviews still round-trip through this same path.
+1. There is one candidate/parser/validator interpretation. Residual state relative to A reconstructs the exact candidate, not a separately built merged tree. Current-product retained Reviews still round-trip through this same path. No old-bug serialization branch, migration or equality bypass was added for disposable alpha records.
 2. Reassignment is ordinary authoring through browser/CLI/MCP, with minimal final-state facts. Only parent-owned links change; no recursive child rewrites, detach history, root reassignment, hidden deletion or synthetic Component edits.
 3. Three-way units honor structured Title versus byte-exact Description (including body whitespace), exact relationship counts, homes, references and anchors. Divergent same-new-UUID Component/Diagram collisions are unsupported even when differing dependent facts alone reveal the collision; no whole-object replacement choice or dependency migration. Identical complete facts coalesce once. Both competing children survive with explicit destinations; side labels do not hide incomplete choices.
 4. Unsupported lifecycle handling is choice-scoped. Accepted-side absence is not denied solely because Proposed-side restoration is unavailable; neither missing identities nor dangling dependencies are silently reconstructed/dropped.

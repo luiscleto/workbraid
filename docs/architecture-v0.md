@@ -472,7 +472,11 @@ Initial UI does not require:
 
 All controls edit the pending change set, never canonical Git directly.
 
-For an existing component, a Description-only edit preserves the H1 bytes exactly. If a submitted normalized Title is unchanged, its existing H1 bytes are also preserved exactly. If the Title changes, WorkBraid replaces the H1 using the plain-text Title projection and serialization rules above; it does not attempt to preserve inline Markdown formatting that the structured editor does not expose. The existing ATX or Setext heading form is preserved unless doing so would conflict with the Title round-trip invariant.
+For an existing component, a Description-only edit preserves the H1 source bytes exactly, with one structural exception: if the preserved H1 block has no terminating line break and the exact Description to serialize has non-zero byte length, WorkBraid appends exactly one LF byte (`\n`) after the H1, then appends the exact Description bytes unchanged. The LF terminates the heading; it is not part of the Description and must not consume, trim, normalize, or replace any Description byte. An exactly empty Description leaves the unterminated H1 unchanged. Whitespace-only or newline-only Description is non-empty and requires the terminator. An already-terminated H1 gains no extra separator. This rule applies to both ATX and Setext H1 blocks; the newly required terminator is always LF, while the Description's own LF/CRLF and leading whitespace remain exact. It does not normalize unrelated Markdown or frontmatter.
+
+If a submitted normalized Title is unchanged, its existing H1 source is preserved under the same rule. If the Title changes, WorkBraid replaces the H1 using the plain-text Title projection and serialization rules above; it does not attempt to preserve inline Markdown formatting that the structured editor does not expose. The existing ATX or Setext heading form is preserved unless doing so would conflict with the Title round-trip invariant.
+
+The structural exception exists solely to preserve the ordinary structured-edit round trip: reparsing serialized source must recover the intended normalized Title and the intended exact Description bytes. For example, preserved H1 `# API` plus Description `\nBody\n` serializes as `# API\n\nBody\n`, not `# API\nBody\n`. No raw-source override, storage field, or separate Markdown interpretation is introduced.
 
 ### Initial Diagram authoring
 

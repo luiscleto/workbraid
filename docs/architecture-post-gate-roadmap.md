@@ -29,7 +29,7 @@ Improve the then-existing Architecture review workflow without introducing Diagr
 - deterministic non-canonical review layout;
 - review-specific validation, fix, clear/deselect, and basic diff-readability polish.
 
-At Phase 1 completion the normal workspace map remained accepted-only. Change Sets 1 later proposes an explicit whole-proposal workspace context rather than an overlay; semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
+At Phase 1 completion the normal workspace map remained accepted-only. Change Sets 1 later introduced an explicit whole-proposal workspace context rather than an overlay; semantic/rendered Markdown diff, syntax highlighting, and dedicated themed-scrollbar work remain deferred.
 
 ## Phase 2 — First-class Architecture Diagrams and nested navigation — complete
 
@@ -84,7 +84,7 @@ Change Sets 1 adds neither review comments nor reconciliation. `docs/architectur
 
 Architecture Change Sets 1 is complete at completion record `c28f817b8cbe2caa587b4312c1b14c87388b8d52`, with final implementation `5870941dc803ba5fd7c9a57d6b278223619e0471`.
 
-## Architecture Reviews 1 — next stage
+## Architecture Reviews 1 — complete
 
 Add durable review submissions against one exact change-set revision. A review may contain comments anchored to:
 
@@ -100,15 +100,23 @@ A submission may carry the lightweight verdict **Comment**, **Approve**, or **Re
 
 Reviews use their own private-Git ref namespace and retain the exact reviewed Change Set state through a Git parent link so later proposal mutation, application, discard, restart, and ordinary garbage collection cannot retarget or lose the feedback. Review submissions remain separate from `Review changes`: the latter still prepares the exact candidate/binding used for acceptance, while a submission records informational feedback on that already-bound state. `docs/architecture-reviews-v0.md` contains the approved exact contract, including permanent direct access to submitted reviews after proposal discard without inventing a discarded Change Set lifecycle.
 
-## Architecture Reconciliation 1 — later utility stage
+Architecture Reviews 1 is complete at completion record `94787a8b05fdc502aedd07aae34b5d016b7106a3`, with final implementation `892f3254ad13b0fdabe02202e0070ac153f07bb8`.
+
+## Architecture Reconciliation 1 — next utility stage; approved
 
 Add deliberate reconciliation for an out-of-date change set using three exact inputs retained by Change Sets 1:
 
-- its original base;
-- current Accepted; and
-- its exact proposal candidate.
+- its exact current proposal base B;
+- exact known-current Accepted A; and
+- its exact valid proposal candidate P.
 
-Reconciliation may automatically combine non-conflicting work and must surface real conflicts for explicit **Use Accepted**, **Use proposed**, or structured/manual resolution. It never silently overwrites Accepted or accepts the result. Conflict taxonomy, candidate lifecycle, review interaction, and durable representation require their own product decision.
+Prepare a non-mutating exact preview, automatically combine non-conflicting semantic values, and surface true conflicts for explicit **Use Accepted**, **Use proposed**, or structured/manual resolution. Apply rechecks the exact proposal and Accepted inputs, validates through the one constructor/loader, and updates only that same proposal to base A with one new generation and no current Review-changes binding. Its UUID, name, proposal Markdown and immutable historical Reviews survive. Empty residual proposals remain active; neither reconciliation nor a review verdict accepts them.
+
+The approved ordinary domain extension is explicit reassignment of an existing non-root detail Diagram to another valid Component home. It moves only the parent-owned link, preserves the child/subtree and identities, and is available through browser, CLI, MCP and normal durable Change Set composition. Reconciliation uses that same capability. Distinct competing children are both retained: choosing which stays on an occupied anchor also requires an explicit valid destination for the displaced child. No automatic anchor, orphan, deletion, or clone is introduced.
+
+External deletion/restoration and other unsupported lifecycle choices remain outside this first slice. Report unsupported choices individually where another valid representable result remains available; valid external Accepted state stays authoritative. Divergent independently added same-UUID Component/Diagram objects are unsupported identity collisions, with no replacement choice; identical complete supported semantic facts coalesce once. Description comparison remains byte-exact, including Markdown whitespace, while structured Title and source-fidelity concerns remain distinct. The approved exact units, operational pending-schema extension, preview/apply binding, conflict controls and Agent Access contract are in `docs/architecture-reconciliation-v0.md`; execution is governed by `docs/plans/architecture-reconciliation-1-execution.md`.
+
+One combined implementation/review/gate cycle is approved. Reconciliation adds no second candidate representation, merge-only tree, Git merge/rebase product, reconciliation refs, persistent resolution session, proposal history, comment retargeting, or auto-acceptance. Apply is exact-state-bound: known-success response recovery reads the real active ref, and an old-state retry is rejected rather than applied twice or assigned a guessed receipt. Verification uses parallel weak-agent proposals, fresh agent resolution, independent canonical/restart checks and a small human UI checkpoint.
 
 ## Phase 3 — Durable rich diagram editing — deferred until after the utility stages
 

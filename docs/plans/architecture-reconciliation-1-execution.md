@@ -10,7 +10,11 @@ Exact Reviews 1 final implementation: `892f3254ad13b0fdabe02202e0070ac153f07bb8`
 
 Approved Reconciliation baseline/roadmap SHA: `697bdb16cbd34b3dfa40c805d9e1398a72bcbb13`
 
-Packet-inclusive worker base: the exact clean commit produced by committing this Approved packet alone on the baseline above; record the full SHA before dispatch
+Original packet-inclusive worker base: `802562170b56cd48eb8dc4bb1cec5436145ad0bc`
+
+Approved ordinary Component serializer baseline amendment: `a332f64b4d04fbe001c21b56672373c49ca99fbd`, committed on the original worker base after the real-Git round-trip stop below
+
+Corrected packet-inclusive worker base: the exact clean commit produced by committing this packet amendment alone on that serializer baseline amendment; record the full SHA before resuming the same worker
 
 The human has approved this one implementation/review/gate cycle. Dispatch only from the exact packet-inclusive worker base. Do not begin rich-diagram Phase 3.
 
@@ -30,6 +34,14 @@ Following the human approval:
 8. Stop after Reconciliation 1. Do not begin rich-diagram Phase 3 or another product stage.
 
 Do not use Grok approval as a substitute for direct built-browser inspection. Use the latest accepted Reviews UX, not obsolete form/dropdown scenarios. If the human requests UI corrections, iterate the focused real UI first; align living tests with the approved final interaction rather than enforcing broken layout.
+
+### Authorized serializer correction and same-worker continuation
+
+The worker stopped before implementation when real candidate construction exposed an existing ordinary Description serializer failure. B has H1 `# API\n` and empty Description; externally accepted A has the semantically identical unterminated H1 `# API`; P supplies exact Description `\nBody\n`. Serializing the residual Description against A produced `# API\nBody\n`, which reparsed as `Body\n` and lost the first Description byte. Original proposal reconstruction succeeded and the reproduction changed no authoritative ref.
+
+The human approved the narrow ordinary-serializer correction now recorded in the living Architecture baseline. Commit that clarification first, then this packet amendment, and fast-forward the same clean worker to the corrected packet-inclusive base. Do not dispatch a second implementation worker or create another increment. Fix and verify this broken ordinary round trip before continuing feature implementation. Historical completed records and the original baseline/dispatch provenance remain unchanged.
+
+Whenever serialization preserves an unchanged ATX or Setext H1 block without a terminating line break and a non-empty exact Description must follow, append exactly one LF structural heading terminator, then append every Description byte unchanged. Empty Description inserts nothing; whitespace/newline-only Description is non-empty; an already-terminated H1 gains no additional separator. The inserted byte is always LF, without newline-style detection, and never replaces or normalizes Description LF/CRLF/leading whitespace. This is the shared ordinary Component serializer, not a Reconciliation branch, new storage field, raw-source override, second candidate representation, lossless-Markdown subsystem or newline-normalization framework.
 
 ## 2. Exact worker brief
 
@@ -133,6 +145,7 @@ Use real temporary private Git stores, the real executable and production Manage
 | Atomic composition | Full subtree identities and exact child/unrelated blobs/modes retained; home plus anchor changes together; valid explicit joint anchor swap; invalid cycle/occupancy leaves original durable proposal exact. |
 | Operational encoding | New seven-sequence version-2 round trip; closed-key/version validation; existing version-1 active/applied and review-retained historical states reconstruct exactly; repeated reviewed-state no-op still exact. |
 | Scalar rules | A-only, P-only, equal-result and divergent Title/Description/Diagram title. Body whitespace/Markdown-source changes are exact Description differences; source-only H1 formatting with the same structured Title is not a Title difference. |
+| Ordinary H1/Description round trip | Unterminated ATX H1 with `\nBody\n`, `Body\n`, whitespace/newline-only non-empty Description and exact empty Description; already-terminated H1 without an extra separator; Setext equivalents; Description LF/CRLF/leading whitespace preserved. Assert exact source bytes and reparsed intended Title/Description, including unchanged normalized Title. Prove ordinary Component Description editing uses this same serializer. Retain the original real-Git B/A/P failure as a regression: residual construction against unterminated A, reparse, durable write/load and exact reconstructed candidate-tree equality must pass without changing Accepted. No Reconciliation-only escape hatch. |
 | Identity collisions | Distinct additions combine; identical same-new-UUID complete Component/Diagram facts coalesce using A fidelity; divergent content or dependent Relationship/home/reference/detail context returns `reconciliation_unsupported` / `replace_identity`, offers no side/manual resolution, and mutates no ref. No UUID remapping or dependency migration. |
 | Relationships | Several differently labelled and identical parallel facts; base count 1/A count 2/P count 3 conflict; independent tuple deltas combine; same-result count not doubled; exact YAML-sensitive/Unicode/multiline labels and surviving order. |
 | Composition interactions | Different home destinations; reference/home overlap; different anchors for same child; two independently created children on one anchor with explicit displaced-child assignment; no free anchor remains unresolved; independent changes creating a cycle yield localized structural context. |
@@ -157,7 +170,7 @@ Review the complete exact implementation range, not only test summaries. Confirm
 2. Reassignment is ordinary authoring through browser/CLI/MCP, with minimal final-state facts. Only parent-owned links change; no recursive child rewrites, detach history, root reassignment, hidden deletion or synthetic Component edits.
 3. Three-way units honor structured Title versus byte-exact Description (including body whitespace), exact relationship counts, homes, references and anchors. Divergent same-new-UUID Component/Diagram collisions are unsupported even when differing dependent facts alone reveal the collision; no whole-object replacement choice or dependency migration. Identical complete facts coalesce once. Both competing children survive with explicit destinations; side labels do not hide incomplete choices.
 4. Unsupported lifecycle handling is choice-scoped. Accepted-side absence is not denied solely because Proposed-side restoration is unavailable; neither missing identities nor dangling dependencies are silently reconstructed/dropped.
-5. A source/path/mode fidelity and deterministic new-file collision allocation are exact. No generic YAML/property merge or serializer-driven semantic loss.
+5. A source/path/mode fidelity and deterministic new-file collision allocation are exact. Independently inspect the ordinary H1 structural-terminator exception and rerun the original real-Git B/A/P reproduction: exact Description bytes survive ordinary editing and residual reconstruction, empty/already-terminated cases gain no separator, and ATX/Setext are covered. No Reconciliation-specific serializer, raw-source override, generic YAML/property merge, lossless-Markdown subsystem or serializer-driven semantic loss.
 6. Preview is read-only at authoritative refs. Apply reobserves and atomically verifies A plus updates exact S; all race branches preserve truthful knowledge and other proposals/Reviews. Successful response-loss recovery reads real authority; a retry with old S is state-mismatch and cannot apply twice. No guessed receipt, reconciliation-uncertain classification, extra acceptance path, preview/session registry, merge commit or history parent.
 7. The closed Agent Access values/errors and skill genuinely support discovery and recovery, including incomplete displaced-child decisions, without prose parsing/private Git.
 8. Inspect the built browser at real desktop dimensions: focused task placement, choice clarity, no clipped controls, readable long text, useful no-anchor/unsupported feedback, unsent guard, proposal/Accepted navigation and exact historical comments. Do not approve behavior while deferring an unusable UI to the human.

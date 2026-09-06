@@ -990,8 +990,9 @@ dd {
 .reconciliation-index li { margin: 12px 0; overflow-wrap: anywhere; }
 .reconciliation-index small, .reconciliation-options small { display: block; font-size: .76rem; color: var(--ink-muted); overflow-wrap: anywhere; }
 .reconciliation-context { display: block; width: 100%; padding: 12px; border: 0; border-left: 3px solid transparent; background: transparent; text-align: left; color: inherit; white-space: normal; overflow-wrap: anywhere; }
-.reconciliation-context[aria-current="true"] { border-color: var(--accent); background: rgb(49 91 61 / 8%); }
-.reconciliation-context:hover { background: rgb(49 91 61 / 5%); }
+.reconciliation-context:hover:not(:disabled) { background: rgb(49 91 61 / 5%); color: var(--ink); }
+.reconciliation-context[aria-current="true"],
+.reconciliation-context[aria-current="true"]:hover:not(:disabled) { border-color: var(--accent); background: rgb(49 91 61 / 8%); color: var(--ink); }
 .reconciliation-sides { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
 .reconciliation-sides section { min-width: 0; padding: 12px; background: var(--paper, #f8f6f0); border: 1px solid var(--hairline); }
 .reconciliation-sides h4 { margin: 0 0 10px; font-size: .9rem; }

@@ -42,6 +42,35 @@ func reconciliationResidual(accepted, proposed Snapshot, original, final reconci
 		}
 		composition.NodePositions = append(composition.NodePositions, NodePositionChange{k.diagram, k.component, p})
 	}
+	sizePairs := map[reconciliationPair]bool{}
+	for k := range a.sizes {
+		sizePairs[k] = true
+	}
+	for k := range final.sizes {
+		sizePairs[k] = true
+	}
+	sizeKeys := make([]reconciliationPair, 0, len(sizePairs))
+	for k := range sizePairs {
+		sizeKeys = append(sizeKeys, k)
+	}
+	sort.Slice(sizeKeys, func(i, j int) bool {
+		if sizeKeys[i].diagram == sizeKeys[j].diagram {
+			return sizeKeys[i].component < sizeKeys[j].component
+		}
+		return sizeKeys[i].diagram < sizeKeys[j].diagram
+	})
+	for _, k := range sizeKeys {
+		before, bok := a.sizes[k]
+		after, aok := final.sizes[k]
+		if bok == aok && before == after {
+			continue
+		}
+		var p *Size
+		if aok {
+			p = &after
+		}
+		composition.NodeSizes = append(composition.NodeSizes, NodeSizeChange{k.diagram, k.component, p})
+	}
 	used := map[string]bool{}
 	acceptedPaths, proposedPaths := map[string]string{}, map[string]string{}
 	for _, c := range accepted.components {

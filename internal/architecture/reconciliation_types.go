@@ -44,6 +44,7 @@ func (l ReconciliationLocator) MarshalJSON() ([]byte, error) {
 }
 
 type ReconciliationValue struct {
+	Size               *Size                             `json:"size,omitempty"`
 	Position           *Position                         `json:"position,omitempty"`
 	Text               *string                           `json:"text,omitempty"`
 	Count              *int                              `json:"count,omitempty"`
@@ -115,7 +116,7 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 		required = append(required, "component_id")
 	case "diagram_title", "detail_anchor", "diagram_object":
 		required = append(required, "diagram_id")
-	case "reference", "node_position":
+	case "reference", "node_position", "node_size":
 		required = append(required, "component_id", "diagram_id")
 	case "relationship_count":
 		required = append(required, "source_id", "target_id", "label")
@@ -166,6 +167,8 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 		}
 		allowed := map[string]bool{}
 		switch value.Locator.Kind {
+		case "node_size":
+			allowed["size"] = true
 		case "node_position":
 			allowed["position"] = true
 		case "component_title", "component_description", "diagram_title":
@@ -189,6 +192,12 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("manual scalar requires one value")
 		}
 		for key, rawValue := range fields {
+			if value.Locator.Kind == "node_size" {
+				var pair map[string]json.RawMessage
+				if json.Unmarshal(rawValue, &pair) != nil || len(pair) != 2 || pair["width"] == nil || pair["height"] == nil || bytes.Equal(pair["width"], []byte("null")) || bytes.Equal(pair["height"], []byte("null")) || value.Value.Size == nil || !ValidSize(*value.Value.Size) {
+					return fmt.Errorf("size requires bounded integer width and height")
+				}
+			}
 			if !allowed[key] || bytes.Equal(rawValue, []byte("null")) {
 				return fmt.Errorf("irrelevant/null resolution value %s", key)
 			}
@@ -285,7 +294,8 @@ func (s ReconciliationSide) MarshalJSON() ([]byte, error) {
 		return json.Marshal(struct {
 			State    string    `json:"state"`
 			Position *Position `json:"position,omitempty"`
-		}{s.State, s.Position})
+			Size     *Size     `json:"size,omitempty"`
+		}{s.State, s.Position, s.Size})
 	}
 	return json.Marshal(plain(s))
 }
@@ -341,6 +351,7 @@ type reconciliationRelationship struct{ source, target, label string }
 type reconciliationDiagram struct{ title, path string }
 
 type reconciliationFacts struct {
+	sizes         map[reconciliationPair]Size
 	positions     map[reconciliationPair]Position
 	version       int
 	components    map[string]AuthoringComponent
@@ -355,6 +366,7 @@ type reconciliationFacts struct {
 func snapshotReconciliationFacts(s Snapshot) reconciliationFacts {
 	f := reconciliationFacts{components: map[string]AuthoringComponent{}, diagrams: map[string]reconciliationDiagram{}, homes: map[string]string{}, references: map[reconciliationPair]bool{}, anchors: map[string]string{}, relationships: map[reconciliationRelationship]int{}, root: s.RootDiagramID()}
 	f.positions = map[reconciliationPair]Position{}
+	f.sizes = map[reconciliationPair]Size{}
 	f.version = s.FormatVersion()
 	for _, c := range s.AuthoringComponents() {
 		f.components[c.ID] = c
@@ -364,6 +376,9 @@ func snapshotReconciliationFacts(s Snapshot) reconciliationFacts {
 	}
 	for _, d := range s.diagrams {
 		id := d.id.String()
+		for _, v := range d.sizes {
+			f.sizes[reconciliationPair{id, v.component.String()}] = v.size
+		}
 		for _, p := range d.positions {
 			f.positions[reconciliationPair{id, p.component.String()}] = p.position
 		}

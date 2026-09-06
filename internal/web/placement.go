@@ -48,11 +48,20 @@ func validPlacementFields(contents []byte, path string, browser bool) bool {
 				return false
 			}
 		}
+		if key == "width" || key == "height" {
+			if !strings.HasSuffix(path, "/set-size") || string(raw) == "null" {
+				return false
+			}
+			var n int
+			if json.Unmarshal(raw, &n) != nil || key == "width" && (n < 80 || n > 1600) || key == "height" && (n < 48 || n > 1200) {
+				return false
+			}
+		}
 	}
 	if _, err = decoder.Token(); err != nil || ensureJSONEnd(decoder) != nil {
 		return false
 	}
-	return !strings.HasSuffix(path, "/set-position") || seen["x"] && seen["y"]
+	return (!strings.HasSuffix(path, "/set-position") || seen["x"] && seen["y"]) && (!strings.HasSuffix(path, "/set-size") || seen["width"] && seen["height"])
 }
 
 func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapshot, pending *pendingChangeSet, d, c string, p *architecture.Position, autoLayout bool) (*pendingChangeSet, bool, string) {
@@ -100,11 +109,11 @@ func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapsho
 			targets = append(targets, architecture.NodePositionChange{DiagramID: d, ComponentID: c, Position: p})
 		}
 	}
-	if len(targets) == 0 && current.FormatVersion() == 3 {
+	if len(targets) == 0 && current.FormatVersion() >= 3 {
 		return pending, true, ""
 	}
 	proposed := h.ensurePendingLocked(base, clonePending(pending))
-	proposed.architectureVersion = 3
+	proposed.architectureVersion = max(3, current.FormatVersion())
 	for _, v := range targets {
 		composition := architecture.SetNodePosition(base, h.durableChangeSet(proposed).Composition, d, v.ComponentID, v.Position)
 		proposed.nodePositions = composition.NodePositions
@@ -247,11 +256,11 @@ func (h *Handler) agentPositions(w http.ResponseWriter, r *http.Request) {
 			}
 			appearances := []map[string]any{}
 			for _, a := range diagram.Appearances {
-				appearances = append(appearances, map[string]any{"component_id": a.ComponentID, "title": titles[a.ComponentID], "role": a.Role, "position": a.Position, "display_position": a.DisplayPosition, "position_source": a.PositionSource})
+				appearances = append(appearances, map[string]any{"component_id": a.ComponentID, "title": titles[a.ComponentID], "role": a.Role, "size": a.Size, "display_size": a.DisplaySize, "size_source": a.SizeSource, "position": a.Position, "display_position": a.DisplayPosition, "position_source": a.PositionSource})
 			}
 			boundaries := []map[string]any{}
 			for _, b := range diagram.Boundaries {
-				boundaries = append(boundaries, map[string]any{"component_id": b.ComponentID, "title": b.Title, "role": "boundary", "home_diagram_id": b.HomeDiagramID, "home_diagram_title": b.HomeDiagramTitle, "position": b.Position, "display_position": b.DisplayPosition, "position_source": b.PositionSource})
+				boundaries = append(boundaries, map[string]any{"component_id": b.ComponentID, "title": b.Title, "role": "boundary", "home_diagram_id": b.HomeDiagramID, "home_diagram_title": b.HomeDiagramTitle, "size": b.Size, "display_size": b.DisplaySize, "size_source": b.SizeSource, "position": b.Position, "display_position": b.DisplayPosition, "position_source": b.PositionSource})
 			}
 			result["boundaries"] = boundaries
 			result["diagram_id"] = diagram.ID

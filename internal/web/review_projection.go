@@ -39,6 +39,9 @@ type diagramBreadcrumbResponse struct {
 }
 
 type diagramAppearanceResponse struct {
+	Size               *architecture.Size     `json:"size"`
+	DisplaySize        *architecture.Size     `json:"display_size"`
+	SizeSource         string                 `json:"size_source"`
 	DisplayPosition    *architecture.Position `json:"display_position"`
 	PositionSource     string                 `json:"position_source"`
 	Position           *architecture.Position `json:"position"`
@@ -49,6 +52,9 @@ type diagramAppearanceResponse struct {
 }
 
 type diagramBoundaryResponse struct {
+	Size             *architecture.Size     `json:"size"`
+	DisplaySize      *architecture.Size     `json:"display_size"`
+	SizeSource       string                 `json:"size_source"`
 	Position         *architecture.Position `json:"position"`
 	DisplayPosition  *architecture.Position `json:"display_position"`
 	PositionSource   string                 `json:"position_source"`
@@ -71,6 +77,7 @@ type diagramRelationshipResponse struct {
 }
 
 type reviewComparisonResponse struct {
+	NodeSizes     []reviewNodeSizeChange             `json:"node_sizes"`
 	NodePositions []reviewNodePositionChange         `json:"node_positions"`
 	Components    []reviewComponentChangeResponse    `json:"components"`
 	Relationships []reviewRelationshipChangeResponse `json:"relationships"`
@@ -86,6 +93,16 @@ type reviewNodePositionChange struct {
 	Before       *architecture.Position `json:"before"`
 	With         *architecture.Position `json:"with"`
 	Path         string                 `json:"path"`
+}
+
+type reviewNodeSizeChange struct {
+	BeforeSource string             `json:"before_source"`
+	WithSource   string             `json:"with_source"`
+	DiagramID    string             `json:"diagram_id"`
+	ComponentID  string             `json:"component_id"`
+	Before       *architecture.Size `json:"before"`
+	With         *architecture.Size `json:"with"`
+	Path         string             `json:"path"`
 }
 
 type reviewDiagramChangeResponse struct {
@@ -218,6 +235,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		for itemIndex, appearance := range diagram.Appearances {
 			value.Appearances[itemIndex] = diagramAppearanceResponse{
 				DisplayPosition: appearance.DisplayPosition, PositionSource: appearance.PositionSource,
+				Size: appearance.Size, DisplaySize: appearance.DisplaySize, SizeSource: appearance.SizeSource,
 				Position:    appearance.Position,
 				ComponentID: appearance.ComponentID, Role: appearance.Role,
 				DetailDiagramID: appearance.DetailDiagramID, DetailDiagramTitle: appearance.DetailDiagramTitle,
@@ -226,6 +244,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		for itemIndex, boundary := range diagram.Boundaries {
 			value.Boundaries[itemIndex] = diagramBoundaryResponse{
 				Position: boundary.Position, DisplayPosition: boundary.DisplayPosition, PositionSource: boundary.PositionSource,
+				Size: boundary.Size, DisplaySize: boundary.DisplaySize, SizeSource: boundary.SizeSource,
 				Key: boundary.Key, ComponentID: boundary.ComponentID, Title: boundary.Title, Context: boundary.Context,
 				HomeDiagramID: boundary.HomeDiagramID, HomeDiagramTitle: boundary.HomeDiagramTitle,
 			}
@@ -304,7 +323,61 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 		}
 		return a.DiagramID < b.DiagramID
 	})
+	comparison.NodeSizes = compareSizes(before, withChanges)
 	return before, withChanges, comparison
+}
+
+func compareSizes(before, with snapshotProjectionResponse) []reviewNodeSizeChange {
+	type pair struct{ diagram, component string }
+	type side struct {
+		size   *architecture.Size
+		source string
+	}
+	old, current := map[pair]side{}, map[pair]side{}
+	paths := map[string]string{}
+	collect := func(diagrams []diagramResponse, values map[pair]side) {
+		for _, d := range diagrams {
+			paths[d.ID] = "diagrams/" + d.Filename
+			for _, a := range d.Appearances {
+				values[pair{d.ID, a.ComponentID}] = side{a.DisplaySize, a.SizeSource}
+			}
+			for _, b := range d.Boundaries {
+				values[pair{d.ID, b.ComponentID}] = side{b.DisplaySize, b.SizeSource}
+			}
+		}
+	}
+	collect(before.Diagrams, old)
+	collect(with.Diagrams, current)
+	keys := map[pair]bool{}
+	for k := range old {
+		keys[k] = true
+	}
+	for k := range current {
+		keys[k] = true
+	}
+	result := []reviewNodeSizeChange{}
+	for k := range keys {
+		a, aok := old[k]
+		b, bok := current[k]
+		if !aok {
+			a.source = "not_applicable"
+		}
+		if !bok {
+			b.source = "not_applicable"
+		}
+		if a.source == b.source && (a.size == nil && b.size == nil || a.size != nil && b.size != nil && *a.size == *b.size) {
+			continue
+		}
+		result = append(result, reviewNodeSizeChange{BeforeSource: a.source, WithSource: b.source, DiagramID: k.diagram, ComponentID: k.component, Before: a.size, With: b.size, Path: paths[k.diagram]})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		a, b := result[i], result[j]
+		if a.DiagramID != b.DiagramID {
+			return a.DiagramID < b.DiagramID
+		}
+		return a.ComponentID < b.ComponentID
+	})
+	return result
 }
 
 func attachDiagramRelationshipProjections(changes []reviewRelationshipChangeResponse, before, withChanges []diagramResponse) {

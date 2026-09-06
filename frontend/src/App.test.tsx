@@ -26,7 +26,9 @@ vi.mock('cytoscape', () => ({
         if (selector === 'edge') graphHarness.edgeSelect = callback as typeof graphHarness.edgeSelect
       },
       off: () => undefined,
-      nodes: () => Object.assign([], { remove: () => undefined, ungrabify:()=>undefined,grabify:()=>undefined }),
+      nodes: () => Object.assign([], { remove: () => undefined, ungrabify:()=>undefined,grabify:()=>undefined,filter:()=>({first:()=>({empty:()=>true})}) }),
+      elements:()=>({boundingBox:()=>({x1:0,y1:0,x2:500,y2:300,w:500,h:300})}),
+      width:()=>800,height:()=>600,minZoom:()=>0.0001,maxZoom:()=>2.5,
 	  viewport:()=>undefined,
 	  zoom:()=>1,
 	  pan:()=>({x:0,y:0}),

@@ -20,8 +20,8 @@ func placementFixture(t *testing.T) (*Manager, Snapshot, diagramFixtureIDs, stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	if initial.FormatVersion() != 3 {
-		t.Fatal("native bootstrap is not v3")
+	if initial.FormatVersion() != 4 {
+		t.Fatal("native bootstrap is not v4")
 	}
 	path, _ := m.StorePath(initial.StoreID())
 	ids := diagramFixtureIDs{root: uuid.NewString(), detail: uuid.NewString(), empty: uuid.NewString(), gateway: uuid.NewString(), worker: uuid.NewString(), records: uuid.NewString(), ledger: uuid.NewString()}

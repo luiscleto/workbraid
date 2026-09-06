@@ -54,6 +54,7 @@ type DiagramProjection = {
 }
 
 type DiagramAppearance = {
+ display_size?: {width:number;height:number}|null
  display_position?: {x:number;y:number}|null
  position_source?: 'stored'|'derived'
 	position?: {x:number;y:number}|null
@@ -64,6 +65,7 @@ type DiagramAppearance = {
 }
 
 type DiagramBoundary = {
+ display_size?: {width:number;height:number}|null
  position?: {x:number;y:number}|null
  display_position?: {x:number;y:number}|null
  position_source?: 'stored'|'derived'
@@ -148,6 +150,17 @@ function PositionControls({position,busy,onDirty,onKeep}:{position:{x:number;y:n
   </details>
 }
 
+function SizeControls({size,busy,onDirty,onKeep}:{size:{width:number;height:number};busy:boolean;onDirty:(v:boolean)=>void;onKeep:(s:{width:number;height:number}|null)=>Promise<boolean>}) {
+ const [width,setWidth]=useState(String(size.width)),[height,setHeight]=useState(String(size.height))
+ useEffect(()=>()=>onDirty(false),[onDirty])
+ return <section className="position-controls" aria-label="Node size"><h3>Size</h3>
+ <form onSubmit={async e=>{e.preventDefault();const s={width:Number(width),height:Number(height)};if(!Number.isInteger(s.width)||!Number.isInteger(s.height)||s.width<80||s.width>1600||s.height<48||s.height>1200)return;if(await onKeep(s))onDirty(false)}}>
+ <div className="position-fields"><label>Width<input aria-label="Node width" type="number" min={80} max={1600} step={1} required value={width} onChange={e=>{setWidth(e.target.value);onDirty(true)}} /></label><label>Height<input aria-label="Node height" type="number" min={48} max={1200} step={1} required value={height} onChange={e=>{setHeight(e.target.value);onDirty(true)}} /></label></div>
+ <div className="size-actions"><button className="inline-action" disabled={busy} type="submit">Keep size</button><button className="secondary-action" disabled={busy} type="button" onClick={async()=>{if(await onKeep(null)){onDirty(false)}}}>Restore default size</button><button className="text-action" type="button" onClick={()=>{setWidth(String(size.width));setHeight(String(size.height));onDirty(false)}}>Clear edits</button></div>
+ </form></section>
+}
+
+
 type RelationshipValue = { target_id: string; label: string }
 type RelationshipRow = RelationshipValue & { rowKey: string }
 
@@ -161,6 +174,7 @@ type ChangeReview = {
   with_changes: ReviewSnapshot
   comparison: {
 	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;before_source?:string;with_source?:string;path:string}[]
+	  node_sizes?: {diagram_id:string;component_id:string;before:{width:number;height:number}|null;with:{width:number;height:number}|null;before_source?:string;with_source?:string;path:string}[]
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
@@ -449,6 +463,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       filename: component.filename,
       node_kind: appearance.role,
 	  position: appearance.display_position ?? appearance.position,
+	  size: appearance.display_size,
       relationships: [],
     })
   }
@@ -460,6 +475,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       node_kind: 'boundary',
       boundary_home_title: boundary.home_diagram_title,
       position: boundary.display_position ?? boundary.position,
+      size: boundary.display_size,
       relationships: [],
     })
   }
@@ -649,6 +665,7 @@ export function App() {
   const [selectedContextID, setSelectedContextID] = useState('accepted')
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
   const [positionDirty, setPositionDirty] = useState(false)
+  const [sizeDirty, setSizeDirty] = useState(false)
   const [positionDraftEpoch, setPositionDraftEpoch] = useState(0)
   const [reviewCommentDirty, setReviewCommentDirty] = useState(false)
   const [reviewCommentTarget, setReviewCommentTarget] = useState<ReviewCommentTarget>()
@@ -822,7 +839,7 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1246,6 +1263,47 @@ export function App() {
 	} finally {setArchitectureBusy(false)}
   }
 
+  async function keepSize(result:ArchitectureResult,diagramID:string,componentID:string,size:{width:number;height:number}|null):Promise<boolean> {
+	const requestedRoute=window.location.pathname
+	async function inspectAfterFailure() {
+	  setPlacementBlocked(true)
+	  try {
+	    const status = await fetch('/api/agent/v2/status').then(response => response.json())
+	    if (window.location.pathname !== requestedRoute || status.context?.project?.store_id !== result.store_id) return
+	    await openProject(result.project_slug, true, result.changes?.id)
+	    setSelectedDiagramID(diagramID)
+	    if (componentID) setSelectedComponentID(componentID)
+	  } catch { /* Keep placement blocked until the authority can be inspected. */ }
+	}
+	setArchitectureBusy(true)
+	setArchitectureNotice('')
+	try {
+	  const response=await postJSON(`/api/architecture/diagrams/${size?'set-size':'restore-default-size'}`,{
+	    project_slug:result.project_slug,store_id:result.store_id,expected_revision:result.revision,
+	    change_set_id:result.changes?.id,pending_generation_observed:true,expected_pending_generation:result.changes?.generation??null,
+	    diagram_id:diagramID,component_id:componentID,...(size??{}),
+	  })
+	  const payload=await response.json() as ArchitectureResult|ErrorPayload
+	  if(window.location.pathname!==requestedRoute)return false
+	  if(!response.ok||!('state' in payload)||payload.action_error){
+	    await inspectAfterFailure()
+	    setArchitectureNotice('That size was not kept. The current layout has been reopened where available; inspect it before making another resize.')
+	    return false
+	  }
+	  if(payload.action_change_set_id||result.changes){enterProposalResult(payload);setWorkspaceTask('documentation')}
+	  setSelectedDiagramID(diagramID)
+	  if(componentID)setSelectedComponentID(componentID)
+	  setChangeSetTextDirty(false)
+
+	  return true
+	} catch {
+	  await inspectAfterFailure()
+	  setArchitectureNotice('WorkBraid could not confirm that size. Inspect the current proposal list and layout before making another resize; the resize has not been retried.')
+	  return false
+	} finally {setArchitectureBusy(false)}
+  }
+
+
   async function updateArchitecture(result: ArchitectureResult) {
     const review = result.changes?.review
     if (!review) return
@@ -1362,7 +1420,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -1388,7 +1446,8 @@ export function App() {
       intent.apply()
       return
     }
-    if (positionDirty) {
+    if (positionDirty || sizeDirty) {
+      setSizeDirty(false)
       setPositionDirty(false)
       setPositionDraftEpoch(epoch => epoch + 1)
     }
@@ -1756,6 +1815,7 @@ export function App() {
     const selected = activeComponents.find((component) => component.id === selectedComponentID) ?? (selectedBoundary ? diagramProjection.components.find(c=>c.id===selectedComponentID) : undefined)
     const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
     const selectedPosition = selectedAppearance?.display_position ?? selectedAppearance?.position ?? selectedBoundary?.display_position ?? selectedBoundary?.position ?? null
+    const selectedSize = selectedAppearance?.display_size ?? selectedBoundary?.display_size ?? (selectedBoundary ? {width:104,height:62}:{width:116,height:54})
     const diagramNodeTitles = new Map<string, string>()
     for (const component of activeDiagramComponents ?? []) diagramNodeTitles.set(component.id, component.title)
     for (const boundary of activeDiagram?.boundaries ?? []) diagramNodeTitles.set(boundary.key, boundary.title)
@@ -1776,6 +1836,7 @@ export function App() {
       if (!diagramReviewStatus.has(change.diagram_id)) diagramReviewStatus.set(change.diagram_id, 'Changed')
     }
 	for(const change of review?.comparison.node_positions??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
+	for(const change of review?.comparison.node_sizes??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
     const submittedReview = result.submitted_review
     const reviewAnnotationComments = submittedReview?.comments ?? localReviewComments
     const reviewPresentation = submittedReview ?? (review && result.changes
@@ -2264,6 +2325,7 @@ export function App() {
               <ArchitectureMap
 				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}`}
 				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
+				onResize={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,s)=>keepSize(result,activeDiagram.id,id,s):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
                 selectedID={selectedBoundary?.key ?? selectedComponentID}
@@ -2274,8 +2336,10 @@ export function App() {
                   reviewSide,
                   reviewComponents: review.comparison.components,
                   reviewPositionIDs: review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
+                  reviewSizeIDs: review.comparison.node_sizes?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
                   reviewRelationships: review.comparison.relationships,
                   reviewComposition: <>
+                    {review.comparison.node_sizes?.filter(s=>s.diagram_id===activeDiagram?.id).map(s=><li key={`size:${s.component_id}`}><button type="button" onClick={()=>focusReviewDiagram({kind:'diagram',key:`size:${s.component_id}`,title:activeDiagram?.title??'Diagram',status:'appearance_changed',description:'Size changed',reviewSide,diagramID:s.diagram_id,path:s.path,componentID:s.component_id})}>Size changed: {diagramProjection.components.find(c=>c.id===s.component_id)?.title??'Component'} · {s.before?`${s.before.width} × ${s.before.height}`:'Not visible'} → {s.with?`${s.with.width} × ${s.with.height}`:'Not visible'}</button></li>)}
                     {[...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>)}
                     {review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => <li key={`position:${p.component_id}`}>
                       <button type="button" onClick={() => focusReviewDiagram({
@@ -2492,7 +2556,8 @@ export function App() {
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
 				{selectedBoundary&&<button className="inline-action" type="button" onClick={()=>selectDiagram(selectedBoundary.home_diagram_id,selectedBoundary.component_id)}>Open home · {selectedBoundary.home_diagram_title}</button>}
-                {authoringAvailable&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
+                {authoringAvailable&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked||sizeDirty} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
+                {authoringAvailable&&activeDiagram&&<SizeControls key={`size:${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedSize.width}:${selectedSize.height}`} size={selectedSize} busy={architectureBusy||placementBlocked||positionDirty} onDirty={setSizeDirty} onKeep={s=>keepSize(result,activeDiagram.id,selected.id,s)} />}
                 {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {authoringAvailable && <button className="inline-action" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>editAccepted(selected, result)})}>Edit component</button>}
@@ -3068,14 +3133,14 @@ function ChangesTask({
           renderCommentEditor={inlineCommentEditor}
           onOpenAnnotation={onOpenAnnotation}
         /></div>
-        <section className="raw-diff-region" aria-labelledby="raw-diff-heading">
+        {changes.review.diff ? <section className="raw-diff-region" aria-labelledby="raw-diff-heading">
           <div className="review-section-heading"><h3 id="raw-diff-heading">Complete change</h3><span>Raw unified diff</span></div>
           <RawDiff
             diff={changes.review.diff}
             focusPath={reviewFocus?.path}
             focusToken={reviewFocus?.key}
           />
-        </section>
+        </section> : <p>No Architecture changes; this proposal contains only proposal text.</p>}
         {!activeReviewSubmission && changes.lifecycle === 'active' && onSubmitReview && (
           <ReviewComposer
             key={changes.review.reviewed_state}

@@ -161,7 +161,7 @@ func (c *reconciliationCalculation) mergePositions() {
 		if reason != "" && (!samePosition(b.Position, chosen.Position) || b.State == "not_applicable" && chosen.Position != nil) {
 			c.automatic(l, reason, b, a, p)
 		}
-		if chosen.Position != nil && c.final.version == 3 {
+		if chosen.Position != nil && c.final.version >= 3 {
 			c.final.positions[k] = *chosen.Position
 		}
 	}

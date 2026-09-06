@@ -2,6 +2,14 @@
 
 Status: Approved living contract
 
+## Phase 3.2 operational extension
+
+New proposals and real mutations now write closed operational **version 4**. It retains every v3 field and requires `node_sizes: []`, with closed `{diagram_id, component_id, size}` final facts, at most one per pair. A non-null size is exactly `{width, height}` with the bounds in [Placement §9](architecture-placement-amendment-v0.md#9-complete-visible-node-sizing-phase-32). Null means internal disappearance/non-resurrection only; no visible v4 pair may remain unsized. Missing overrides inherit base sizes subject to final visibility. `architecture_version` accepts 2, 3 or 4, cannot be below base, and targets below 4 require empty node_sizes. Envelope, review schemas and ref namespaces do not change.
+
+This supersedes statements below about new operational-v3 writes. All supported portable v2/v3 and operational v1–3 history must reconstruct exact trees, entries/modes and immutable review parents through mutation, reconciliation, application, discard, GC and restart. Reads and first unchanged Review preserve original changes.yaml; repeated Review is an exact state/ref no-op. Same-displayed-size requests preserve even legacy operational versions before any upgrade. Strict reconstruction never runs initialization or sizing algorithms. No compatibility waiver applies to supported history.
+
+When the canonical diff is empty, hide the empty Complete change / Raw unified diff box and say exactly “No Architecture changes; this proposal contains only proposal text.” Keep proposal Markdown and informational feedback available. This adds no plan-only acceptance or Applied transition.
+
 Named Change Sets and immutable submitted Reviews share one project authority but own separate namespaces and rules. [Architecture](architecture-v0.md) defines portable state/source fidelity; [Placement](architecture-placement-amendment-v0.md) extends v3 facts; [Reconciliation](architecture-reconciliation-v0.md) changes proposal bases deliberately; [Agent Access](architecture-agent-access-v0.md) defines the shared clients.
 
 ## Change Sets

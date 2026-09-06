@@ -260,6 +260,8 @@ test('expanded child assignments retire the old locator before Check and Apply',
   expect(expansion.result.status).toBe('needs_resolution')
   await expect(task.getByText('The affected group expanded. Assign every involved child and check these choices again.', { exact: true })).toBeVisible()
   await task.locator('.reconciliation-context').first().click()
+  await expect(task.getByRole('heading', { name: 'Detail diagrams need distinct parents', exact: true })).toBeVisible()
+  await expect(task.getByText(/^All involved diagrams must survive\./)).toBeVisible()
   // The sorted Diagram UUIDs can put the new row anywhere. Previously chosen
   // parents must stay with their exact Diagram identities, never row positions.
   await expect(task.getByRole('group', { name: 'Parent component for Ledger detail', exact: true }).getByRole('radio', { name: /Ledger/ })).toBeChecked()

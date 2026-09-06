@@ -862,7 +862,7 @@ describe('candidate review regressions', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(await screen.findByRole('button', { name: 'Composition: External no longer shown in System', exact: true }))
+    await user.click(await screen.findByRole('button', { name: 'Composition: External no longer shown in System' }))
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Composition reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
@@ -900,7 +900,7 @@ describe('candidate review regressions', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(within(await screen.findByRole('region', { name: 'Diagram changes' })).getByRole('button', { name: 'Worker detail diagram link changed in System', exact: true }))
+    await user.click(within(await screen.findByRole('region', { name: 'Diagram changes' })).getByRole('button', { name: 'Worker detail diagram link changed in System' }))
     await user.type(screen.getByRole('textbox', { name: 'Reviewer name' }), 'Hierarchy reviewer')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Conclusion' }), 'request_changes')
     await user.click(within(screen.getByRole('region', { name: 'Review context' })).getByRole('button', { name: 'Comment on this change' }))

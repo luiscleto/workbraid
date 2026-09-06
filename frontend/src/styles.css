@@ -1464,6 +1464,14 @@ dd {
   margin: 0;
 }
 
+.map-resize-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
 .map-resize-handle {
   position: absolute;
   z-index: 5;
@@ -1478,6 +1486,7 @@ dd {
   color: var(--ink);
   cursor: nwse-resize;
   touch-action: none;
+  pointer-events: auto;
   font-size: 20px;
   line-height: 24px;
 }

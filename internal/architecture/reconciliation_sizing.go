@@ -99,7 +99,7 @@ func (c *reconciliationCalculation) mergeSizes() {
 					chosen = p
 				case "manual":
 					if r.Value == nil || r.Value.Size == nil || !ValidSize(*r.Value.Size) {
-						c.invalid("invalid position")
+						c.invalid("invalid size")
 					} else {
 						chosen = ReconciliationSide{State: "stored", ReconciliationValue: *r.Value}
 					}

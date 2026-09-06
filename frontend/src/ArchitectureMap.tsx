@@ -311,6 +311,7 @@ export function ArchitectureMap({
         updateAnnotationCards()
         const handle=resizeHandle.current
         if(handle&&instance){
+          if(handle.parentElement)handle.parentElement.style.height=`${instance.height()}px`
           const node=instance.nodes(':selected').filter('[!uiAnnotation]').first() as cytoscape.NodeSingular
           handle.hidden=node.empty()
           if(!node.empty()){
@@ -357,7 +358,11 @@ export function ArchitectureMap({
     }
   }, [elements, fitPadding,viewKey])
 
-  useEffect(()=>{syncOverlays.current()},[selectedID,Boolean(onResize)])
+  useEffect(()=>{
+    const gesture=resizeGesture.current
+    if(gesture&&(!onResize||gesture.node.id()!==selectedID))resizeCancel.current()
+    syncOverlays.current()
+  },[selectedID,Boolean(onResize)])
 
   useEffect(()=>{
 	const instance=graph.current;if(!instance)return
@@ -489,7 +494,7 @@ export function ArchitectureMap({
         </div>
       )}
       {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
-      {!renderFailed && onResize && selectedID && <button ref={resizeHandle} className="map-resize-handle" type="button" aria-label="Resize selected node" title="Drag to resize; use Width and Height for precise sizing"
+      {!renderFailed && onResize && selectedID && <div className="map-resize-layer"><button ref={resizeHandle} className="map-resize-handle" type="button" aria-label="Resize selected node" title="Drag to resize; use Width and Height for precise sizing"
         onPointerDown={event=>{
           event.preventDefault();event.stopPropagation()
           const node=graph.current?.nodes(':selected').filter('[!uiAnnotation]').first() as cytoscape.NodeSingular|undefined
@@ -519,7 +524,7 @@ export function ArchitectureMap({
           try {if(!await g.submit(g.node.data('componentID'),size)&&!g.node.cy().destroyed())applyDisplaySize(g.node,g.start)}
           finally{placementPending.current=false;if(graph.current&&placementHandler.current)graph.current.nodes('[!uiAnnotation]').grabify();syncOverlays.current()}
         }}
-        onClick={()=>document.querySelector<HTMLInputElement>('[aria-label="Node width"]')?.focus()}>↘</button>}
+        onClick={()=>document.querySelector<HTMLInputElement>('[aria-label="Node width"]')?.focus()}>↘</button></div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
         if(graph.current)fitDiagram(graph.current,fitPadding)
         syncOverlays.current()

@@ -54,6 +54,7 @@ type DiagramProjection = {
 }
 
 type DiagramAppearance = {
+	position?: {x:number;y:number}|null
   component_id: string
   role: 'home' | 'reference'
   detail_diagram_id?: string
@@ -131,6 +132,16 @@ type RelationshipTarget = {
   new?: boolean
 }
 
+function PositionControls({position,busy,onDirty,onKeep}:{position:{x:number;y:number}|null;busy:boolean;onDirty:(v:boolean)=>void;onKeep:(p:{x:number;y:number}|null)=>Promise<boolean>}) {
+  const [x,setX]=useState(String(position?.x??0)),[y,setY]=useState(String(position?.y??0))
+  return <details className="position-controls"><summary>Position · {position?`${position.x}, ${position.y}`:'Automatic'}</summary>
+    <form onSubmit={async e=>{e.preventDefault();const p={x:Number(x),y:Number(y)};if(!Number.isInteger(p.x)||!Number.isInteger(p.y)||Math.abs(p.x)>100000||Math.abs(p.y)>100000)return;if(await onKeep(p))onDirty(false)}}>
+      <div className="position-fields"><label>X<input aria-label="Position X" type="number" min={-100000} max={100000} step={1} required value={x} onChange={e=>{setX(e.target.value);onDirty(true)}} /></label><label>Y<input aria-label="Position Y" type="number" min={-100000} max={100000} step={1} required value={y} onChange={e=>{setY(e.target.value);onDirty(true)}} /></label></div>
+      <div className="button-group"><button className="text-action" type="submit" disabled={busy}>Keep position</button>{position&&<button className="text-action" type="button" disabled={busy} onClick={async()=>{if(await onKeep(null))onDirty(false)}}>Reset position</button>}<button className="text-action" type="button" onClick={()=>{setX(String(position?.x??0));setY(String(position?.y??0));onDirty(false)}}>Clear edits</button></div>
+    </form>
+  </details>
+}
+
 type RelationshipValue = { target_id: string; label: string }
 type RelationshipRow = RelationshipValue & { rowKey: string }
 
@@ -143,6 +154,7 @@ type ChangeReview = {
   before: ReviewSnapshot
   with_changes: ReviewSnapshot
   comparison: {
+	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;path:string}[]
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
@@ -429,6 +441,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       title: component.title,
       filename: component.filename,
       node_kind: appearance.role,
+	  position: appearance.position,
       relationships: [],
     })
   }
@@ -611,6 +624,7 @@ export function App() {
   const [diagramEditor, setDiagramEditor] = useState<DiagramEditor | null>(null)
   const [reconciliation, setReconciliation] = useState<ReconciliationPreview | null>(null)
   const [reconciliationDirty, setReconciliationDirty] = useState(false)
+	const [placementBlocked,setPlacementBlocked]=useState(false)
   const [authoringError, setAuthoringError] = useState('')
   const [architectureNotice, setArchitectureNotice] = useState('')
   const [architectureBusy, setArchitectureBusy] = useState(false)
@@ -667,7 +681,7 @@ export function App() {
     setSelectedContextID(selectedChangeSet?.id ?? 'accepted')
     setState({ kind: 'ready', value: result })
     const contextProjection = selectedChangeSet?.candidate ?? (selectedChangeSet ? undefined : result)
-    if (contextProjection?.format_version === 2) {
+    if (contextProjection && (contextProjection.format_version ?? 0) >= 2) {
       const selectedDiagram = contextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
         ?? contextProjection.diagrams?.find((diagram) => diagram.id === contextProjection.root_diagram_id)
       setSelectedDiagramID(selectedDiagram?.id)
@@ -816,7 +830,7 @@ export function App() {
     setReviewSide('with')
     setReviewFocus(null)
     setReviewSelectionCleared(false)
-    const initialDiagram = currentReview.with_changes.format_version === 2
+    const initialDiagram = (currentReview.with_changes.format_version ?? 0) >= 2
       ? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
         ?? currentReview.with_changes.diagrams?.find((diagram) => diagram.id === currentReview.with_changes.root_diagram_id)
       : undefined
@@ -839,7 +853,7 @@ export function App() {
         if (selectedComponentID) setSelectedComponentID(undefined)
         return
       }
-      if (projection.format_version === 2) {
+      if ((projection.format_version ?? 0) >= 2) {
         const diagram = projection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
           ?? projection.diagrams?.find((candidate) => candidate.id === projection.root_diagram_id)
         const active = diagram ? componentsForDiagram(projection, diagram) : []
@@ -864,7 +878,7 @@ export function App() {
       if (selectedDiagramID) setSelectedDiagramID(undefined)
       return
     }
-    if (selectedProjection.format_version === 2) {
+    if ((selectedProjection.format_version ?? 0) >= 2) {
       const diagram = selectedProjection.diagrams?.find((candidate) => candidate.id === selectedDiagramID)
         ?? selectedProjection.diagrams?.find((candidate) => candidate.id === selectedProjection.root_diagram_id)
       if (diagram && diagram.id !== selectedDiagramID && !(heldReview && !reviewVisible)) {
@@ -929,6 +943,7 @@ export function App() {
   }
 
   async function openProject(slug: string, replaceRoute = false, proposalChangeSetID?: string, reviewChangeSetID?: string, submittedReviewID?: string) {
+	setPlacementBlocked(false)
     setState({ kind: 'looking' })
     setArchitectureNotice('')
     try {
@@ -1179,6 +1194,46 @@ export function App() {
     } finally {
       setArchitectureBusy(false)
     }
+  }
+
+  async function keepPosition(result:ArchitectureResult,diagramID:string,componentID:string|undefined,position:{x:number;y:number}|null):Promise<boolean> {
+	const requestedRoute=window.location.pathname
+	async function inspectAfterFailure() {
+	  setPlacementBlocked(true)
+	  try {
+	    const status = await fetch('/api/agent/v2/status').then(response => response.json())
+	    if (window.location.pathname !== requestedRoute || status.context?.project?.store_id !== result.store_id) return
+	    await openProject(result.project_slug, true, result.changes?.id)
+	    setSelectedDiagramID(diagramID)
+	    if (componentID) setSelectedComponentID(componentID)
+	  } catch { /* Keep placement blocked until the authority can be inspected. */ }
+	}
+	setArchitectureBusy(true)
+	setArchitectureNotice('')
+	try {
+	  const response=await postJSON(`/api/architecture/diagrams/${componentID?(position?'set-position':'reset-position'):'reset-layout'}`,{
+	    project_slug:result.project_slug,store_id:result.store_id,expected_revision:result.revision,
+	    change_set_id:result.changes?.id,pending_generation_observed:true,expected_pending_generation:result.changes?.generation??null,
+	    diagram_id:diagramID,component_id:componentID,...(position??{}),
+	  })
+	  const payload=await response.json() as ArchitectureResult|ErrorPayload
+	  if(window.location.pathname!==requestedRoute)return false
+	  if(!response.ok||!('state' in payload)||payload.action_error){
+	    await inspectAfterFailure()
+	    setArchitectureNotice('That position was not kept. The current layout has been reopened where available; inspect it before making another move.')
+	    return false
+	  }
+	  if(payload.action_change_set_id||result.changes){enterProposalResult(payload);setWorkspaceTask('documentation')}
+	  setSelectedDiagramID(diagramID)
+	  if(componentID)setSelectedComponentID(componentID)
+	  setChangeSetTextDirty(false)
+	  if((result.changes?.candidate?.format_version??result.format_version)===2&&position)setArchitectureNotice('This proposal will save Diagram positions.')
+	  return true
+	} catch {
+	  await inspectAfterFailure()
+	  setArchitectureNotice('WorkBraid could not confirm that position. Inspect the current proposal list and layout before making another move; the move has not been retried.')
+	  return false
+	} finally {setArchitectureBusy(false)}
   }
 
   async function updateArchitecture(result: ArchitectureResult) {
@@ -1628,7 +1683,7 @@ export function App() {
         .reverse()
         .find((breadcrumb) => review.before.diagrams?.some((diagram) => diagram.id === breadcrumb.id))?.id
       : undefined
-    const activeDiagram = diagramProjection.format_version === 2
+    const activeDiagram = (diagramProjection.format_version ?? 0) >= 2
       ? diagramProjection.diagrams?.find((diagram) => diagram.id === (candidateFallbackDiagramID ?? selectedDiagramID))
         ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
@@ -1673,7 +1728,7 @@ export function App() {
       })
     }
     const activeDiagramComponents = activeDiagram ? componentsForDiagram(diagramProjection, activeDiagram) : undefined
-    const activeComponents = activeProjection?.format_version === 2
+    const activeComponents = (activeProjection?.format_version ?? 0) >= 2
       ? activeDiagramComponents ?? []
       : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
@@ -1699,6 +1754,7 @@ export function App() {
     for (const change of review?.comparison.appearances ?? []) {
       if (!diagramReviewStatus.has(change.diagram_id)) diagramReviewStatus.set(change.diagram_id, 'Changed')
     }
+	for(const change of review?.comparison.node_positions??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
     const submittedReview = result.submitted_review
     const reviewAnnotationComments = submittedReview?.comments ?? localReviewComments
     const reviewPresentation = submittedReview ?? (review && result.changes
@@ -1710,7 +1766,7 @@ export function App() {
       component: AuthoringComponent
       comments: ReviewSubmissionComment[]
     }>()
-    if (review && diagramProjection.format_version === 2) {
+    if (review && (diagramProjection.format_version ?? 0) >= 2) {
       for (const comment of reviewAnnotationComments) {
         if (comment.anchor.side !== annotationSide ||
           (comment.anchor.kind !== 'component' && comment.anchor.kind !== 'component_markdown' && comment.anchor.kind !== 'composition')) continue
@@ -1808,7 +1864,7 @@ export function App() {
       requestReviewContextReplacement(() => {
         const relationshipSide = relationship.review_side ?? reviewSide
         const relationshipProjection = relationshipSide === 'with' ? review?.with_changes : review?.before
-        const relationshipDiagram = relationshipProjection?.format_version === 2
+        const relationshipDiagram = relationshipProjection && (relationshipProjection.format_version ?? 0) >= 2
           ? relationshipProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
             ?? relationshipProjection.diagrams?.find((diagram) => diagram.id === relationshipProjection.root_diagram_id)
           : undefined
@@ -1827,7 +1883,7 @@ export function App() {
       if (!review || side === reviewSide) return
       requestReviewContextReplacement(() => {
         const nextProjection = side === 'with' ? review.with_changes : review.before
-        const nextDiagram = nextProjection.format_version === 2
+        const nextDiagram = (nextProjection.format_version ?? 0) >= 2
           ? nextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
             ?? nextProjection.diagrams?.find((diagram) => diagram.id === nextProjection.root_diagram_id)
           : undefined
@@ -2025,8 +2081,8 @@ export function App() {
           </div>
         )}
         <div className={`architecture-workbench ${review ? 'reviewing' : ''} ${reconciliation ? 'reconciling' : ''}`}>
-          <nav className="component-index" aria-label={diagramProjection.format_version === 2 ? 'Diagrams and components' : 'Components'}>
-            {diagramProjection.format_version === 2 && (
+          <nav className="component-index" aria-label={(diagramProjection.format_version ?? 0) >= 2 ? 'Diagrams and components' : 'Components'}>
+            {(diagramProjection.format_version ?? 0) >= 2 && (
               <div className="diagram-navigator">
                 <div className="index-heading">
                   <h1>Diagrams</h1>
@@ -2156,6 +2212,7 @@ export function App() {
                   ? <AnnotationMarker group={activeDiagramAnnotations} onToggle={() => openReviewAnnotation(activeDiagramAnnotations)} />
                   : !submittedReview && <AnnotationAddMarker label={`Comment on ${activeDiagram.title}`} onClick={openDiagramComment} />)}
                 {!review && authoringAvailable && activeDiagram.parent_anchor_component_id && <button className="diagram-parent-action" type="button" onClick={() => requestNavigation({ kind: 'change-parent', id: activeDiagram.id })}>Change parent component</button>}
+				{!review&&authoringAvailable&&activeDiagram.appearances.some(a=>a.position)&&<button className="diagram-parent-action" type="button" disabled={architectureBusy||placementBlocked||editorDirtyRef.current} onClick={()=>keepPosition(result,activeDiagram.id,undefined,null)}>Reset layout</button>}
               </nav>
             )}
             {reviewPresentation && activeDiagram && ((!submittedReview && reviewCommentTarget?.anchor.kind === 'diagram' && reviewCommentTarget.contextKey.startsWith('diagram-map:')) || diagramAnnotationCards.length > 0) && (
@@ -2184,6 +2241,8 @@ export function App() {
               <div className="workspace-empty invalid-proposal-map"><p className="eyebrow">Proposed Architecture</p><h2>Needs correction</h2><p>This proposal has no valid complete Architecture to display. Use its exact authored facts to repair the issue.</p></div>
             ) : (
               <ArchitectureMap
+				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}`}
+				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
                 selectedID={selectedComponentID}
@@ -2193,8 +2252,20 @@ export function App() {
                   layoutComponentIDs,
                   reviewSide,
                   reviewComponents: review.comparison.components,
+                  reviewPositionIDs: review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
                   reviewRelationships: review.comparison.relationships,
-                  reviewComposition: mapComposition.size ? [...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>) : undefined,
+                  reviewComposition: <>
+                    {[...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>)}
+                    {review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => <li key={`position:${p.component_id}`}>
+                      <button type="button" onClick={() => focusReviewDiagram({
+                        kind: 'diagram', key: `position:${p.component_id}`, title: activeDiagram?.title ?? 'Diagram',
+                        status: 'appearance_changed', description: 'Position changed', reviewSide,
+                        diagramID: p.diagram_id, path: p.path, componentID: p.component_id,
+                      })}>
+                        Position changed: {diagramProjection.components.find(c => c.id === p.component_id)?.title ?? 'Component'} · {p.before ? `${p.before.x}, ${p.before.y}` : 'Automatic'} → {p.with ? `${p.with.x}, ${p.with.y}` : 'Automatic'}
+                      </button>
+                    </li>)}
+                  </>,
                   reviewDiagramID: activeDiagram?.id,
                   selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
                   onSelectRelationship: selectRelationship,
@@ -2380,10 +2451,10 @@ export function App() {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
                 })}
-                onAddComponent={result.format_version === 2 ? (diagramID) => addComponent(diagramID) : undefined}
-                onCreateDetail={result.format_version === 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
-                onEditDiagramTitle={result.format_version === 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
-                onMoveHome={result.format_version === 2 ? beginHomeMove : undefined}
+                onAddComponent={(result.format_version ?? 0) >= 2 ? (diagramID) => addComponent(diagramID) : undefined}
+                onCreateDetail={(result.format_version ?? 0) >= 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
+                onEditDiagramTitle={(result.format_version ?? 0) >= 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
+                onMoveHome={(result.format_version ?? 0) >= 2 ? beginHomeMove : undefined}
                 onShowComponent={(diagramID, componentID) => changeReference(result, diagramID, componentID, true)}
                 onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
@@ -2399,6 +2470,7 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
+				{authoringAvailable&&selectedAppearance&&activeDiagram&&<PositionControls key={`${activeDiagram.id}:${selected.id}:${selectedAppearance.position?.x}:${selectedAppearance.position?.y}`} position={selectedAppearance.position??null} busy={architectureBusy||placementBlocked} onDirty={setChangeSetTextDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
                 {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}

@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 
 	"workbraid/internal/architecture"
 )
@@ -38,10 +39,11 @@ type diagramBreadcrumbResponse struct {
 }
 
 type diagramAppearanceResponse struct {
-	ComponentID        string `json:"component_id"`
-	Role               string `json:"role"`
-	DetailDiagramID    string `json:"detail_diagram_id,omitempty"`
-	DetailDiagramTitle string `json:"detail_diagram_title,omitempty"`
+	Position           *architecture.Position `json:"position"`
+	ComponentID        string                 `json:"component_id"`
+	Role               string                 `json:"role"`
+	DetailDiagramID    string                 `json:"detail_diagram_id,omitempty"`
+	DetailDiagramTitle string                 `json:"detail_diagram_title,omitempty"`
 }
 
 type diagramBoundaryResponse struct {
@@ -64,10 +66,19 @@ type diagramRelationshipResponse struct {
 }
 
 type reviewComparisonResponse struct {
+	NodePositions []reviewNodePositionChange         `json:"node_positions"`
 	Components    []reviewComponentChangeResponse    `json:"components"`
 	Relationships []reviewRelationshipChangeResponse `json:"relationships"`
 	Diagrams      []reviewDiagramChangeResponse      `json:"diagrams,omitempty"`
 	Appearances   []reviewAppearanceChangeResponse   `json:"appearances,omitempty"`
+}
+
+type reviewNodePositionChange struct {
+	DiagramID   string                 `json:"diagram_id"`
+	ComponentID string                 `json:"component_id"`
+	Before      *architecture.Position `json:"before"`
+	With        *architecture.Position `json:"with"`
+	Path        string                 `json:"path"`
 }
 
 type reviewDiagramChangeResponse struct {
@@ -199,6 +210,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		}
 		for itemIndex, appearance := range diagram.Appearances {
 			value.Appearances[itemIndex] = diagramAppearanceResponse{
+				Position:    appearance.Position,
 				ComponentID: appearance.ComponentID, Role: appearance.Role,
 				DetailDiagramID: appearance.DetailDiagramID, DetailDiagramTitle: appearance.DetailDiagramTitle,
 			}
@@ -230,6 +242,43 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 	comparison := compareReviewProjections(before.Components, withChanges.Components)
 	comparison.Diagrams, comparison.Appearances = compareDiagramProjections(before.Diagrams, withChanges.Diagrams)
 	attachDiagramRelationshipProjections(comparison.Relationships, before.Diagrams, withChanges.Diagrams)
+	comparison.NodePositions = []reviewNodePositionChange{}
+	type pair struct{ diagram, component string }
+	old, current := map[pair]*architecture.Position{}, map[pair]*architecture.Position{}
+	paths := map[string]string{}
+	for _, d := range before.Diagrams {
+		paths[d.ID] = "diagrams/" + d.Filename
+		for _, a := range d.Appearances {
+			old[pair{d.ID, a.ComponentID}] = a.Position
+		}
+	}
+	for _, d := range withChanges.Diagrams {
+		paths[d.ID] = "diagrams/" + d.Filename
+		for _, a := range d.Appearances {
+			current[pair{d.ID, a.ComponentID}] = a.Position
+		}
+	}
+	keys := map[pair]bool{}
+	for k := range old {
+		keys[k] = true
+	}
+	for k := range current {
+		keys[k] = true
+	}
+	for k := range keys {
+		a, b := old[k], current[k]
+		if a == nil && b == nil || a != nil && b != nil && *a == *b {
+			continue
+		}
+		comparison.NodePositions = append(comparison.NodePositions, reviewNodePositionChange{k.diagram, k.component, a, b, paths[k.diagram]})
+	}
+	sort.Slice(comparison.NodePositions, func(i, j int) bool {
+		a, b := comparison.NodePositions[i], comparison.NodePositions[j]
+		if a.DiagramID == b.DiagramID {
+			return a.ComponentID < b.ComponentID
+		}
+		return a.DiagramID < b.DiagramID
+	})
 	return before, withChanges, comparison
 }
 

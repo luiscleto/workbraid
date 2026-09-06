@@ -54,7 +54,24 @@ type diagram struct {
 	path        string
 	title       string
 	appearances []diagramAppearance
+	positions   []diagramPosition
 	mode        string
+}
+
+type diagramPosition struct {
+	component uuid.UUID
+	position  Position
+}
+
+type Position struct {
+	X int `json:"x" yaml:"x"`
+	Y int `json:"y" yaml:"y"`
+}
+
+type NodePositionChange struct {
+	DiagramID   string    `json:"diagram_id" yaml:"diagram_id"`
+	ComponentID string    `json:"component_id" yaml:"component_id"`
+	Position    *Position `json:"position" yaml:"position"`
 }
 
 type diagramAppearance struct {
@@ -128,6 +145,8 @@ type DiagramBreadcrumb struct {
 }
 
 type DiagramAppearance struct {
+	Position *Position
+
 	ComponentID        string
 	Role               string
 	DetailDiagramID    string
@@ -156,14 +175,14 @@ type DiagramRelationship struct {
 }
 
 func (snapshot Snapshot) RootDiagramID() string {
-	if snapshot.formatVersion != 2 {
+	if snapshot.formatVersion != 2 && snapshot.formatVersion != 3 {
 		return ""
 	}
 	return snapshot.rootDiagram.String()
 }
 
 func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
-	if snapshot.formatVersion != 2 {
+	if snapshot.formatVersion != 2 && snapshot.formatVersion != 3 {
 		return nil
 	}
 	componentsByID := make(map[uuid.UUID]component, len(snapshot.components))
@@ -212,7 +231,7 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 
 		present := make(map[uuid.UUID]string, len(current.appearances))
 		for _, appearance := range current.appearances {
-			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role}
+			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role, Position: diagramManualPosition(current, appearance.component)}
 			present[appearance.component] = appearance.component.String()
 			if appearance.hasDetailLink {
 				value.DetailDiagramID = appearance.detailDiagram.String()
@@ -375,6 +394,8 @@ type ComponentChange struct {
 // one candidate-construction path. The owning pending Architecture change set
 // supplies it alongside its Component edits.
 type CandidateComposition struct {
+	ArchitectureVersion int                         `json:"architecture_version" yaml:"architecture_version"`
+	NodePositions       []NodePositionChange        `json:"node_positions" yaml:"node_positions"`
 	DetailReassignments []DetailReassignment        `json:"detail_reassignments" yaml:"detail_reassignments"`
 	NewComponentHomes   []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
 	DetailDiagrams      []DetailDiagramChange       `json:"detail_diagrams" yaml:"detail_diagrams"`
@@ -439,7 +460,7 @@ var (
 
 func (snapshot Snapshot) HasDiagram(id string) bool {
 	parsed, err := uuid.Parse(id)
-	if err != nil || snapshot.formatVersion != 2 {
+	if err != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
 		return false
 	}
 	for _, current := range snapshot.diagrams {
@@ -490,7 +511,7 @@ func (snapshot Snapshot) HasDetailLink(diagramID, componentID, detailDiagramID s
 
 func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
 	parsed, err := uuid.Parse(componentID)
-	if err != nil || snapshot.formatVersion != 2 {
+	if err != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
 		return "", "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -512,7 +533,7 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) (string, bool) {
 	diagramUUID, diagramErr := uuid.Parse(diagramID)
 	componentUUID, componentErr := uuid.Parse(componentID)
-	if diagramErr != nil || componentErr != nil || snapshot.formatVersion != 2 {
+	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
 		return "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -896,7 +917,7 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 	rootDiagramID := uuid.NewString()
 	manifestBytes, err := marshalManifest(manifest{
 		Format:      "workbraid-architecture",
-		Version:     2,
+		Version:     3,
 		StoreID:     parsedStoreID.String(),
 		Project:     manifestProject{Name: projectName, Slug: projectSlug},
 		RootDiagram: rootDiagramID,
@@ -1066,8 +1087,8 @@ func (manager *Manager) load(ctx context.Context, storePath string, expectedStor
 		storeID: expectedStoreID, revision: revision, formatVersion: parsed.Version,
 		projectName: parsed.Project.Name, projectSlug: parsed.Project.Slug, components: components,
 	}
-	if parsed.Version == 2 {
-		diagrams, root, err := manager.loadDiagrams(ctx, storePath, diagramEntries, parsed.RootDiagram, components)
+	if parsed.Version >= 2 {
+		diagrams, root, err := manager.loadDiagrams(ctx, storePath, diagramEntries, parsed.RootDiagram, components, parsed.Version)
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
@@ -1094,9 +1115,9 @@ func acceptedTreeEntries(entries []treeEntry, version int) ([]treeEntry, []treeE
 				return nil, nil, errors.New("accepted tree contains an invalid component path")
 			}
 			componentEntries = append(componentEntries, entry)
-		case version == 2 && entry.Path == "diagrams" && entry.Type == "tree":
+		case version >= 2 && entry.Path == "diagrams" && entry.Type == "tree":
 			diagramsTreePresent = true
-		case version == 2 && strings.HasPrefix(entry.Path, "diagrams/"):
+		case version >= 2 && strings.HasPrefix(entry.Path, "diagrams/"):
 			relative := strings.TrimPrefix(entry.Path, "diagrams/")
 			if strings.Contains(relative, "/") || !strings.HasSuffix(relative, ".yaml") || entry.Type != "blob" || !ordinaryFileMode(entry.Mode) {
 				return nil, nil, errors.New("accepted tree contains an invalid Diagram path")
@@ -1109,7 +1130,7 @@ func acceptedTreeEntries(entries []treeEntry, version int) ([]treeEntry, []treeE
 	if componentsTreePresent && len(componentEntries) == 0 {
 		return nil, nil, errors.New("accepted tree contains an empty components directory")
 	}
-	if version == 2 && (!diagramsTreePresent || len(diagramEntries) == 0) {
+	if version >= 2 && (!diagramsTreePresent || len(diagramEntries) == 0) {
 		return nil, nil, errors.New("accepted tree must contain one or more Diagrams")
 	}
 	return componentEntries, diagramEntries, nil
@@ -1117,7 +1138,7 @@ func acceptedTreeEntries(entries []treeEntry, version int) ([]treeEntry, []treeE
 
 func ordinaryFileMode(mode string) bool { return mode == "100644" || mode == "100755" }
 
-func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entries []treeEntry, rootValue string, components []component) ([]diagram, uuid.UUID, error) {
+func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entries []treeEntry, rootValue string, components []component, version int) ([]diagram, uuid.UUID, error) {
 	root, err := uuid.Parse(rootValue)
 	if err != nil {
 		return nil, uuid.Nil, errors.New("root_diagram is not a valid UUID")
@@ -1133,7 +1154,7 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 		if err != nil {
 			return nil, uuid.Nil, fmt.Errorf("read Diagram %q: %v", entry.Path, err)
 		}
-		parsed, err := parseDiagram(entry.Path, contents)
+		parsed, err := parseDiagram(entry.Path, contents, version)
 		if err != nil {
 			return nil, uuid.Nil, fmt.Errorf("Diagram %q: %v", entry.Path, err)
 		}
@@ -1283,6 +1304,32 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		return Candidate{}, fmt.Errorf("%w: architecture identity is missing", ErrInvalid)
 	}
 
+	target := composition.ArchitectureVersion
+	if target == 0 {
+		target = base.formatVersion
+	}
+	if (target != 2 && target != 3) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) {
+		return Candidate{}, fmt.Errorf("%w: invalid target Architecture version", ErrInvalid)
+	}
+	if target != base.formatVersion {
+		raw, err := manager.git.readBlob(ctx, storePath, manifestEntry.Object)
+		if err != nil {
+			return Candidate{}, err
+		}
+		value, err := parseManifest(raw)
+		if err != nil {
+			return Candidate{}, err
+		}
+		value.Version = target
+		raw, err = yaml.Marshal(value)
+		if err != nil {
+			return Candidate{}, err
+		}
+		manifestEntry.Object, err = manager.git.writeBlob(ctx, storePath, raw)
+		if err != nil {
+			return Candidate{}, err
+		}
+	}
 	baseByID := make(map[string]component, len(base.components))
 	candidateIDs := make(map[string]struct{}, len(base.components)+len(changes))
 	for _, component := range base.components {
@@ -1371,7 +1418,7 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		byPath[change.Path] = treeEntry{Mode: mode, Type: "blob", Object: blob, Path: change.Path}
 	}
 
-	if base.formatVersion == 2 {
+	if base.formatVersion >= 2 {
 		diagrams := make(map[uuid.UUID]diagram, len(base.diagrams)+len(composition.DetailDiagrams))
 		changedDiagrams := make(map[uuid.UUID]struct{})
 		for _, current := range base.diagrams {
@@ -1579,6 +1626,9 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 					return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramCycle}
 				}
 			}
+		}
+		if err := applyNodePositions(base, composition, diagrams, changedDiagrams, candidateIDs); err != nil {
+			return Candidate{}, err
 		}
 		for id := range changedDiagrams {
 			current := diagrams[id]
@@ -2246,7 +2296,7 @@ func parseManifest(contents []byte) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
-	if version != 2 {
+	if version != 2 && version != 3 {
 		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if err := validateManifestYAML(document.Content[0], version); err != nil {
@@ -2297,7 +2347,7 @@ func validateManifestYAML(root *yaml.Node, version int) error {
 	required := map[string]bool{
 		"format": false, "version": false, "store_id": false, "project": false,
 	}
-	if version == 2 {
+	if version >= 2 {
 		required["root_diagram"] = false
 	}
 	for index := 0; index < len(root.Content); index += 2 {
@@ -2370,7 +2420,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version != 2 {
+	if value.Version != 2 && value.Version != 3 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -2408,10 +2458,17 @@ func validProjectSlug(value string) bool {
 	return true
 }
 
+type diagramPositionYAML struct {
+	Component string `yaml:"component"`
+	X         int    `yaml:"x"`
+	Y         int    `yaml:"y"`
+}
+
 type diagramYAML struct {
 	ID          string                  `yaml:"id"`
 	Title       string                  `yaml:"title"`
 	Appearances []diagramAppearanceYAML `yaml:"appearances,omitempty"`
+	Positions   []diagramPositionYAML   `yaml:"positions,omitempty"`
 }
 
 type diagramAppearanceYAML struct {
@@ -2428,10 +2485,13 @@ func marshalDiagram(value diagram) ([]byte, error) {
 			encoded.Appearances[index].DetailDiagram = appearance.detailDiagram.String()
 		}
 	}
+	for _, p := range value.positions {
+		encoded.Positions = append(encoded.Positions, diagramPositionYAML{p.component.String(), p.position.X, p.position.Y})
+	}
 	return yaml.Marshal(encoded)
 }
 
-func parseDiagram(path string, contents []byte) (diagram, error) {
+func parseDiagram(path string, contents []byte, versions ...int) (diagram, error) {
 	if !utf8.Valid(contents) {
 		return diagram{}, errors.New("Diagram is not valid UTF-8")
 	}
@@ -2450,7 +2510,11 @@ func parseDiagram(path string, contents []byte) (diagram, error) {
 	if len(document.Content) != 1 {
 		return diagram{}, errors.New("Diagram must contain one mapping")
 	}
-	if err := validateDiagramYAML(document.Content[0]); err != nil {
+	version := 2
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+	if err := validateDiagramYAML(document.Content[0], version); err != nil {
 		return diagram{}, err
 	}
 	var value diagramYAML
@@ -2487,20 +2551,58 @@ func parseDiagram(path string, contents []byte) (diagram, error) {
 		}
 		result.appearances[index] = appearance
 	}
+	seen := map[uuid.UUID]bool{}
+	for _, p := range value.Positions {
+		id, err := uuid.Parse(p.Component)
+		if err != nil || seen[id] {
+			return diagram{}, errors.New("invalid or duplicate positioned Component")
+		}
+		seen[id] = true
+		present := false
+		for _, a := range result.appearances {
+			if a.component == id {
+				present = true
+			}
+		}
+		if !present {
+			return diagram{}, errors.New("position must address a canonical appearance")
+		}
+		result.positions = append(result.positions, diagramPosition{component: id, position: Position{p.X, p.Y}})
+	}
 	return result, nil
 }
 
-func validateDiagramYAML(root *yaml.Node) error {
+func validateDiagramYAML(root *yaml.Node, version int) error {
 	if root.Kind != yaml.MappingNode || root.ShortTag() != "!!map" {
 		return errors.New("Diagram must contain a mapping")
 	}
 	required := map[string]bool{"id": false, "title": false}
 	seenAppearances := false
+	seenPositions := false
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
 		value := root.Content[index+1]
 		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
 			return errors.New("Diagram field names must be strings")
+		}
+		if key.Value == "positions" && version == 3 {
+			if seenPositions {
+				return errors.New("Diagram contains duplicate positions")
+			}
+			seenPositions = true
+			if value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {
+				return errors.New("positions must be a sequence")
+			}
+			for _, item := range value.Content {
+				fields, err := validateClosedMapping(item, "position", map[string]string{"component": "!!str", "x": "!!int", "y": "!!int"}, nil)
+				if err != nil {
+					return err
+				}
+				if _, err := decodePosition(fields["x"], fields["y"]); err != nil {
+					return err
+				}
+			}
+			continue
 		}
 		if key.Value != "id" && key.Value != "title" && key.Value != "appearances" {
 			return fmt.Errorf("Diagram contains unknown field %q", key.Value)

@@ -87,7 +87,7 @@ func TestDetailReassignmentUsesFinalAnchorsAndHomes(t *testing.T) {
 }
 
 func TestChangeStateVersion2ClosedReassignmentsAndVersion1Read(t *testing.T) {
-	composition := CandidateComposition{DetailReassignments: []DetailReassignment{{uuid.NewString(), uuid.NewString()}}}
+	composition := CandidateComposition{ArchitectureVersion: 2, DetailReassignments: []DetailReassignment{{uuid.NewString(), uuid.NewString()}}}
 	encoded, err := marshalChangeState(nil, composition)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestChangeStateVersion2ClosedReassignmentsAndVersion1Read(t *testing.T) {
 	if err != nil || len(parsed.DetailReassignments) != 1 || parsed.DetailReassignments[0] != composition.DetailReassignments[0] {
 		t.Fatalf("round trip: %+v %v", parsed, err)
 	}
-	empty, _ := marshalChangeState(nil, CandidateComposition{})
+	empty := []byte("format: workbraid-change-state\nversion: 2\ncomponents: []\nnew_component_homes: []\ndetail_diagrams: []\ndiagram_titles: []\nhome_moves: []\nreferences: []\ndetail_reassignments: []\n")
 	v1 := strings.Replace(strings.Replace(string(empty), "version: 2", "version: 1", 1), "detail_reassignments: []\n", "", 1)
 	if _, old, err := parseChangeState([]byte(v1)); err != nil || len(old.DetailReassignments) != 0 {
 		t.Fatalf("v1: %+v %v", old, err)

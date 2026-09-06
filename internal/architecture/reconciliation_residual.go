@@ -12,7 +12,36 @@ import (
 func reconciliationResidual(accepted, proposed Snapshot, original, final reconciliationFacts) ([]ComponentChange, CandidateComposition, error) {
 	a, p := snapshotReconciliationFacts(accepted), snapshotReconciliationFacts(proposed)
 	changes := []ComponentChange{}
-	composition := CandidateComposition{}
+	composition := CandidateComposition{ArchitectureVersion: final.version}
+	pairs := map[reconciliationPair]bool{}
+	for k := range a.positions {
+		pairs[k] = true
+	}
+	for k := range final.positions {
+		pairs[k] = true
+	}
+	positionKeys := make([]reconciliationPair, 0, len(pairs))
+	for k := range pairs {
+		positionKeys = append(positionKeys, k)
+	}
+	sort.Slice(positionKeys, func(i, j int) bool {
+		if positionKeys[i].diagram == positionKeys[j].diagram {
+			return positionKeys[i].component < positionKeys[j].component
+		}
+		return positionKeys[i].diagram < positionKeys[j].diagram
+	})
+	for _, k := range positionKeys {
+		before, bok := a.positions[k]
+		after, aok := final.positions[k]
+		if bok == aok && before == after {
+			continue
+		}
+		var p *Position
+		if aok {
+			p = &after
+		}
+		composition.NodePositions = append(composition.NodePositions, NodePositionChange{k.diagram, k.component, p})
+	}
 	used := map[string]bool{}
 	acceptedPaths, proposedPaths := map[string]string{}, map[string]string{}
 	for _, c := range accepted.components {

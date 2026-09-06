@@ -33,7 +33,7 @@ func TestSlugNativeCreateCatalogOpenAndReload(t *testing.T) {
 	data := t.TempDir()
 	_, handler := newHandler(testOrigin, testUI(t), data)
 	first := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "  Example Project  "}))
-	if first.ProjectName != "Example Project" || first.ProjectSlug != "example-project" || first.StoreID == "" || first.FormatVersion != 2 || first.RootDiagramID == "" {
+	if first.ProjectName != "Example Project" || first.ProjectSlug != "example-project" || first.StoreID == "" || first.FormatVersion != 3 || first.RootDiagramID == "" {
 		t.Fatalf("first = %+v", first)
 	}
 	second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Example Project"}))

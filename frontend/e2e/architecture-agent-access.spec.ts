@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from 'node:fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -17,6 +17,98 @@ type AgentEnvelope = {
   result?: Record<string, any>
   error?: { code: string }
 }
+
+test('durable placement uses real drag, model centers, one generation, reset, review frame and restart',async({page},testInfo)=>{
+  page.setDefaultTimeout(15000)
+  const runtimeRoot=mkdtempSync(join(tmpdir(),'workbraid-phase31-browser-'))
+  const binary=join(runtimeRoot,'workbraid'),dataRoot=join(runtimeRoot,'data')
+  let application:RunningWorkBraid|undefined
+  try {
+    mkdirSync(dataRoot,{recursive:true})
+    run('go',['build','-o',binary,'./cmd/workbraid'],repositoryRoot)
+    const port=await unusedLoopbackPort();application=await startWorkBraid(binary,dataRoot,port,runtimeRoot)
+    const origin=application.origin
+    const call=(args:string[])=>agent(binary,origin,args)
+    const project=call(['project','create','--name','Placement browser'])
+    const store=project.context.project!.store_id,slug=project.context.project!.slug
+    const root=call(['architecture','inspect']).result!.root_diagram_id as string
+    const seed=call(['change-set','create','--store-id',store,'--accepted-revision',project.context.accepted_revision!,'--name','Seed architecture']).result!
+    const inspect=(id:string)=>call(['change-set','inspect','--store-id',store,'--change-set-id',id]).result!
+    const state=(id:string)=>['--store-id',store,'--change-set-id',id,'--generation',String(inspect(id).generation)]
+    const create=(title:string)=>call(['component','create',...state(seed.id),'--diagram-id',root,'--title',title,'--description',`${title} has a precise responsibility.\n\nThis documentation remains readable while arranging the Diagram.\n`]).result!.component_id as string
+    const gateway=create('Gateway'),worker=create('Worker'),records=create('Records'),ops=create('Operations'),external=create('External delivery')
+    const detail=call(['diagram','create-detail',...state(seed.id),'--component-id',gateway,'--title','Runtime']).result!.diagram_id as string
+    for(const id of [worker,external])call(['component','move-home',...state(seed.id),'--component-id',id,'--diagram-id',detail])
+    call(['diagram','show-component',...state(seed.id),'--component-id',worker,'--diagram-id',root])
+    for(const [source,target]of [[gateway,worker],[worker,records],[gateway,external]])call(['relationship','add',...state(seed.id),'--source-id',source,'--target-id',target,'--label','calls'])
+    const accept=(id:string)=>{const review=call(['change-set','review',...state(id)]).result!;return call(['architecture','update','--store-id',store,'--change-set-id',id,'--generation',String(review.generation),'--base-revision',review.base_revision,'--candidate-tree',review.candidate_tree])}
+    const accepted=accept(seed.id).context.accepted_revision!
+    await page.goto(`${origin}/projects/${slug}`)
+    const map=page.getByTestId('architecture-map');await expect(map).toBeVisible()
+    const node=async(id:string)=>map.evaluate((el,id)=>{const cy=(el as any)._cyreg.cy,n=cy.getElementById(id),r=el.getBoundingClientRect();return {x:r.left+n.renderedPosition().x,y:r.top+n.renderedPosition().y,model:n.position(),zoom:cy.zoom(),pan:cy.pan(),grab:n.grabbable()}},id)
+    const frame=()=>map.evaluate(el=>{const cy=(el as any)._cyreg.cy;return {zoom:cy.zoom(),pan:cy.pan()}})
+    const beforeNode=await node(worker);expect(beforeNode.grab).toBe(true)
+    await page.mouse.move(beforeNode.x,beforeNode.y);await page.mouse.wheel(0,-140)
+    await page.waitForTimeout(250)
+    const box=(await map.boundingBox())!
+    await page.mouse.move(box.x+25,box.y+25);await page.mouse.down();await page.mouse.move(box.x+65,box.y+60,{steps:6});await page.mouse.up()
+    const before=await frame(),start=await node(worker)
+    let drops=0;page.on('request',request=>{if(request.url().endsWith('/diagrams/set-position'))drops++})
+    await page.mouse.move(start.x,start.y);await page.mouse.down();await page.mouse.move(start.x+90,start.y-65,{steps:12})
+    expect(drops).toBe(0)
+    expect(call(['change-set','list','--store-id',store]).result!.change_sets.filter((c:any)=>c.lifecycle==='active')).toHaveLength(0)
+    const drop=page.waitForResponse(r=>r.url().endsWith('/diagrams/set-position'))
+    await page.mouse.up();expect((await drop).ok()).toBe(true)
+    await expect(page).toHaveURL(/\/proposals\//)
+    const id=page.url().split('/').at(-1)!
+    const proposed=inspect(id),appearance=proposed.candidate.diagrams.find((d:any)=>d.id===root).appearances.find((a:any)=>a.component_id===worker)
+    const round=(v:number)=>Math.sign(v)*Math.floor(Math.abs(v)+.5)
+    expect(appearance.position).toEqual({x:round(start.model.x+90/start.zoom),y:round(start.model.y-65/start.zoom)})
+    expect(proposed.generation).toBe(1);expect(proposed.node_positions).toHaveLength(1);expect(drops).toBe(1)
+    expect(call(['architecture','inspect']).context.accepted_revision).toBe(accepted)
+    expect(await frame()).toEqual(before)
+    const after=await node(worker);await page.mouse.click(after.x,after.y);expect(drops).toBe(1)
+    await page.locator('.position-controls summary').click()
+    await page.getByLabel('Position X',{exact:true}).fill('-320');await page.getByLabel('Position Y',{exact:true}).fill('180')
+    await page.getByRole('button',{name:'Keep position',exact:true}).click()
+    await expect.poll(()=>inspect(id).generation).toBe(2)
+    await page.getByRole('button',{name:'Back to proposal',exact:true}).click()
+    await page.getByRole('button',{name:'Review changes',exact:true}).click()
+    await expect(page.getByText(/Position changed: Worker/)).toBeVisible()
+    const reviewFrame=await frame()
+    await page.getByRole('button',{name:'Before changes',exact:true}).click();expect(await frame()).toEqual(reviewFrame)
+    expect((await node(worker)).grab).toBe(false)
+    await page.getByRole('button',{name:'With changes',exact:true}).click();expect(await frame()).toEqual(reviewFrame)
+    await expect(page.getByTestId('raw-diff')).toContainText('positions:')
+    await page.screenshot({path:join(runtimeRoot,'review.png'),fullPage:true})
+    await page.getByRole('button',{name:'Back to proposal',exact:true}).click()
+    const cancelStart=await node(worker)
+    await page.mouse.move(cancelStart.x,cancelStart.y);await page.mouse.down();await page.mouse.move(cancelStart.x-40,cancelStart.y-30,{steps:5});await page.keyboard.press('Escape');await page.mouse.up()
+    expect(inspect(id).generation).toBe(2)
+    await page.getByRole('button',{name:'Reset layout',exact:true}).click()
+    await expect.poll(()=>inspect(id).generation).toBe(3)
+    expect(inspect(id).candidate.diagrams.find((d:any)=>d.id===root).appearances.every((a:any)=>a.position===null)).toBe(true)
+    const resetNode=await node(worker);await page.mouse.click(resetNode.x,resetNode.y)
+    await page.locator('.position-controls summary').click()
+    await page.getByLabel('Position X',{exact:true}).fill('-410');await page.getByLabel('Position Y',{exact:true}).fill('220')
+    await page.getByRole('button',{name:'Keep position',exact:true}).click()
+    await expect.poll(()=>inspect(id).generation).toBe(4)
+    await page.getByRole('button',{name:'Back to proposal',exact:true}).click()
+    await page.getByRole('button',{name:'Review changes',exact:true}).click()
+    await page.getByRole('button',{name:'Update architecture',exact:true}).click()
+    await expect(page.getByRole('button',{name:'Showing Accepted',exact:true})).toBeVisible()
+    const final=call(['architecture','inspect'])
+    await page.screenshot({path:join(runtimeRoot,'accepted.png'),fullPage:true})
+    await stopWorkBraid(application);application=undefined
+    expect(spawnSync(binary,['--server',origin,'--json','status'],{encoding:'utf8'}).status).not.toBe(0)
+    application=await startWorkBraid(binary,dataRoot,port,runtimeRoot,'restart.log')
+    await page.reload();await expect(map).toBeVisible()
+    expect(call(['architecture','inspect'])).toEqual(final)
+    expect((await node(worker)).model).toEqual({x:-410,y:220})
+    writeFileSync(join(runtimeRoot,'evidence.json'),JSON.stringify({store,root,detail,gateway,worker,records,ops,external,accepted,proposal:id,before,start,proposed,final,drops},null,2))
+    await testInfo.attach('placement-evidence',{path:join(runtimeRoot,'evidence.json'),contentType:'application/json'})
+  } finally {if(application)await stopWorkBraid(application);writeFileSync(join(runtimeRoot,'runtime-stopped.txt'),'Task server stopped by runner teardown.\n');console.log(`Placement evidence: ${runtimeRoot}`)}
+})
 
 test('built browser and Agent v2 preserve independent active/applied proposals across restart', async ({ page }) => {
   const runtimeRoot = mkdtempSync(join(tmpdir(), 'workbraid-change-sets-'))

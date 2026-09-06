@@ -43,6 +43,19 @@ func readAnnotations(title string) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: boolPointer(false), DestructiveHint: boolPointer(false)}
 }
 
+func placementInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[agentapi.DiagramSetPositionRequest](nil)
+	if err != nil {
+		panic(err)
+	}
+	minimum, maximum := float64(-100000), float64(100000)
+	for _, key := range []string{"x", "y"} {
+		schema.Properties[key].Minimum = &minimum
+		schema.Properties[key].Maximum = &maximum
+	}
+	return schema
+}
+
 func mutationAnnotations(title string, destructive, idempotent bool) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: idempotent, OpenWorldHint: boolPointer(false), DestructiveHint: boolPointer(destructive)}
 }
@@ -130,6 +143,10 @@ func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
 	addMCPTool[agentapi.RelationshipEditRequest](server, client, "relationship_edit", "Edit Relationship", "Replace one authored Relationship in the addressed change set, selected by source ID, exact raw old target, exact raw old label, and one-based identical-pair occurrence. Empty or malformed old selectors remain repairable.", mutationAnnotations("Edit Relationship", false, false))
 	addMCPTool[agentapi.RelationshipRemoveRequest](server, client, "relationship_remove", "Remove Relationship", "Remove one authored Relationship in the addressed change set, selected by source ID, exact raw target, exact raw label, and one-based identical-pair occurrence. This request-local selector creates no Relationship identity.", mutationAnnotations("Remove Relationship", true, false))
 	addMCPTool[agentapi.DiagramParentOptionsRequest](server, client, "diagram_parent_options", "Read parent Components", "Read the current parent Component/home and eligible destination Components for one non-root Diagram at the exact proposal generation. Uses the complete candidate, including new Components. Does not create or mutate a proposal.", readAnnotations("Read parent Components"))
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_positions", "Read Diagram positions", "Inspect canonical appearances and exact manual center positions, or null for Automatic. Omit change_set_id for Accepted; explicit IDs inspect active or Applied proposals. Automatic coordinates are never persisted.", readAnnotations("Read Diagram positions"))
+	addMCPToolWithSchema[agentapi.DiagramSetPositionRequest](server, client, "diagram_set_position", "Keep position", "Set one canonical Component center in one Diagram, integer X/Y from -100000 to 100000. Requires exact proposal generation. (0,0) is manual, not Automatic. First placement on v2 upgrades this proposal to v3 through ordinary Review and Update.", mutationAnnotations("Keep position", false, false), placementInputSchema())
+	addMCPTool[agentapi.DiagramResetPositionRequest](server, client, "diagram_reset_position", "Reset position", "Make one canonical appearance Automatic in the exact proposal generation. Does not reset its appearances in other Diagrams. No-op preserves generation and review.", mutationAnnotations("Reset position", false, false))
+	addMCPTool[agentapi.DiagramResetLayoutRequest](server, client, "diagram_reset_layout", "Reset layout", "Make all visible canonical appearances in this Diagram Automatic in one proposal mutation. Retains required absence facts and the v3 target after reset. Does not accept Architecture.", mutationAnnotations("Reset layout", false, false))
 	addMCPTool[agentapi.DiagramReassignDetailRequest](server, client, "diagram_reassign_detail", "Change parent Component", "Reassign a non-root Diagram to an eligible Component from diagram_parent_options under exact proposal generation. Preserves the child UUID, source and complete subtree; only the parent-owned link moves. The destination must be free and outside the child subtree. Current parent is a no-op. Pending-new children update their creation fact.", mutationAnnotations("Change parent Component", false, false))
 	addMCPTool[agentapi.DiagramCreateDetailRequest](server, client, "diagram_create_detail", "Create detail Diagram", "Create one detail Diagram in the addressed change set, anchored by an allowed home Component. Returns the stable generated Diagram ID and new generation.", mutationAnnotations("Create detail Diagram", false, false))
 	addMCPTool[agentapi.DiagramEditTitleRequest](server, client, "diagram_edit_title", "Edit Diagram title", "Edit the authored title of a stable Diagram in the addressed change set under exact generation preconditions. Identity, filename, hierarchy, and composition remain unchanged.", mutationAnnotations("Edit Diagram title", false, false))

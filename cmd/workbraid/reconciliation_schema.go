@@ -28,6 +28,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 		{"relationship_count", []string{"source_id", "target_id", "label"}, "count"}, {"diagram_title", []string{"diagram_id"}, "text"},
 		{"home", []string{"component_id"}, "diagram_id"}, {"reference", []string{"diagram_id", "component_id"}, "present"}, {"detail_anchor", []string{"diagram_id"}, "anchor_component_id"},
 		{"component_object", []string{"component_id"}, ""}, {"diagram_object", []string{"diagram_id"}, ""},
+		{"node_position", []string{"diagram_id", "component_id"}, "position"},
 	} {
 		fields := map[string]*jsonschema.Schema{"kind": constant(unit.kind)}
 		for _, id := range unit.ids {
@@ -44,6 +45,11 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 				minimum := float64(0)
 				value = &jsonschema.Schema{Type: "integer", Minimum: &minimum}
 			}
+			if unit.value == "position" {
+				minimum, maximum := float64(-100000), float64(100000)
+				coordinate := &jsonschema.Schema{Type: "integer", Minimum: &minimum, Maximum: &maximum}
+				value = &jsonschema.Schema{OneOf: []*jsonschema.Schema{{Type: "null"}, closed(map[string]*jsonschema.Schema{"x": coordinate, "y": coordinate}, "x", "y")}}
+			}
 			variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": locator, "choice": constant("manual"), "value": closed(map[string]*jsonschema.Schema{unit.value: value}, unit.value)}, "locator", "choice", "value"))
 		}
 	}
@@ -53,7 +59,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id"} {
+	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id", "position"} {
 		delete(value.Properties, field)
 	}
 	variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": composition, "choice": {Type: "string", Enum: []any{"accepted", "proposed", "manual"}}, "value": value}, "locator", "choice", "value"))

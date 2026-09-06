@@ -6,6 +6,14 @@ Use `workbraid [--server http://127.0.0.1:8080] --json …`. `WORKBRAID_SERVER` 
 
 ## Identity and exact state
 
+Diagram placement is optional and per Diagram UUID + Component UUID. Inspect with `diagram positions --store-id <uuid> --diagram-id <uuid>`; add `--change-set-id <uuid>` for a valid active or Applied proposal. Each appearance returns `position: null` for **Automatic**, or an exact manual center `{x,y}`. `(0,0)` is a manual pin. Automatic renderer coordinates are never canonical.
+
+For an explicit active proposal, use `diagram set-position --store-id <uuid> --change-set-id <uuid> --generation <n> --diagram-id <uuid> --component-id <uuid> --x=-180 --y=320`. X increases right, Y down, in Diagram-local logical units independent of zoom/pan. Both integers must be between -100000 and 100000. One set changes one pair and one generation. Reinspect after any mutation or mismatch; never replay against a guessed newer generation.
+
+`diagram reset-position` takes the same identity/generation flags without X/Y and makes this appearance Automatic. `diagram reset-layout` takes store/proposal/generation/Diagram flags and makes every visible appearance there Automatic in one mutation. No-op resets preserve generation/review. Resetting does not downgrade v3 or resurrect positions on removed appearances. A first real placement on v2 upgrades only that proposal to v3; inspect the exact normal Review changes, then deliberately Update its exact binding. New projects already use v3.
+
+MCP equivalents are `diagram_positions`, `diagram_set_position`, `diagram_reset_position`, and `diagram_reset_layout`. Placement reconciliation uses existing preview/check/apply with locator `{"kind":"node_position","diagram_id":"…","component_id":"…"}`. Original/Accepted/Proposed context is `not_applicable` (not present here), `automatic`, or `manual` with a position. Composition resolves first; absent sides do not mean resets. A manual resolution value is exactly `{"position":null}` for Automatic or `{"position":{"x":320,"y":-180}}`; side choices use `accepted`/`proposed` without a value. X and Y are one pair. Apply only changes the proposal; ordinary Review and Update follow.
+
 - A project slug locates a catalog entry; its store UUID is project identity.
 - Accepted Architecture is singular. `architecture inspect` returns its exact revision, Components, Relationships, Diagram hierarchy, homes, references, and IDs.
 - A change-set UUID is proposal identity. Its mutable name is display text only. Never select by name.

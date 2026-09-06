@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 33 {
+	if err != nil || len(tools.Tools) != 37 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -521,6 +521,56 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if reloadedEarlierReview.Result.(map[string]any)["lifecycle"] != "active" || reloadedEarlierReview.Result.(map[string]any)["current_generation"] != false || reloadedEarlierReview.Result.(map[string]any)["binding"].(map[string]any)["generation"] != float64(2) {
 		t.Fatalf("reloaded earlier review: %+v", reloadedEarlierReview)
 	}
+	placement := runRealCLI(t, binary, origin, "change-set", "create", "--store-id", storeID, "--accepted-revision", acceptedRevision, "--name", "Transport placement")
+	placementID := placement.Result.(map[string]any)["id"].(string)
+	args := map[string]any{"store_id": storeID, "change_set_id": placementID, "generation": 0, "diagram_id": rootID, "component_id": gatewayID, "x": -180, "y": 420}
+	keptPosition := runRealMCP(t, ctx, session, "diagram_set_position", args)
+	if keptPosition.Result.(map[string]any)["generation"] != float64(1) {
+		t.Fatal("MCP placement generation")
+	}
+	readPosition := runRealCLI(t, binary, origin, "diagram", "positions", "--store-id", storeID, "--change-set-id", placementID, "--diagram-id", rootID)
+	readBytes, _ := json.Marshal(readPosition.Result)
+	if !bytes.Contains(readBytes, []byte(`"x":-180`)) {
+		t.Fatal("CLI did not read MCP placement")
+	}
+	args["generation"] = 1
+	delete(args, "x")
+	delete(args, "y")
+	runRealMCP(t, ctx, session, "diagram_reset_position", args)
+	runRealCLI(t, binary, origin, "diagram", "set-position", "--store-id", storeID, "--change-set-id", placementID, "--generation", "2", "--diagram-id", rootID, "--component-id", gatewayID, "--x=-100000", "--y=100000")
+	args["generation"] = 3
+	delete(args, "component_id")
+	runRealMCP(t, ctx, session, "diagram_reset_layout", args)
+	readBack := runRealMCP(t, ctx, session, "diagram_positions", map[string]any{"store_id": storeID, "change_set_id": placementID, "diagram_id": rootID})
+	for _, appearance := range readBack.Result.(map[string]any)["appearances"].([]any) {
+		if appearance.(map[string]any)["position"] != nil {
+			t.Fatal("reset all did not clear pin")
+		}
+	}
+	invalidPosition := runRealCLIError(t, binary, origin, "diagram", "set-position", "--store-id", storeID, "--change-set-id", placementID, "--generation", "4", "--diagram-id", rootID, "--component-id", gatewayID, "--x=100001", "--y=0")
+	if invalidPosition.Error == nil || invalidPosition.Error.Code != "invalid_request" {
+		t.Fatalf("bounds: %+v", invalidPosition)
+	}
+	runRealCLI(t, binary, origin, "diagram", "set-position", "--store-id", storeID, "--change-set-id", placementID, "--generation", "4", "--diagram-id", rootID, "--component-id", gatewayID, "--x=-180", "--y=420")
+	other := runRealMCP(t, ctx, session, "change_set_create", map[string]any{"store_id": storeID, "accepted_revision": acceptedRevision, "name": "Other placement"}).Result.(map[string]any)["id"].(string)
+	runRealMCP(t, ctx, session, "diagram_set_position", map[string]any{"store_id": storeID, "change_set_id": other, "generation": 0, "diagram_id": rootID, "component_id": gatewayID, "x": 20, "y": 30})
+	otherReview := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": storeID, "change_set_id": other, "generation": 1}).Result.(map[string]any)
+	otherAccepted := runRealMCP(t, ctx, session, "architecture_update", map[string]any{"store_id": storeID, "change_set_id": other, "generation": 1, "base_revision": otherReview["base_revision"], "candidate_tree": otherReview["candidate_tree"]})
+	currentPlacement := runRealMCP(t, ctx, session, "change_set_inspect", map[string]any{"store_id": storeID, "change_set_id": placementID}).Result.(map[string]any)
+	placementInputs := map[string]any{"store_id": storeID, "change_set_id": placementID, "generation": 5, "change_set_state": currentPlacement["change_set_state"], "base_revision": currentPlacement["base_revision"], "candidate_tree": currentPlacement["candidate_tree"], "accepted_revision": *otherAccepted.Context.AcceptedRevision}
+	placementPreview := runRealMCP(t, ctx, session, "change_set_reconcile_preview", placementInputs).Result.(map[string]any)
+	conflicts := placementPreview["conflicts"].([]any)
+	if placementPreview["status"] != "needs_resolution" || len(conflicts) != 1 || conflicts[0].(map[string]any)["locator"].(map[string]any)["kind"] != "node_position" {
+		t.Fatalf("typed placement conflict: %+v", placementPreview)
+	}
+	placementInputs["resolutions"] = []any{map[string]any{"locator": conflicts[0].(map[string]any)["locator"], "choice": "manual", "value": map[string]any{"position": nil}}}
+	resolvedPlacement := runRealMCP(t, ctx, session, "change_set_reconcile_apply", placementInputs).Result.(map[string]any)
+	if resolvedPlacement["generation"] != float64(6) || resolvedPlacement["review"] != nil {
+		t.Fatalf("placement residual: %+v", resolvedPlacement)
+	}
+	if retry := runRealMCPError(t, ctx, session, "change_set_reconcile_apply", placementInputs); retry.Error.Code != "change_set_state_mismatch" {
+		t.Fatalf("placement old-S retry: %+v", retry)
+	}
 }
 
 func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
@@ -598,7 +648,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	wantNames := []string{
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_reconcile_apply", "change_set_reconcile_preview", "change_set_rename", "change_set_review", "change_sets_list",
-		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
+		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_reset_position", "diagram_reset_layout", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))
@@ -624,6 +674,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		}
 	}
 	slices.Sort(gotNames)
+	slices.Sort(wantNames)
 	if !slices.Equal(gotNames, wantNames) {
 		t.Fatalf("tool names=%v want=%v", gotNames, wantNames)
 	}

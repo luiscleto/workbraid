@@ -8,6 +8,7 @@ export type MapRelationship = {
 }
 
 export type MapComponent = {
+	position?: {x:number;y:number} | null
   id: string
   component_id?: string
   title: string
@@ -53,6 +54,8 @@ export type ReviewRelationshipSelection = Omit<ReviewMapRelationshipChange, 'sta
 }
 
 type ArchitectureMapProps = {
+	viewKey?: string
+	onPlace?: (id:string,position:{x:number;y:number})=>Promise<boolean>
   revision: string
   components: MapComponent[]
   selectedID?: string
@@ -62,6 +65,7 @@ type ArchitectureMapProps = {
   layoutComponentIDs?: string[]
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
+  reviewPositionIDs?: string[]
   reviewRelationships?: ReviewMapRelationshipChange[]
   reviewComposition?: ReactNode
   reviewDiagramID?: string
@@ -77,9 +81,11 @@ type ArchitectureMapProps = {
   onSelectRelationshipAnnotation?: (key: string) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
+	viewKey,
+	onPlace,
   revision,
   components,
   selectedID,
@@ -89,6 +95,7 @@ export function ArchitectureMap({
   layoutComponentIDs,
   reviewSide,
   reviewComponents = [],
+  reviewPositionIDs = [],
   reviewRelationships = [],
   reviewComposition,
   reviewDiagramID,
@@ -107,6 +114,10 @@ export function ArchitectureMap({
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+	const placementHandler=useRef(onPlace)
+	placementHandler.current=onPlace
+	const viewport=useRef<{key:string|undefined;zoom:number;pan:{x:number;y:number}}|null>(null)
+	const placementPending=useRef(false)
   const syncOverlays = useRef<() => void>(() => undefined)
   const selectHandler = useRef(onSelect)
   const relationshipHandler = useRef(onSelectRelationship)
@@ -122,6 +133,7 @@ export function ArchitectureMap({
     layoutComponentIDs,
     reviewSide,
     reviewComponents,
+    reviewPositionIDs,
     reviewRelationships,
     reviewDiagramID,
   }), [revision, reviewSide, layoutKey])
@@ -142,11 +154,44 @@ export function ArchitectureMap({
         container: container.current,
         elements,
         layout: { name: 'preset', animate: false, fit: true, padding: fitPadding },
-        minZoom: 0.35,
+        minZoom: 0.0001,
         maxZoom: 2.5,
         style: mapStyles,
       })
+	  if(viewport.current&&viewport.current.key===viewKey){instance.viewport({zoom:viewport.current.zoom,pan:viewport.current.pan})}
+	  instance.nodes().ungrabify()
+	  if(placementHandler.current&&!placementPending.current)instance.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+	  let grabbed: {id:string;start:{x:number;y:number};submit:NonNullable<typeof onPlace>;cancelled:boolean}|null=null
+	  let suppressClickUntil=0
+	  const cancel=()=>{if(!grabbed||!instance)return;grabbed.cancelled=true;instance.getElementById(grabbed.id).position(grabbed.start)}
+	  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')cancel()}
+	  window.addEventListener('keydown',escape)
+	  window.addEventListener('pointercancel',cancel)
+	  window.addEventListener('blur',cancel)
+	  instance.on('grab','node',(event)=>{
+	    if(!placementHandler.current||placementPending.current||event.target.data('nodeKind')==='boundary'||event.target.data('uiAnnotation'))return
+	    grabbed={id:event.target.id(),start:{...event.target.position()},submit:placementHandler.current,cancelled:false}
+	    event.target.addClass('placement-grabbed')
+	  })
+	  instance.on('free','node',async(event)=>{
+	    const gesture=grabbed;grabbed=null;event.target.removeClass('placement-grabbed')
+	    if(!gesture||!instance)return
+	    const point=event.target.position()
+	    if(gesture.cancelled){event.target.position(gesture.start);suppressClickUntil=Date.now()+250;return}
+	    const distance=Math.hypot(point.x-gesture.start.x,point.y-gesture.start.y)*instance.zoom()
+	    if(distance<4){event.target.position(gesture.start);return}
+	    suppressClickUntil=Date.now()+250
+	    placementPending.current=true;instance.nodes().ungrabify()
+	    try {
+	      const kept=await gesture.submit(gesture.id,{x:roundPosition(point.x),y:roundPosition(point.y)})
+	      if(!kept&&!instance.destroyed())event.target.position(gesture.start)
+	    } finally {
+	      placementPending.current=false
+	      if(graph.current&&!graph.current.destroyed()&&placementHandler.current)graph.current.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+	    }
+	  })
       instance.on('tap', 'node', (event) => {
+	    if(Date.now()<suppressClickUntil)return
         const data = typeof event.target.data === 'function' ? event.target.data() as { annotationCount?: number; annotationNodeID?: string; annotationRelationshipKey?: string } : {}
         if (data.annotationNodeID) {
           nodeAnnotationHandler.current?.(data.annotationNodeID)
@@ -257,6 +302,11 @@ export function ArchitectureMap({
       resizeObserver?.observe(container.current)
       graph.current = instance
       return () => {
+	    cancel()
+	    window.removeEventListener('keydown',escape)
+	    window.removeEventListener('pointercancel',cancel)
+	    window.removeEventListener('blur',cancel)
+	    if(instance)viewport.current={key:viewKey,zoom:instance.zoom(),pan:{...instance.pan()}}
         cancelAnimationFrame(animationFrame)
         resizeObserver?.disconnect()
         instance?.off('pan zoom resize render position', updateOverlays)
@@ -273,7 +323,13 @@ export function ArchitectureMap({
       graph.current = null
       instance?.destroy()
     }
-  }, [elements, fitPadding])
+  }, [elements, fitPadding,viewKey])
+
+  useEffect(()=>{
+	const instance=graph.current;if(!instance)return
+	instance.nodes().ungrabify()
+	if(onPlace&&!placementPending.current)instance.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+  },[Boolean(onPlace),elements])
 
   useEffect(() => {
     const instance = graph.current
@@ -348,7 +404,6 @@ export function ArchitectureMap({
   useEffect(() => {
     const animationFrame = requestAnimationFrame(() => {
       graph.current?.resize()
-      graph.current?.fit(undefined, fitPadding)
       syncOverlays.current()
     })
     return () => cancelAnimationFrame(animationFrame)
@@ -479,7 +534,7 @@ function reviewRelationshipVisible(change: ReviewMapRelationshipChange, side: 'w
 }
 
 export function projectionElements(components: MapComponent[], options: ProjectionOptions = {}): ElementDefinition[] {
-  const positions = deterministicPositions(options.layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))
+  const positions = partialPositions(components,options.layoutComponentIDs)
   const componentStatus = new Map(options.reviewComponents?.map((change) => [change.component_id, change.status]))
   const relationshipStatus = new Map<string, { change: ReviewMapRelationshipChange; projection?: ReviewDiagramRelationshipProjection }>()
   for (const change of options.reviewRelationships ?? []) {
@@ -503,9 +558,10 @@ export function projectionElements(components: MapComponent[], options: Projecti
         nodeKind: component.node_kind ?? '',
         boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
+        positionChanged: options.reviewPositionIDs?.includes(component.id) ? 'yes' : '',
         annotationCount,
       },
-      position: positions[component.component_id ?? component.id],
+      position: positions[component.id],
     }
   })
   const grouped = new Map<string, number>()
@@ -623,6 +679,45 @@ export function projectionElements(components: MapComponent[], options: Projecti
   return [...nodes, ...edges, ...annotationMarkers]
 }
 
+export function roundPosition(value: number): number {
+  return Math.sign(value) * Math.floor(Math.abs(value) + 0.5)
+}
+
+export function partialPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
+  const seeds = deterministicPositions(layoutIDs ?? components.map(c => c.component_id ?? c.id))
+  const result: Record<string, { x: number; y: number }> = {}
+  const occupied: { x: number; y: number; halfWidth: number; halfHeight: number }[] = []
+  const bounds = (c: MapComponent) => ({
+    halfWidth: c.node_kind === 'boundary' ? Math.max(80, Math.min(220, (`Lives in ${c.boundary_home_title ?? ''}`).length * 3.5)) : 82,
+    halfHeight: c.node_kind === 'boundary' ? 67 : 50,
+  })
+  for (const c of components) {
+    if (c.position && c.node_kind !== 'boundary') {
+      result[c.id] = { ...c.position }
+      occupied.push({ ...c.position, ...bounds(c) })
+    }
+  }
+  for (const c of [...components].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (result[c.id]) continue
+    const seed = seeds[c.component_id ?? c.id] ?? { x: 0, y: 0 }
+    const size = bounds(c)
+    let point = { ...seed }
+    // An expanding square perimeter always finds space for a finite Diagram.
+    search: for (let ring = 0; ; ring++) {
+      for (let x = -ring; x <= ring; x++) {
+        for (let y = -ring; y <= ring; y++) {
+          if (ring && Math.abs(x) !== ring && Math.abs(y) !== ring) continue
+          point = { x: seed.x + x * 190, y: seed.y + y * 145 }
+          if (occupied.every(p => Math.abs(p.x - point.x) >= p.halfWidth + size.halfWidth + 18 || Math.abs(p.y - point.y) >= p.halfHeight + size.halfHeight + 18)) break search
+        }
+      }
+    }
+    result[c.id] = point
+    occupied.push({ ...point, ...size })
+  }
+  return result
+}
+
 export function deterministicPositions(componentIDs: string[]): Record<string, { x: number; y: number }> {
   const ids = [...new Set(componentIDs)].sort()
   const positions: Record<string, { x: number; y: number }> = {}
@@ -673,7 +768,9 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "added"]', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 3, shape: 'hexagon' } },
   { selector: 'node[reviewStatus = "content_changed"]', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 3, 'border-style': 'dashed' } },
   { selector: 'node[nodeKind = "reference"]', style: { 'border-style': 'dashed', 'background-color': '#eee3c8' } },
+  { selector: 'node[positionChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', width: 104, height: 62 } },
+  { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','border-width':4,'overlay-opacity':0.08 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
   { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },

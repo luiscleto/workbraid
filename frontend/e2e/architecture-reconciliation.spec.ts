@@ -82,6 +82,135 @@ async function screenshot(page: Page, name: string) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
+for (const outcome of ['stale', 'response-loss'] as const) {
+  test(`placement ${outcome} inspects authority without replay`, async ({app, page}) => {
+    page.setDefaultTimeout(15000)
+    const seed = proposal(app, 'Seed placement')
+    const worker = component(app, seed, 'Worker'); component(app, seed, 'Gateway'); accept(app, seed)
+    const p = proposal(app, 'Arrange Worker')
+    await openProposal(app, page, p)
+    const map = page.getByTestId('architecture-map')
+    const point = await map.evaluate((el, id) => {
+      const cy = (el as any)._cyreg.cy, node = cy.getElementById(id), box = el.getBoundingClientRect()
+      return {x:box.left+node.renderedPosition().x,y:box.top+node.renderedPosition().y}
+    }, worker)
+    let requests = 0
+    await page.route('**/api/architecture/diagrams/set-position', async route => {
+      requests++
+      if (outcome === 'stale') {
+        mutate(app,p,['diagram','set-position'],['--diagram-id',app.main,'--component-id',worker,'--x=-180','--y','420'])
+        await route.continue()
+      } else {
+        const response = await route.fetch()
+        expect(response.ok()).toBe(true)
+        await route.abort('failed')
+      }
+    })
+    await page.mouse.move(point.x,point.y); await page.mouse.down(); await page.mouse.move(point.x+70,point.y-35,{steps:8}); await page.mouse.up()
+    await expect(page.getByText(outcome === 'stale' ? /That position was not kept/ : /WorkBraid could not confirm that position/)).toBeVisible()
+    const current = inspect(app,p)
+    expect(current.generation).toBe(1)
+    expect(requests).toBe(1)
+    const pin = current.candidate.diagrams.find((d:any)=>d.id===app.main).appearances.find((a:any)=>a.component_id===worker).position
+    expect(await map.evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).position(),worker)).toEqual(pin)
+    await screenshot(page,`placement-${outcome}`)
+    await app.restart(); await page.reload()
+    expect(inspect(app,p).change_set_state).toBe(current.change_set_state)
+  })
+}
+
+test('placement reconciliation combines independent nodes and keeps old Diagram feedback exact', async ({app,page}) => {
+  page.setDefaultTimeout(15000)
+  const seed = proposal(app,'Seed parallel arrangement')
+  const x = component(app,seed,'Gateway'), y = component(app,seed,'Worker'), shared = component(app,seed,'Records')
+  accept(app,seed)
+  const a = proposal(app,'Accepted arrangement'), p = proposal(app,'Proposed arrangement')
+  const place = (proposal:Proposal, id:string, x:number, y:number) => mutate(app,proposal,['diagram','set-position'],['--diagram-id',app.main,'--component-id',id,`--x=${x}`,`--y=${y}`])
+  place(a,x,-300,-100); place(a,shared,220,40)
+  place(p,y,300,180); place(p,shared,-200,50)
+  const bound = app.cli(['change-set','review',...state(app,p)]).result
+  await page.goto(`${app.origin}/projects/${app.slug}/proposals/${p.id}/review`)
+  await page.getByRole('navigation',{name:'Diagram breadcrumbs',exact:true}).getByRole('button',{name:'Comment on Reconciliation browser',exact:true}).click()
+  await page.getByRole('textbox',{name:'Comment',exact:true}).fill('Keep this earlier proposed arrangement available for comparison.')
+  await page.getByRole('button',{name:/Position changed: Records/}).click()
+  await expect(page.getByRole('dialog',{name:'Leave without keeping?'})).toBeVisible()
+  await page.getByRole('button',{name:'Keep editing',exact:true}).click()
+  await expect(page.getByRole('textbox',{name:'Comment',exact:true})).toHaveValue('Keep this earlier proposed arrangement available for comparison.')
+  await page.getByRole('button',{name:'Add comment',exact:true}).click()
+  await page.getByRole('textbox',{name:'Reviewer name',exact:true}).fill('Placement reviewer')
+  await page.getByRole('button',{name:'Submit review',exact:true}).click()
+  await expect(page.getByRole('heading',{name:'Comment',exact:true})).toBeVisible()
+  const historicalURL = page.url()
+  const submissions = app.cli(['review-submission','list','--store-id',app.store,'--change-set-id',p.id]).result.reviews
+  const feedback = app.cli(['review-submission','inspect','--store-id',app.store,'--change-set-id',p.id,'--review-id',submissions[0].id]).result
+  expect(feedback.reviewed_state).toBe(bound.reviewed_state)
+  expect(feedback.comments[0].anchor.kind).toBe('diagram')
+  await screenshot(page,'placement-diagram-comment')
+  accept(app,a)
+  const accepted = app.cli(['architecture','inspect']).context.accepted_revision
+  const before = inspect(app,p)
+  await openProposal(app,page,p)
+  await page.getByRole('button',{name:'Reconcile with Accepted',exact:true}).click()
+  const task = page.locator('.reconciliation-task')
+  await expect(task).toContainText('Position of Records')
+  await expect(task).toContainText('Automatic')
+  await task.getByRole('button',{name:'Choose manually',exact:true}).click()
+  await task.getByRole('checkbox',{name:'Automatic',exact:true}).uncheck()
+  await task.getByLabel('Final position X',{exact:true}).fill('-180')
+  await task.getByLabel('Final position Y',{exact:true}).fill('420')
+  await task.getByRole('button',{name:'Check choices',exact:true}).click()
+  await expect(task.getByRole('button',{name:'Apply reconciliation',exact:true})).toBeVisible()
+  expect(inspect(app,p).change_set_state).toBe(before.change_set_state)
+  await screenshot(page,'placement-reconciliation')
+  await task.getByRole('button',{name:'Apply reconciliation',exact:true}).click()
+  await expect(task).toHaveCount(0)
+  const after = inspect(app,p); p.generation = after.generation
+  expect(after.generation).toBe(before.generation+1)
+  expect(after.base_revision).toBe(accepted)
+  expect(app.cli(['architecture','inspect']).context.accepted_revision).toBe(accepted)
+  const pins = after.candidate.diagrams.find((d:any)=>d.id===app.main).appearances
+  expect(pins.find((v:any)=>v.component_id===x).position).toEqual({x:-300,y:-100})
+  expect(pins.find((v:any)=>v.component_id===y).position).toEqual({x:300,y:180})
+  expect(pins.find((v:any)=>v.component_id===shared).position).toEqual({x:-180,y:420})
+  accept(app,p)
+  await app.restart(); await page.goto(historicalURL)
+  await expect(page.getByText('Feedback on an earlier proposal version.')).toBeVisible()
+  const map = page.getByTestId('architecture-map')
+  expect(await map.evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).position(),shared)).toEqual({x:-200,y:50})
+  const historical = app.cli(['review-submission','inspect','--store-id',app.store,'--change-set-id',p.id,'--review-id',submissions[0].id]).result
+  expect(historical.current_generation).toBe(false)
+  expect(historical.lifecycle).toBe('applied')
+  for (const key of ['reviewed_state','review','comments','binding','proposal_markdown']) expect(historical[key]).toEqual(feedback[key])
+  await screenshot(page,'placement-historical-comment')
+  writeFileSync(join(app.data,'placement-evidence.json'),JSON.stringify({store:app.store,a,p,bound,feedback,before,after,accepted,historicalURL},null,2))
+})
+
+test('external valid placement is adopted only by explicit Refresh and survives restart', async ({app,page}) => {
+  const seed = proposal(app,'Seed external placement'), worker = component(app,seed,'Worker')
+  accept(app,seed)
+  const p = proposal(app,'External placement source')
+  mutate(app,p,['diagram','set-position'],['--diagram-id',app.main,'--component-id',worker,'--x=-420','--y=240'])
+  const source = inspect(app,p)
+  await page.goto(`${app.origin}/projects/${app.slug}`)
+  const git = (args:string[],input?:string) => {
+    const result = spawnSync('git',['-c','core.hooksPath=/dev/null','-c','commit.gpgSign=false','-c','user.name=External fixture','-c','user.email=fixture@example.test','--git-dir',join(app.data,'architecture',`${app.store}.git`),...args],{encoding:'utf8',input})
+    expect(result.status,result.stderr).toBe(0); return result.stdout.trim()
+  }
+  // A bounded external commit uses the product-constructed valid tree; it is
+  // neither a product acceptance shortcut nor a second placement builder.
+  const external = git(['commit-tree',source.candidate_tree,'-p',source.base_revision],'External valid placement\n')
+  git(['update-ref','refs/heads/accepted',external,source.base_revision])
+  expect(app.cli(['architecture','inspect']).context.accepted_revision).toBe(source.base_revision)
+  await page.getByRole('button',{name:'Refresh',exact:true}).click()
+  await expect.poll(()=>app.cli(['architecture','inspect']).context.accepted_revision).toBe(external)
+  const map = page.getByTestId('architecture-map')
+  expect(await map.evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).position(),worker)).toEqual({x:-420,y:240})
+  expect(inspect(app,p).change_set_state).toBe(source.change_set_state)
+  await app.restart(); await page.reload()
+  expect(await map.evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).position(),worker)).toEqual({x:-420,y:240})
+  await screenshot(page,'placement-external-refresh')
+})
+
 test('ordinary browser Change parent component keeps the existing child', async ({ app, page }) => {
   const setup = proposal(app, 'Initial composition')
   const gateway = component(app, setup, 'Gateway'); const worker = component(app, setup, 'Worker')

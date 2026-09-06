@@ -71,6 +71,8 @@ type changeSetReview struct {
 }
 
 type changeState struct {
+	ArchitectureVersion int                         `yaml:"architecture_version,omitempty"`
+	NodePositions       []NodePositionChange        `yaml:"node_positions"`
 	DetailReassignments []DetailReassignment        `yaml:"detail_reassignments"`
 	Format              string                      `yaml:"format"`
 	Version             int                         `yaml:"version"`
@@ -358,6 +360,12 @@ func (manager *Manager) loadChangeSet(ctx context.Context, storePath, storeID, l
 	if err != nil {
 		return record, fmt.Errorf("load change-set base: %w", err)
 	}
+	if composition.ArchitectureVersion == 0 && base.FormatVersion() != 2 {
+		return record, errors.New("old operational state requires portable v2")
+	}
+	if composition.ArchitectureVersion != 0 && composition.ArchitectureVersion < base.FormatVersion() {
+		return record, errors.New("target format is below base")
+	}
 	record.BaseRevision = metadata.BaseRevision
 	record.Generation = metadata.Generation
 	record.Proposal = string(proposal)
@@ -474,9 +482,34 @@ func (manager *Manager) prepareChangeSet(ctx context.Context, storeID string, re
 	if err != nil {
 		return "", err
 	}
-	changesBytes, err := marshalChangeState(record.Changes, record.Composition)
+	composition := record.Composition
+	if composition.ArchitectureVersion == 0 {
+		composition.ArchitectureVersion = record.BaseSnapshot.FormatVersion()
+	}
+	changesBytes, err := marshalChangeState(record.Changes, composition)
 	if err != nil {
 		return "", err
+	}
+	// Review preparation preserves the exact old operational blob when no
+	// authored generation changed. Loading alone never rewrites state.
+	if record.RefObject != "" {
+		previous, loadErr := manager.loadChangeSet(ctx, storePath, storeID, "active", record.ID, "", record.RefObject)
+		previousFacts, previousErr := marshalChangeState(previous.Changes, previous.Composition)
+		requestedFacts, requestedErr := marshalChangeState(record.Changes, record.Composition)
+		if loadErr == nil && previousErr == nil && requestedErr == nil && previous.Generation == record.Generation && previous.BaseRevision == record.BaseRevision && bytes.Equal(previousFacts, requestedFacts) {
+			entries, readErr := manager.git.treeEntries(ctx, storePath, record.RefObject)
+			if readErr != nil {
+				return "", readErr
+			}
+			for _, entry := range entries {
+				if entry.Path == "changes.yaml" {
+					changesBytes, err = manager.git.readBlob(ctx, storePath, entry.Object)
+					if err != nil {
+						return "", err
+					}
+				}
+			}
+		}
 	}
 	blobs := make(map[string]string, 3)
 	for path, contents := range map[string][]byte{"change-set.yaml": metadataBytes, "proposal.md": []byte(record.Proposal), "changes.yaml": changesBytes} {
@@ -617,7 +650,7 @@ func validObjectID(value string) bool {
 }
 
 func marshalChangeState(changes []ComponentChange, composition CandidateComposition) ([]byte, error) {
-	state := changeState{Format: "workbraid-change-state", Version: 2,
+	state := changeState{Format: "workbraid-change-state", Version: 3, ArchitectureVersion: composition.ArchitectureVersion, NodePositions: append([]NodePositionChange{}, composition.NodePositions...),
 		DetailReassignments: append([]DetailReassignment{}, composition.DetailReassignments...),
 		Components:          make([]changeStateComponent, len(changes)),
 		NewComponentHomes:   nonNilHomes(composition.NewComponentHomes), DetailDiagrams: nonNilDetails(composition.DetailDiagrams),
@@ -658,7 +691,7 @@ func parseChangeState(contents []byte) ([]ComponentChange, CandidateComposition,
 			TitleChanged: item.TitleChanged, DescriptionChanged: item.DescriptionChanged, RelationshipsChanged: item.RelationshipsChanged, Relationships: relationships,
 		}
 	}
-	composition := CandidateComposition{DetailReassignments: state.DetailReassignments, NewComponentHomes: state.NewComponentHomes, DetailDiagrams: state.DetailDiagrams, DiagramTitles: state.DiagramTitles, HomeMoves: state.HomeMoves, References: state.References}
+	composition := CandidateComposition{ArchitectureVersion: state.ArchitectureVersion, NodePositions: state.NodePositions, DetailReassignments: state.DetailReassignments, NewComponentHomes: state.NewComponentHomes, DetailDiagrams: state.DetailDiagrams, DiagramTitles: state.DiagramTitles, HomeMoves: state.HomeMoves, References: state.References}
 	if err := validateChangeState(changes, composition); err != nil {
 		return nil, CandidateComposition{}, err
 	}
@@ -775,15 +808,45 @@ func validateChangeSetMetadataYAML(root *yaml.Node) error {
 
 func validateChangeStateYAML(root *yaml.Node) error {
 	required := map[string]string{"format": "!!str", "version": "!!int", "components": "!!seq", "new_component_homes": "!!seq", "detail_diagrams": "!!seq", "diagram_titles": "!!seq", "home_moves": "!!seq", "references": "!!seq"}
-	seen, err := validateClosedMapping(root, "changes.yaml", required, map[string]string{"detail_reassignments": "!!seq"})
+	seen, err := validateClosedMapping(root, "changes.yaml", required, map[string]string{"detail_reassignments": "!!seq", "architecture_version": "!!int", "node_positions": "!!seq"})
 	if err != nil {
 		return err
 	}
-	if scalarValue(seen["format"]) != "workbraid-change-state" || (scalarValue(seen["version"]) != "1" && scalarValue(seen["version"]) != "2") {
+	if scalarValue(seen["format"]) != "workbraid-change-state" || (scalarValue(seen["version"]) != "1" && scalarValue(seen["version"]) != "2" && scalarValue(seen["version"]) != "3") {
 		return errors.New("changes.yaml format or version is unsupported")
 	}
-	if (scalarValue(seen["version"]) == "2") != (seen["detail_reassignments"] != nil) {
+	if (scalarValue(seen["version"]) != "1") != (seen["detail_reassignments"] != nil) {
 		return errors.New("changes.yaml detail_reassignments is required only in version 2")
+	}
+	v3 := scalarValue(seen["version"]) == "3"
+	if v3 != (seen["architecture_version"] != nil) || v3 != (seen["node_positions"] != nil) {
+		return errors.New("placement fields are required only in operational version 3")
+	}
+	if v3 {
+		var target int
+		if err := seen["architecture_version"].Decode(&target); err != nil || target != 2 && target != 3 {
+			return errors.New("invalid architecture_version")
+		}
+		if target == 2 && len(seen["node_positions"].Content) > 0 {
+			return errors.New("version 2 cannot have positions")
+		}
+		for _, item := range seen["node_positions"].Content {
+			fields, err := validateClosedMapping(item, "node position", map[string]string{"diagram_id": "!!str", "component_id": "!!str", "position": ""}, nil)
+			if err != nil {
+				return err
+			}
+			p := fields["position"]
+			if p.ShortTag() == "!!null" {
+				continue
+			}
+			pair, err := validateClosedMapping(p, "position", map[string]string{"x": "!!int", "y": "!!int"}, nil)
+			if err != nil {
+				return err
+			}
+			if _, err = decodePosition(pair["x"], pair["y"]); err != nil {
+				return err
+			}
+		}
 	}
 	if sequence := seen["detail_reassignments"]; sequence != nil {
 		for _, item := range sequence.Content {
@@ -844,7 +907,7 @@ func validateClosedMapping(root *yaml.Node, name string, required, optional map[
 		if _, duplicate := seen[key.Value]; duplicate {
 			return nil, fmt.Errorf("%s contains duplicate field %q", name, key.Value)
 		}
-		if value.ShortTag() != expected {
+		if expected != "" && value.ShortTag() != expected {
 			return nil, fmt.Errorf("%s field %s has the wrong type", name, key.Value)
 		}
 		seen[key.Value] = value
@@ -865,6 +928,18 @@ func scalarValue(node *yaml.Node) string {
 }
 
 func validateChangeState(changes []ComponentChange, composition CandidateComposition) error {
+	if composition.ArchitectureVersion != 0 && composition.ArchitectureVersion != 2 && composition.ArchitectureVersion != 3 {
+		return errors.New("invalid architecture_version")
+	}
+	seenPositions := map[string]bool{}
+	for _, v := range composition.NodePositions {
+		key := v.DiagramID + "/" + v.ComponentID
+		if !canonicalUUID(v.DiagramID) || !canonicalUUID(v.ComponentID) || seenPositions[key] || v.Position != nil && !ValidPosition(*v.Position) {
+			return errors.New("invalid node position")
+		}
+		seenPositions[key] = true
+	}
+
 	seenComponents := make(map[string]struct{}, len(changes))
 	for _, change := range changes {
 		if !canonicalUUID(change.ID) || !validNewComponentPath(change.Path) {

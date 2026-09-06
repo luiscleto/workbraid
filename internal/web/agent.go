@@ -16,11 +16,12 @@ import (
 )
 
 type agentArchitectureProjection struct {
-	Project       agentapi.ProjectContext    `json:"project"`
-	Revision      string                     `json:"revision"`
-	RootDiagramID string                     `json:"root_diagram_id"`
-	Components    []agentComponentProjection `json:"components"`
-	Diagrams      []agentDiagramProjection   `json:"diagrams"`
+	ArchitectureVersion int                        `json:"architecture_version"`
+	Project             agentapi.ProjectContext    `json:"project"`
+	Revision            string                     `json:"revision"`
+	RootDiagramID       string                     `json:"root_diagram_id"`
+	Components          []agentComponentProjection `json:"components"`
+	Diagrams            []agentDiagramProjection   `json:"diagrams"`
 }
 
 type agentComponentProjection struct {
@@ -44,6 +45,8 @@ type agentValidationProjection struct {
 }
 
 type agentChangeSetProjection struct {
+	ArchitectureVersion int                                      `json:"architecture_version"`
+	NodePositions       []architecture.NodePositionChange        `json:"node_positions"`
 	StateObject         string                                   `json:"change_set_state"`
 	DetailReassignments []architecture.DetailReassignment        `json:"detail_reassignments"`
 	ID                  string                                   `json:"id"`
@@ -110,6 +113,10 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/diagrams/create-detail", h.agentDiagramCreateDetail)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/parent-options", h.agentDetailParentOptions)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/reassign-detail", h.agentReassignDetail)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/positions", h.agentPositions)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/set-position", h.agentSetPosition)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/reset-position", h.agentResetPosition)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/reset-layout", h.agentResetLayout)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-preview", h.agentReconciliationPreview)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-apply", h.agentReconciliationApply)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
@@ -150,6 +157,12 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
 		return zero, false
 	}
+	if strings.HasSuffix(request.URL.Path, "/set-position") || strings.HasSuffix(request.URL.Path, "/reset-position") || strings.HasSuffix(request.URL.Path, "/reset-layout") {
+		if !validPlacementFields(contents, request.URL.Path, false) {
+			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the position request fields and try again.", nil)
+			return zero, false
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	var value T
@@ -162,6 +175,16 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		if err := json.Unmarshal(contents, &fields); err != nil || fields["generation"] == nil || string(fields["generation"]) == "null" {
 			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "The exact change-set generation is required.", map[string]any{"field": "generation"})
 			return zero, false
+		}
+	}
+	if _, position := any(value).(agentapi.DiagramSetPositionRequest); position {
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(contents, &fields)
+		for _, key := range []string{"x", "y"} {
+			if fields[key] == nil || string(fields[key]) == "null" {
+				h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Both position coordinates are required.", nil)
+				return zero, false
+			}
 		}
 	}
 	return value, true
@@ -414,8 +437,9 @@ func (h *Handler) agentArchitectureProjectionLocked(snapshot architecture.Snapsh
 		diagrams[index] = agentDiagramProjection{diagramResponse: diagram, ChildDiagramIDs: children[diagram.ID]}
 	}
 	return agentArchitectureProjection{
-		Project:  agentapi.ProjectContext{StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: snapshot.ProjectSlug()},
-		Revision: snapshot.Revision(), RootDiagramID: snapshot.RootDiagramID(), Components: components, Diagrams: diagrams,
+		ArchitectureVersion: snapshot.FormatVersion(),
+		Project:             agentapi.ProjectContext{StoreID: snapshot.StoreID(), Name: snapshot.ProjectName(), Slug: snapshot.ProjectSlug()},
+		Revision:            snapshot.Revision(), RootDiagramID: snapshot.RootDiagramID(), Components: components, Diagrams: diagrams,
 	}
 }
 
@@ -433,6 +457,8 @@ func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agen
 		}
 	}
 	value := agentChangeSetProjection{
+		ArchitectureVersion: max(pending.architectureVersion, pending.baseSnapshot.FormatVersion()),
+		NodePositions:       append([]architecture.NodePositionChange{}, pending.nodePositions...),
 		StateObject:         pending.refObject,
 		DetailReassignments: append([]architecture.DetailReassignment{}, pending.detailReassignments...),
 		ID:                  pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,
@@ -1004,7 +1030,7 @@ func (h *Handler) agentComponentCreate(response http.ResponseWriter, request *ht
 		h.writeAgentDomainErrorLocked(response, http.StatusConflict, stateErr)
 		return
 	}
-	if snapshot.FormatVersion() != 2 {
+	if snapshot.FormatVersion() < 2 {
 		h.writeAgentErrorLocked(response, http.StatusConflict, "unsupported_action", agentMessage("unsupported_action"), nil)
 		return
 	}

@@ -27,7 +27,7 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 		}
 		c.resolutions[key] = r
 	}
-	if base.StoreID() != accepted.StoreID() || base.StoreID() != proposed.Snapshot().StoreID() || base.FormatVersion() != 2 || accepted.FormatVersion() != 2 {
+	if base.StoreID() != accepted.StoreID() || base.StoreID() != proposed.Snapshot().StoreID() || base.FormatVersion() < 2 || accepted.FormatVersion() < 2 {
 		return c.result, &ReconciliationError{"validation_blocked", "invalid_proposal"}
 	}
 	if base.Revision() == accepted.Revision() {
@@ -50,11 +50,15 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 		return c.result, c.err
 	}
 	c.resolveComposition()
+	c.mergePositions()
 	if c.err != nil {
 		return c.result, c.err
 	}
 	for key := range c.resolutions {
 		if !c.used[key] {
+			if c.resolutions[key].Locator.Kind == "node_position" {
+				return c.result, &ReconciliationError{"target_not_eligible", "placement choice is no longer applicable"}
+			}
 			return c.result, &ReconciliationError{"invalid_request", "unknown or obsolete conflict locator"}
 		}
 	}
@@ -78,7 +82,7 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 	if err != nil {
 		return c.result, fmt.Errorf("reconciliation constructor: %w", err)
 	}
-	if !sameReconciliationSemantics(c.final, snapshotReconciliationFacts(candidate.Snapshot())) {
+	if !sameReconciliationSemantics(c.final, snapshotReconciliationFacts(candidate.Snapshot())) || !reflect.DeepEqual(c.final.positions, snapshotReconciliationFacts(candidate.Snapshot()).positions) || candidate.Snapshot().FormatVersion() != c.final.version {
 		return c.result, fmt.Errorf("resolved Architecture is not reproduced by ordinary typed authoring facts")
 	}
 	c.result.Changes, c.result.Composition, c.result.Candidate = changes, composition, &candidate

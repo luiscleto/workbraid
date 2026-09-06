@@ -157,7 +157,11 @@ func (h *Handler) calculateReconciliationLocked(ctx context.Context, inputs agen
 	response := reconciliationPreviewResponse{Reconciliation: result, Inputs: inputs, Original: projectSnapshot(record.baseSnapshot, ""), Accepted: projectSnapshot(*h.loadedSnapshot, ""), Proposed: projectSnapshot(record.candidate.Snapshot(), "")}
 	if result.Candidate != nil {
 		response.ResultCandidate = &reconciliationCandidateResponse{CandidateTree: result.Candidate.Tree(), snapshotProjectionResponse: projectSnapshot(result.Candidate.Snapshot(), "")}
-		remaining := len(result.Changes)+len(result.Composition.NewComponentHomes)+len(result.Composition.DetailDiagrams)+len(result.Composition.DiagramTitles)+len(result.Composition.HomeMoves)+len(result.Composition.References)+len(result.Composition.DetailReassignments) > 0
+		unchanged, compareErr := h.architecture.ConstructCandidate(ctx, *h.loadedSnapshot, nil, architecture.CandidateComposition{})
+		if compareErr != nil {
+			return reconciliationPreviewResponse{}, nil, reconciliationDomainError("operation_failed", "")
+		}
+		remaining := result.Candidate.Tree() != unchanged.Tree()
 		response.RemainingChanges = &remaining
 	}
 	if h.beforeReconciliationReobserve != nil {

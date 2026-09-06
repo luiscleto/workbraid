@@ -5,8 +5,8 @@ type Reference = Home & { present: boolean }
 type Anchor = { diagram_id: string; anchor_component_id: string }
 type Count = { source_id: string; target_id: string; label: string; count: number }
 export type ReconciliationLocator = { kind: string; component_id?: string; diagram_id?: string; source_id?: string; target_id?: string; label?: string; reason?: string; component_ids?: string[]; diagram_ids?: string[] }
-type Value = { text?: string; count?: number; present?: boolean; diagram_id?: string; anchor_component_id?: string; homes?: Home[]; references?: Reference[]; detail_anchors?: Anchor[]; relationship_counts?: Count[] }
-type Side = Value & { exists: boolean; component?: { title: string; description: string }; diagram?: { title: string } }
+type Value = { position?:{x:number;y:number}|null; text?: string; count?: number; present?: boolean; diagram_id?: string; anchor_component_id?: string; homes?: Home[]; references?: Reference[]; detail_anchors?: Anchor[]; relationship_counts?: Count[] }
+type Side = Value & { state?:'not_applicable'|'automatic'|'manual'; exists?: boolean; component?: { title: string; description: string }; diagram?: { title: string } }
 export type ReconciliationResolution = { locator: ReconciliationLocator; choice: 'accepted' | 'proposed' | 'manual'; value?: Value }
 type Conflict = { locator: ReconciliationLocator; original: Side; accepted: Side; proposed: Side; choices: string[]; unsupported?: Record<string, string>; resolved: boolean; eligible_anchor_component_ids?: string[]; eligible_parents?: { component_id: string; title: string; home_diagram_id: string; home_diagram_title: string }[] }
 export type ReconciliationSnapshot = {
@@ -82,6 +82,7 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
   const availableComponents = [...components.values()].filter((component) => preview.accepted.components.some((item) => item.id === component.id) || !preview.original.components.some((item) => item.id === component.id))
   const availableDiagrams = [...diagrams.values()].filter((diagram) => preview.accepted.diagrams?.some((item) => item.id === diagram.id) || !preview.original.diagrams?.some((item) => item.id === diagram.id))
   const title = (locator: ReconciliationLocator) => locator.kind === 'composition' ? reasons[locator.reason ?? ''] ?? 'Composition needs a decision'
+	: locator.kind==='node_position' ? `Position of ${componentName(locator.component_id)} in ${diagramName(locator.diagram_id)}`
     : locator.kind === 'relationship_count' ? `${componentName(locator.source_id)} → ${componentName(locator.target_id)}`
       : `${locator.component_id ? componentName(locator.component_id) : diagramName(locator.diagram_id)} · ${locator.kind.replace('component_', '').replace('diagram_', '').replaceAll('_', ' ')}`
   const current = preview.conflicts.find((conflict) => key(conflict.locator) === selected) ?? preview.conflicts[0]
@@ -91,6 +92,9 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
     setChecked(false); setShowResult(false); setError(''); onDirty(true)
   }
   function sideText(side: Side): string {
+	if(side.state==='not_applicable')return 'Not present here'
+	if(side.state==='automatic')return 'Automatic'
+	if(side.state==='manual'&&side.position)return `X ${side.position.x}, Y ${side.position.y}`
     if (!side.exists) return 'Absent'
     if (side.text !== undefined) return side.text === '' ? '(Empty)' : side.text
     if (side.count !== undefined) return `${side.count} occurrence${side.count === 1 ? '' : 's'}`
@@ -189,6 +193,7 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
 }
 
 function manualInitial(conflict: Conflict): Value {
+	if(conflict.locator.kind==='node_position')return {position:conflict.proposed.position??null}
   const side = conflict.proposed
   if (side.text !== undefined) return { text: side.text }
   if (side.count !== undefined) return { count: side.count }
@@ -203,6 +208,7 @@ function IdentityChoices({ label, options, value, onChange }: { label: string; o
   return <fieldset className="reconciliation-options"><legend>{label}</legend>{options.map((option) => <label key={option.id}><input type="radio" name={groupID} checked={value === option.id} onChange={() => onChange(option.id)} /><span><strong>{option.title}</strong>{option.context && <small>{option.context}</small>}{options.filter((other) => other.title === option.title).length > 1 && <small>{option.filename}</small>}</span></label>)}</fieldset>
 }
 function ScalarEditor({ conflict, value, components, diagrams, onChange }: { conflict: Conflict; value: Value; components: Option[]; diagrams: Option[]; onChange: (value: Value) => void }) {
+	if(conflict.locator.kind==='node_position')return <fieldset className="position-controls"><legend>Final position</legend><label><input type="checkbox" checked={value.position===null} onChange={e=>onChange({position:e.target.checked?null:{x:0,y:0}})} />Automatic</label>{value.position&&<div className="position-fields"><label>X<input aria-label="Final position X" type="number" min={-100000} max={100000} step={1} required value={value.position.x} onChange={e=>onChange({position:{...value.position!,x:e.target.value===''?NaN:Number(e.target.value)}})} /></label><label>Y<input aria-label="Final position Y" type="number" min={-100000} max={100000} step={1} required value={value.position.y} onChange={e=>onChange({position:{...value.position!,y:e.target.value===''?NaN:Number(e.target.value)}})} /></label></div>}</fieldset>
   if (conflict.locator.kind === 'home') return <IdentityChoices label="Final home diagram" options={diagrams} value={value.diagram_id} onChange={(id) => onChange({ diagram_id: id })} />
   if (conflict.locator.kind === 'detail_anchor') {
     const eligible = (conflict.eligible_parents ?? []).map((parent) => ({ id: parent.component_id, title: parent.title, filename: components.find((component) => component.id === parent.component_id)?.filename ?? '', context: `Lives in ${parent.home_diagram_title}` }))

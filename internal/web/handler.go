@@ -78,6 +78,8 @@ type loadedProject struct {
 }
 
 type pendingChangeSet struct {
+	architectureVersion            int
+	nodePositions                  []architecture.NodePositionChange
 	detailReassignments            []architecture.DetailReassignment
 	id                             string
 	name                           string
@@ -137,6 +139,9 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/diagrams/detail", handler.createDetailDiagram)
 	mux.HandleFunc("POST /api/architecture/diagrams/parent-options", handler.browserDetailParentOptions)
 	mux.HandleFunc("POST /api/architecture/diagrams/reassign-detail", handler.browserReassignDetail)
+	mux.HandleFunc("POST /api/architecture/diagrams/set-position", handler.browserPlacement)
+	mux.HandleFunc("POST /api/architecture/diagrams/reset-position", handler.browserPlacement)
+	mux.HandleFunc("POST /api/architecture/diagrams/reset-layout", handler.browserPlacement)
 	mux.HandleFunc("POST /api/architecture/diagrams/title", handler.editDiagramTitle)
 	mux.HandleFunc("POST /api/architecture/components/move-home", handler.moveComponentHome)
 	mux.HandleFunc("POST /api/architecture/diagrams/show-component", handler.showComponentHere)
@@ -644,7 +649,7 @@ func referenceChoices(snapshot architecture.Snapshot) []referenceChoiceResponse 
 }
 
 func componentHomeDestinations(snapshot architecture.Snapshot) []componentHomeDestinationsResponse {
-	if snapshot.FormatVersion() != 2 {
+	if snapshot.FormatVersion() < 2 {
 		return nil
 	}
 	components := snapshot.AuthoringComponents()
@@ -848,6 +853,8 @@ func (h *Handler) loadChangeSetsLocked(ctx context.Context, snapshot architectur
 
 func pendingFromDurableChangeSet(durable architecture.ChangeSet) *pendingChangeSet {
 	record := &pendingChangeSet{
+		architectureVersion: durable.Composition.ArchitectureVersion,
+		nodePositions:       append([]architecture.NodePositionChange(nil), durable.Composition.NodePositions...),
 		detailReassignments: append([]architecture.DetailReassignment(nil), durable.Composition.DetailReassignments...),
 		id:                  durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
 		appliedRevision: durable.AppliedRevision, refObject: durable.RefObject,
@@ -872,7 +879,7 @@ func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.Change
 		AppliedRevision: record.appliedRevision, RefObject: record.refObject,
 		BaseRevision: record.baseRevision, Generation: record.generation, BaseSnapshot: record.baseSnapshot,
 		Changes:     record.changes,
-		Composition: architecture.CandidateComposition{DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
+		Composition: architecture.CandidateComposition{ArchitectureVersion: record.architectureVersion, NodePositions: record.nodePositions, DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
 		Candidate:   record.candidate,
 	}
 	if record.review != nil {
@@ -886,6 +893,7 @@ func clonePending(record *pendingChangeSet) *pendingChangeSet {
 		return nil
 	}
 	clone := *record
+	clone.nodePositions = append([]architecture.NodePositionChange(nil), record.nodePositions...)
 	clone.detailReassignments = append([]architecture.DetailReassignment(nil), record.detailReassignments...)
 	clone.changes = append([]architecture.ComponentChange(nil), record.changes...)
 	for index := range clone.changes {
@@ -1409,7 +1417,7 @@ func (h *Handler) mutateComponent(response http.ResponseWriter, request *http.Re
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return
 	}
-	if accepted.FormatVersion() != 2 {
+	if accepted.FormatVersion() < 2 {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
 		return
 	}
@@ -1534,6 +1542,8 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 		}
 	}
 	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
+		ArchitectureVersion: pending.architectureVersion,
+		NodePositions:       pending.nodePositions,
 		DetailReassignments: pending.detailReassignments,
 		NewComponentHomes:   pending.newComponentHomes,
 		DetailDiagrams:      pending.detailDiagrams,
@@ -1544,6 +1554,8 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 }
 
 type diagramMutationRequest struct {
+	X                         *int    `json:"x,omitempty"`
+	Y                         *int    `json:"y,omitempty"`
 	AnchorComponentID         string  `json:"anchor_component_id,omitempty"`
 	ProjectSlug               string  `json:"project_slug"`
 	StoreID                   string  `json:"store_id"`
@@ -1601,7 +1613,7 @@ func (h *Handler) writableV2StateLocked(response http.ResponseWriter, payload di
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesElsewhere})
 		return architecture.Snapshot{}, nil, false
 	}
-	if accepted.FormatVersion() != 2 {
+	if accepted.FormatVersion() < 2 {
 		writeJSON(response, http.StatusConflict, errorResponse{Code: errorChangesUnavailable})
 		return architecture.Snapshot{}, nil, false
 	}
@@ -1769,6 +1781,7 @@ func (h *Handler) moveComponentHomeLocked(ctx context.Context, snapshot architec
 		proposedPointer = h.ensurePendingLocked(snapshot, nil)
 	}
 	proposed := *proposedPointer
+	clearPendingPosition(snapshot, &proposed, currentHome, componentID)
 	proposed.references = referenceChangesWithoutPair(proposed.references, diagramID, componentID)
 	setReferenceChange(&proposed, currentHome, componentID, false)
 	proposed.homeMoves = homeMovesWithoutComponent(proposed.homeMoves, componentID)
@@ -1812,6 +1825,9 @@ func (h *Handler) changeReferenceLocked(ctx context.Context, snapshot architectu
 	}
 	pending = h.ensurePendingLocked(snapshot, pending)
 	setReferenceChange(pending, diagramID, componentID, present)
+	if !present {
+		clearPendingPosition(snapshot, pending, diagramID, componentID)
+	}
 	h.rebuildPendingLocked(ctx, snapshot, pending)
 	if pendingOperationFailed(pending) {
 		return pending, changeOperationFailed
@@ -1951,7 +1967,7 @@ func homeMovesWithoutComponent(moves []architecture.ComponentHomeMove, component
 }
 
 func pendingChangeSetEmpty(pending *pendingChangeSet) bool {
-	return len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
+	return len(pending.nodePositions) == 0 && (pending.architectureVersion == 0 || pending.architectureVersion == pending.baseSnapshot.FormatVersion()) && len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
 		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 && len(pending.references) == 0 && len(pending.detailReassignments) == 0
 }
 

@@ -47,7 +47,6 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     ])
 
     const acceptedIndex = page.getByRole('navigation', { name: 'Diagrams and components' })
-    await expect(page.locator('form.component-editor')).toHaveCount(0)
     const proposalName = (await page.getByRole('button', { name: /^Showing / }).locator('span').first().textContent())?.trim()
     expect(proposalName).toBeTruthy()
     expect(proposalName).not.toBe('Accepted')
@@ -69,7 +68,7 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     await page.getByRole('button', { name: 'Edit component' }).click()
     await page.getByLabel('Description').fill('Routes requests and audits.\n')
     await page.locator('.relationship-row').first().getByLabel('Label').fill('dispatches')
-    await page.getByRole('button', { name: 'Keep change' }).click()
+    await keepEditorChange(page, '/api/architecture/components/edit')
     await createPendingDetail(page, 'Phase Two System', 'Gateway', 'Gateway internals')
 
     await movePendingHome(page, 'Phase Two System', 'Worker', 'Gateway internals')
@@ -81,7 +80,7 @@ test('Phase 2 production path creates a slug project, nested diagrams, and reusa
     const rootPending = pendingDiagram(page, 'Phase Two System')
     await rootPending.getByRole('button', { name: 'Edit title' }).click()
     await page.getByLabel('Diagram title').fill('Platform')
-    await page.getByRole('button', { name: 'Keep change' }).click()
+    await keepEditorChange(page, '/api/architecture/diagrams/title')
 
     await page.getByRole('button', { name: 'Review changes' }).click()
     const review = page.locator('.review-workspace-pane')
@@ -165,8 +164,23 @@ async function addPendingComponent(page: Page, title: string, description: strin
 async function fillComponent(page: Page, title: string, description: string) {
   await page.getByLabel('Title').fill(title)
   await page.getByLabel('Description').fill(description)
-  await page.getByRole('button', { name: 'Keep change' }).click()
+  await keepEditorChange(page, '/api/architecture/components/add')
   await expect(page.locator('.changes-in-progress')).toBeVisible()
+}
+
+async function keepEditorChange(page: Page, endpoint: string) {
+  const editor = page.locator('form.component-form')
+  await expect(editor).toBeVisible()
+  const saved = page.waitForResponse(response =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === endpoint,
+  )
+  await editor.getByRole('button', { name: 'Keep change', exact: true }).click()
+  const response = await saved
+  expect(response.ok()).toBe(true)
+  expect(await response.finished()).toBeNull()
+  // Navigation is safe only after the client consumes the save and closes
+  // the actual editor; clicking Keep does not itself clear its dirty draft.
+  await expect(editor).toHaveCount(0)
 }
 
 async function editPendingRelationships(page: Page, title: string, relationships: Array<{ target: string; label: string }>) {
@@ -179,7 +193,7 @@ async function editPendingRelationships(page: Page, title: string, relationships
     await row.getByLabel('Target').selectOption({ label: relationship.target })
     await row.getByLabel('Label').fill(relationship.label)
   }
-  await page.getByRole('button', { name: 'Keep change' }).click()
+  await keepEditorChange(page, '/api/architecture/components/edit')
 }
 
 function pendingDiagram(page: Page, title: string): Locator {
@@ -190,14 +204,14 @@ async function movePendingHome(page: Page, sourceDiagram: string, component: str
   const row = pendingDiagram(page, sourceDiagram).locator('li').filter({ hasText: component })
   await row.getByRole('button', { name: `Change where ${component} lives`, exact: true }).click()
   await page.locator('form.diagram-editor').getByRole('combobox').selectOption({ label: destination })
-  await page.getByRole('button', { name: 'Keep change' }).click()
+  await keepEditorChange(page, '/api/architecture/components/move-home')
 }
 
 async function createPendingDetail(page: Page, sourceDiagram: string, component: string, title: string) {
   const row = pendingDiagram(page, sourceDiagram).locator('li').filter({ hasText: component })
   await row.getByRole('button', { name: 'Create detail diagram' }).click()
   await page.getByLabel('Diagram title').fill(title)
-  await page.getByRole('button', { name: 'Keep change' }).click()
+  await keepEditorChange(page, '/api/architecture/diagrams/detail')
 }
 
 async function showPendingReference(page: Page, diagram: string, component: string) {

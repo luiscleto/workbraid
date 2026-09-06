@@ -4,6 +4,12 @@ Status: Approved; in progress. The partial-pinning implementation failed the hum
 
 The [approved placement contract](../architecture-placement-amendment-v0.md) is the current correction. Every visible Component node, including a derived **Lives in** node, keeps its saved coordinate until deliberately moved or auto-laid out. Moving one node must not repack peers. Preserve prior failed-gate evidence; use fresh isolated data for the corrected visual gate.
 
+## Current progress
+
+Reviewed implementation `78cce8d2525bd0cd8f5983ddf8f2fc8ae19b4689` and approved consolidated docs were integrated at `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. Code and documentation tree comparisons were exact. Independent full-range review, Go tests/race/vet/module verification, frontend 94/94, built-browser 24/24 without retries, and canonical/Luna/history/restart verification passed. Integration builds and the live browser smoke passed; no console errors were observed.
+
+The durable self-project at `/home/luisc/.config/workbraid` has one unaccepted proposal with seven Components and two Diagrams, including Canvas as a root boundary through Browser workspace. [Review WorkBraid](http://127.0.0.1:8080/projects/workbraid/proposals/44f2c963-40e3-476f-9ef1-985bf29e7006/review): generation 16, exact draft/catalog/review reconstructed after a complete process restart; the legacy database stayed untouched. The corrected human visual gate and deliberate Architecture acceptance remain pending. Phase 3.1 is not complete.
+
 ## Ownership and next work
 
 Root coordinates the human and assigned agents through Herdr. Continue the existing implementation worker for code/tests and the documentation owner for contracts/cleanup. Keep implementation isolated; root integrates the reviewed result. Do not create extra feature workers or repeat baseline/packet commit ceremonies.

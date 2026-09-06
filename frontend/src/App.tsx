@@ -142,12 +142,12 @@ type RelationshipTarget = {
 function PositionControls({position,busy,onDirty,onKeep}:{position:{x:number;y:number}|null;busy:boolean;onDirty:(v:boolean)=>void;onKeep:(p:{x:number;y:number}|null)=>Promise<boolean>}) {
   const [x,setX]=useState(String(position?.x??0)),[y,setY]=useState(String(position?.y??0))
   useEffect(() => () => onDirty(false), [onDirty])
-  return <details className="position-controls"><summary>Position{position?` · ${position.x}, ${position.y}`:''}</summary>
+  return <section aria-label="Node position"><h3>Position</h3>
     <form onSubmit={async e=>{e.preventDefault();const p={x:Number(x),y:Number(y)};if(!Number.isInteger(p.x)||!Number.isInteger(p.y)||Math.abs(p.x)>100000||Math.abs(p.y)>100000)return;if(await onKeep(p))onDirty(false)}}>
       <div className="position-fields"><label>X<input aria-label="Position X" type="number" min={-100000} max={100000} step={1} required value={x} onChange={e=>{setX(e.target.value);onDirty(true)}} /></label><label>Y<input aria-label="Position Y" type="number" min={-100000} max={100000} step={1} required value={y} onChange={e=>{setY(e.target.value);onDirty(true)}} /></label></div>
       <div className="button-group"><button className="text-action" type="submit" disabled={busy}>Keep position</button><button className="text-action" type="button" onClick={()=>{setX(String(position?.x??0));setY(String(position?.y??0));onDirty(false)}}>Clear edits</button></div>
     </form>
-  </details>
+  </section>
 }
 
 function SizeControls({size,busy,onDirty,onKeep}:{size:{width:number;height:number};busy:boolean;onDirty:(v:boolean)=>void;onKeep:(s:{width:number;height:number}|null)=>Promise<boolean>}) {
@@ -2556,8 +2556,11 @@ export function App() {
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
 				{selectedBoundary&&<button className="inline-action" type="button" onClick={()=>selectDiagram(selectedBoundary.home_diagram_id,selectedBoundary.component_id)}>Open home · {selectedBoundary.home_diagram_title}</button>}
-                {authoringAvailable&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked||sizeDirty} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
-                {authoringAvailable&&activeDiagram&&<SizeControls key={`size:${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedSize.width}:${selectedSize.height}`} size={selectedSize} busy={architectureBusy||placementBlocked||positionDirty} onDirty={setSizeDirty} onKeep={s=>keepSize(result,activeDiagram.id,selected.id,s)} />}
+                {authoringAvailable&&activeDiagram&&<details className="position-controls" key={`geometry:${activeDiagram.id}:${selected.id}`}>
+                  <summary>Position and size</summary>
+                  <PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked||sizeDirty} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />
+                  <SizeControls key={`size:${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedSize.width}:${selectedSize.height}`} size={selectedSize} busy={architectureBusy||placementBlocked||positionDirty} onDirty={setSizeDirty} onKeep={s=>keepSize(result,activeDiagram.id,selected.id,s)} />
+                </details>}
                 {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {authoringAvailable && <button className="inline-action" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>editAccepted(selected, result)})}>Edit component</button>}

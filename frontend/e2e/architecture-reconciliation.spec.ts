@@ -115,6 +115,7 @@ for (const outcome of ['stale', 'response-loss'] as const) {
     expect(await map.evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).position(),worker)).toEqual(pin)
     await screenshot(page,`placement-${outcome}`)
     await app.restart(); await page.reload()
+    await expect(page.getByRole('heading',{name:p.name,exact:true})).toBeVisible()
     expect(inspect(app,p).change_set_state).toBe(current.change_set_state)
   })
 }

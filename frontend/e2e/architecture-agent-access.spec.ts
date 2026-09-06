@@ -183,7 +183,7 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByText('Review the proposed architecture and its complete file changes.')).toBeVisible()
     await expect(page.getByRole('group', { name: 'Proposal' }).getByText('Route requests through a durable gateway.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Update architecture' })).toHaveCount(0)
-    await page.getByRole('button', { name: 'View proposal' }).click()
+    await page.getByRole('button', { name: 'Back to proposal' }).click()
     await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence/proposals/${changeA.id}`)
     await selectShowing(page, 'Accepted')
     await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)

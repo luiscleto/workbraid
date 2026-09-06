@@ -1382,6 +1382,7 @@ export function App() {
     if (intent.kind === 'changes') {
       if (currentReview) setReviewVisible(false)
       setWorkspaceTask('changes')
+      resetWorkingPaneScroll()
       return
     }
     if (intent.kind === 'context') {
@@ -2014,7 +2015,7 @@ export function App() {
                 <div className="index-heading">
                   <h1>Diagrams</h1>
                   {!review && authoringAvailable && activeDiagram && (
-                    <div className="diagram-context-actions"><button className="index-add diagram-title-edit" type="button" onClick={() => requestNavigation({ kind: 'edit-diagram-title', id: activeDiagram.id, title: activeDiagram.title })}>Edit title</button>{activeDiagram.parent_anchor_component_id && <button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'change-parent', id: activeDiagram.id })}>Change parent component</button>}</div>
+                    <button className="index-add diagram-title-edit" type="button" onClick={() => requestNavigation({ kind: 'edit-diagram-title', id: activeDiagram.id, title: activeDiagram.title })}>Edit title</button>
                   )}
                 </div>
                 <ul className="diagram-tree">
@@ -2138,6 +2139,7 @@ export function App() {
                 {review && (activeDiagramAnnotations
                   ? <AnnotationMarker group={activeDiagramAnnotations} onToggle={() => openReviewAnnotation(activeDiagramAnnotations)} />
                   : !submittedReview && <AnnotationAddMarker label={`Comment on ${activeDiagram.title}`} onClick={openDiagramComment} />)}
+                {!review && authoringAvailable && activeDiagram.parent_anchor_component_id && <button className="diagram-parent-action" type="button" onClick={() => requestNavigation({ kind: 'change-parent', id: activeDiagram.id })}>Change parent component</button>}
               </nav>
             )}
             {reviewPresentation && activeDiagram && ((!submittedReview && reviewCommentTarget?.anchor.kind === 'diagram' && reviewCommentTarget.contextKey.startsWith('diagram-map:')) || diagramAnnotationCards.length > 0) && (
@@ -2225,6 +2227,7 @@ export function App() {
             )}
           </section>}
           <aside className="working-pane" aria-label="Architecture task" ref={workingPaneRef}>
+            {result.changes && !review && !reconciliation && !creatingChangeSet && workspaceTask !== 'changes' && <nav className="proposal-task-navigation" aria-label="Proposal task"><button className="text-action" type="button" disabled={architectureBusy} onClick={() => requestNavigation({ kind: 'changes' })}>Back to proposal</button></nav>}
             {reconciliation ? <ReconciliationTask
               key={reconciliation.inputs.change_set_state}
               name={result.changes?.name ?? 'Proposal'}
@@ -2855,6 +2858,14 @@ function ChangesTask({
           </div>
         </div>
         <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : changes.lifecycle === 'no_longer_active' ? 'Proposal no longer active' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
+        {!activeReviewSubmission && <nav className="proposal-task-navigation" aria-label="Proposal task">
+          {onContinueEditing && <button className="text-action" type="button" disabled={busy} onClick={onContinueEditing}>Back to proposal</button>}
+          {changes.lifecycle === 'active' && onSubmitReview && <button className="text-action" type="button" onClick={() => {
+            const heading = document.getElementById('review-feedback-heading')
+            heading?.focus()
+            heading?.scrollIntoView?.({ block: 'start' })
+          }}>Write review</button>}
+        </nav>}
         {activeReviewSubmission && (
           <>
             <nav className="submitted-review-navigation" aria-label="Review navigation">
@@ -2957,7 +2968,6 @@ function ChangesTask({
         <div className="change-actions">
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
           {!activeReviewSubmission && !readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
-          {!activeReviewSubmission && onContinueEditing && <button className="secondary-action" type="button" disabled={busy} onClick={onContinueEditing}>{readOnly ? 'View proposal' : 'Continue editing'}</button>}
           {discardAction}
         </div>
         {discardConfirming && <DiscardChangesDialog busy={busy} onCancel={onCancelDiscard} onDiscard={onDiscard} />}
@@ -2982,8 +2992,8 @@ function ChangesTask({
         : changes.out_of_date
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
           : 'These changes have not updated Architecture yet.'}</p>
-      <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
       {onReconcile && <div className="proposal-reconciliation-action"><button className="inline-action" type="button" disabled={busy} onClick={onReconcile}>Reconcile with Accepted</button><p>Combine current Accepted work with this proposal and resolve conflicting changes.</p></div>}
+      <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
       <h3 className="proposal-work-heading">Architecture work in this proposal</h3>
       <ul>
         {changes.components.map((component) => {
@@ -3378,12 +3388,16 @@ function ReviewComposer({
   const [author, setAuthor] = useState('')
   const [verdict, setVerdict] = useState<ReviewSubmissionSummary['verdict']>('comment')
   const [body, setBody] = useState('')
+  const submitReasonID = useId()
   const dirty = author !== '' || body !== '' || comments.length > 0 || verdict !== 'comment'
   useEffect(() => { onDirty(dirty); return () => onDirty(false) }, [dirty, onDirty])
   const valid = author.trim() !== '' && (verdict !== 'comment' || body.trim() !== '' || comments.length > 0)
+  const submitReason = unfinishedComment ? 'Add or cancel the open comment before submitting.'
+    : !author.trim() ? 'Enter a reviewer name.'
+      : !valid ? 'Add a review summary or a comment to submit a Comment review.' : undefined
   return (
     <section className="review-composer" aria-labelledby="review-feedback-heading">
-      <div className="review-section-heading"><h3 id="review-feedback-heading">Submit feedback</h3><span>Informational only</span></div>
+      <div className="review-section-heading"><h3 id="review-feedback-heading" tabIndex={-1}>Submit feedback</h3><span>Informational only</span></div>
       <p className="review-submission-guidance">Add comments on the map or beside the content you’re reviewing. They will be included here when you submit.</p>
       <label>Reviewer name<input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="Your name or agent label" /></label>
       <label>Conclusion<select value={verdict} onChange={(event) => setVerdict(event.target.value as ReviewSubmissionSummary['verdict'])}><option value="comment">Comment</option><option value="approve">Approve</option><option value="request_changes">Request changes</option></select></label>
@@ -3397,8 +3411,8 @@ function ReviewComposer({
           {renderEditor(`review-summary:${comment.id}`)}
         </li>)}</ol>
       </section>}
-      {unfinishedComment && <p className="field-hint">Add or cancel the open comment before submitting.</p>}
-      <button className="inline-action" type="button" disabled={busy || !valid || unfinishedComment} onClick={() => onSubmit({ author, verdict, body, comments: comments.map(({ body: commentBody, anchor }) => ({ body: commentBody, anchor })) })}>{busy ? 'Submitting…' : 'Submit review'}</button>
+      {submitReason && <p className="field-hint" id={submitReasonID}>{submitReason}</p>}
+      <button className="inline-action" type="button" aria-describedby={submitReason ? submitReasonID : undefined} disabled={busy || !valid || unfinishedComment} onClick={() => onSubmit({ author, verdict, body, comments: comments.map(({ body: commentBody, anchor }) => ({ body: commentBody, anchor })) })}>{busy ? 'Submitting…' : 'Submit review'}</button>
       <p className="field-hint">This records feedback on this exact version. It does not update Architecture.</p>
     </section>
   )

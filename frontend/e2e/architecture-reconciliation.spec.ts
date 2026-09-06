@@ -221,6 +221,7 @@ for (const outcome of ['already applied', 'invalidated review', 'lost response']
         expect(inspect(app, p)).toEqual(before)
       } else {
         await expect(page.getByText('WorkBraid could not confirm what happened. Open this project again to check its current architecture.')).toBeVisible()
+        await expect(page.getByText('These changes have not updated Architecture yet.')).toHaveCount(0)
         await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeDisabled()
         expect(inspect(app, p).lifecycle).toBe('applied')
         expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(published.revision)

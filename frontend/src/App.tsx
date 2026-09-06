@@ -3029,11 +3029,11 @@ function ChangesTask({
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
       <div className="pane-heading"><p className="eyebrow">{changes.lifecycle === 'applied' ? 'Accepted proposal' : 'Open proposal'}</p><h2 id="changes-heading">{changes.name}</h2></div>
-      <p className="proposal-status">{changes.lifecycle === 'applied'
+      {!acceptanceUnknown && <p className="proposal-status">{changes.lifecycle === 'applied'
         ? 'This is the proposal that updated Architecture. It cannot be changed.'
         : changes.out_of_date
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
-          : 'These changes have not updated Architecture yet.'}</p>
+          : 'These changes have not updated Architecture yet.'}</p>}
       {onReconcile && <div className="proposal-reconciliation-action"><button className="inline-action" type="button" disabled={busy} onClick={onReconcile}>Reconcile with Accepted</button><p>Combine current Accepted work with this proposal and resolve conflicting changes.</p></div>}
       <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
       <h3 className="proposal-work-heading">Architecture work in this proposal</h3>

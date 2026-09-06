@@ -1,6 +1,6 @@
 import { expect, test as base, type Page } from '@playwright/test'
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, mkdtempSync, openSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -200,6 +200,81 @@ for (const side of ['accepted', 'proposed'] as const) {
     expect(diagrams.find((d: any) => d.id === runtime).parent_anchor_component_id).toBe(side === 'accepted' ? worker : gateway)
   })
 }
+
+test('expanded child assignments retire the old locator before Check and Apply', async ({ app, page }) => {
+  const setup = proposal(app, 'Initial composition')
+  const gateway = component(app, setup, 'Gateway'); const worker = component(app, setup, 'Worker'); const ledger = component(app, setup, 'Ledger')
+  const operations = detail(app, setup, gateway, 'Operations'); const runtime = detail(app, setup, worker, 'Runtime')
+  accept(app, setup)
+  const p = proposal(app, 'Relocate Runtime')
+  mutate(app, p, ['diagram', 'reassign-detail'], ['--diagram-id', runtime, '--anchor-component-id', ledger])
+  mutate(app, p, ['change-set', 'edit-proposal'], ['--proposal-file', '-'], 'Keep all three diagrams.\r\n')
+  const a = proposal(app, 'Ledger detail')
+  const ledgerDetail = detail(app, a, ledger, 'Ledger detail'); accept(app, a)
+  const before = inspect(app, p)
+  const accepted = app.cli(['architecture', 'inspect']).context.accepted_revision
+  await openProposal(app, page, p)
+  await page.getByRole('button', { name: 'Reconcile with Accepted', exact: true }).click()
+  const task = page.locator('.reconciliation-task')
+  await task.getByRole('button', { name: 'Choose manually', exact: true }).click()
+  await task.getByRole('group', { name: 'Parent component for Ledger detail', exact: true }).getByRole('radio', { name: /Ledger/ }).check()
+  await task.getByRole('group', { name: 'Parent component for Runtime', exact: true }).locator('..').getByText('Other parent components (may expand this group)', { exact: true }).click()
+  await task.getByRole('group', { name: 'Other parent for Runtime', exact: true }).getByRole('radio', { name: 'Gateway', exact: true }).check()
+  const expansionResponse = page.waitForResponse((response) => response.url().endsWith('/reconcile-preview'))
+  await task.getByRole('button', { name: 'Check choices', exact: true }).click()
+  const expansion = await (await expansionResponse).json()
+  expect(expansion.ok).toBe(true)
+  expect(expansion.result.status).toBe('needs_resolution')
+  await expect(task.getByText('The affected group expanded. Assign every involved child and check these choices again.', { exact: true })).toBeVisible()
+  await task.locator('.reconciliation-context').first().click()
+  // The sorted Diagram UUIDs can put the new row anywhere. Previously chosen
+  // parents must stay with their exact Diagram identities, never row positions.
+  await expect(task.getByRole('group', { name: 'Parent component for Ledger detail', exact: true }).getByRole('radio', { name: /Ledger/ })).toBeChecked()
+  await expect(task.getByRole('group', { name: 'Parent component for Runtime', exact: true }).getByRole('radio', { name: /Gateway/ })).toBeChecked()
+  await task.getByRole('group', { name: 'Parent component for Operations', exact: true }).getByRole('radio', { name: /Worker/ }).check()
+  await screenshot(page, 'expanded-complete-assignments')
+  expect(inspect(app, p)).toEqual(before)
+  const checkedResponse = page.waitForResponse((response) => response.url().endsWith('/reconcile-preview'))
+  await task.getByRole('button', { name: 'Check choices', exact: true }).click()
+  const response = await checkedResponse
+  const request = response.request().postDataJSON()
+  const checked = await response.json()
+  writeFileSync(join(evidence, 'expanded-check.json'), JSON.stringify({ request, response: checked }, null, 2))
+  expect(request.resolutions).toHaveLength(1)
+  expect(request.resolutions[0].locator.diagram_ids).toEqual([operations, runtime, ledgerDetail].sort())
+  expect(request.resolutions[0].value.detail_anchors).toEqual(expect.arrayContaining([
+    { diagram_id: ledgerDetail, anchor_component_id: ledger },
+    { diagram_id: runtime, anchor_component_id: gateway },
+    { diagram_id: operations, anchor_component_id: worker },
+  ]))
+  expect(checked.ok).toBe(true)
+  expect(checked.result.status).toBe('ready')
+  expect(inspect(app, p)).toEqual(before)
+  expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(accepted)
+  await expect(task.locator('.reconciliation-context')).toHaveCount(1)
+  await screenshot(page, 'expanded-ready')
+  const appliedResponse = page.waitForResponse((response) => response.url().endsWith('/reconcile-apply'))
+  await task.getByRole('button', { name: 'Apply reconciliation', exact: true }).click()
+  const applied = await appliedResponse
+  expect(applied.request().postDataJSON().resolutions).toEqual(request.resolutions)
+  expect((await applied.json()).ok).toBe(true)
+  await expect(task).toHaveCount(0)
+  const result = inspect(app, p)
+  expect(result.base_revision).toBe(accepted)
+  expect(result.generation).toBe(before.generation + 1)
+  expect(result.name).toBe(before.name)
+  expect(result.proposal_markdown).toBe('Keep all three diagrams.\r\n')
+  expect(result.proposal_markdown).toBe(before.proposal_markdown)
+  expect(result.review).toBeNull()
+  for (const assignment of request.resolutions[0].value.detail_anchors) {
+    expect(result.candidate.diagrams.find((diagram: any) => diagram.id === assignment.diagram_id).parent_anchor_component_id).toBe(assignment.anchor_component_id)
+  }
+  expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(accepted)
+  await app.restart()
+  await page.reload()
+  expect(inspect(app, p).change_set_state).toBe(result.change_set_state)
+  expect(inspect(app, p).candidate_tree).toBe(result.candidate_tree)
+})
 
 test('no free anchor remains unresolved without deleting either child', async ({ app, page }) => {
   const setup = proposal(app, 'Only one parent'); const gateway = component(app, setup, 'Gateway'); accept(app, setup)

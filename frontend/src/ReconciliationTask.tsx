@@ -24,6 +24,37 @@ export type ReconciliationPreview = {
   remaining_changes?: boolean
 }
 const key = (locator: ReconciliationLocator) => JSON.stringify(locator)
+function expandsComposition(next: ReconciliationLocator, prior: ReconciliationLocator): boolean {
+  return next.kind === 'composition' && prior.kind === 'composition' && next.reason === prior.reason
+    && (next.component_ids?.length ?? 0) + (next.diagram_ids?.length ?? 0) > (prior.component_ids?.length ?? 0) + (prior.diagram_ids?.length ?? 0)
+    && (prior.component_ids ?? []).every((id) => next.component_ids?.includes(id))
+    && (prior.diagram_ids ?? []).every((id) => next.diagram_ids?.includes(id))
+}
+function rebindComposition(locator: ReconciliationLocator, prior: ReconciliationResolution[]): ReconciliationResolution {
+  const homes = new Map<string, Home>(), references = new Map<string, Reference>(), anchors = new Map<string, Anchor>(), counts = new Map<string, Count>()
+  for (const { value } of prior) {
+    for (const home of value?.homes ?? []) {
+      if (locator.component_ids?.includes(home.component_id)) homes.set(JSON.stringify([home.component_id, home.diagram_id]), home)
+    }
+    for (const ref of value?.references ?? []) {
+      if (locator.component_ids?.includes(ref.component_id) && locator.diagram_ids?.includes(ref.diagram_id)) references.set(JSON.stringify([ref.diagram_id, ref.component_id, ref.present]), ref)
+    }
+    for (const anchor of value?.detail_anchors ?? []) {
+      if (locator.diagram_ids?.includes(anchor.diagram_id)) anchors.set(JSON.stringify([anchor.diagram_id, anchor.anchor_component_id]), anchor)
+    }
+    for (const count of value?.relationship_counts ?? []) {
+      if (locator.component_ids?.includes(count.source_id) && locator.component_ids?.includes(count.target_id)) counts.set(JSON.stringify([count.source_id, count.target_id, count.label, count.count]), count)
+    }
+  }
+  // Deduplicate identical fact/value pairs only. Contradictory values remain
+  // explicit for Check to reject; no row matching or last-writer-wins choice.
+  return { locator, choice: prior.every((item) => item.choice === prior[0].choice) ? prior[0].choice : 'manual', value: {
+    ...(homes.size ? { homes: [...homes.values()] } : {}),
+    ...(references.size ? { references: [...references.values()] } : {}),
+    ...(anchors.size ? { detail_anchors: [...anchors.values()] } : {}),
+    ...(counts.size ? { relationship_counts: [...counts.values()] } : {}),
+  } }
+}
 const reasons: Record<string, string> = { competing_children: 'Two detail diagrams need distinct parents', home_reference_overlap: 'A home and reference overlap', missing_home: 'Choose an existing home', missing_target: 'A proposed fact needs a missing object', missing_parent: 'A detail diagram needs a parent', unreachable_diagram: 'Connect this diagram to the main diagram', hierarchy_cycle: 'Resolve the circular hierarchy' }
 const unsupported: Record<string, string> = { replace_identity: 'These independently added objects use the same ID but have different content or dependent facts. Identity replacement is unavailable. Return to the proposal to correct the collision.', restore_component: 'Restoring this removed Component is unavailable. Accepted can keep it absent; dependent proposed facts need explicit choices.', restore_diagram: 'Restoring this removed Diagram is unavailable. Accepted can keep it absent; dependent proposed facts need explicit choices.', reassign_root: 'The main Diagram cannot be reassigned as a child.', restore_source: 'This source or path cannot be restored through ordinary authoring.', delete_component: 'Deleting an Accepted Component is unavailable.', delete_diagram: 'Deleting an Accepted Diagram is unavailable.' }
 
@@ -86,20 +117,23 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
     setBusy(true); setError('')
     try {
       const next = await onCheck(Object.values(choices))
+      // The response may also describe the original invalid subset. Its
+      // expanded group is now the decision context and supersedes that locator.
+      const conflicts = next.conflicts.filter((conflict) => !next.conflicts.some((other) => expandsComposition(other.locator, conflict.locator)))
       // Expanded groups retain values by stable fact identity. They must be
       // checked again with the newly returned locator, never old row indexes.
       const retained: Record<string, ReconciliationResolution> = {}
       let expanded = false
-      for (const conflict of next.conflicts) {
+      for (const conflict of conflicts) {
         const exact = choices[key(conflict.locator)]
         if (exact) { retained[key(conflict.locator)] = exact; continue }
         if (conflict.locator.kind === 'composition') {
-          const prior = Object.values(choices).find((choice) => choice.locator.kind === 'composition' && choice.locator.reason === conflict.locator.reason && choice.locator.diagram_ids?.every((id) => conflict.locator.diagram_ids?.includes(id)) && choice.locator.component_ids?.every((id) => conflict.locator.component_ids?.includes(id)))
-          if (prior) { retained[key(conflict.locator)] = { ...prior, locator: conflict.locator }; expanded = true }
+          const prior = Object.values(choices).filter((choice) => expandsComposition(conflict.locator, choice.locator))
+          if (prior.length) { retained[key(conflict.locator)] = rebindComposition(conflict.locator, prior); expanded = true }
         }
       }
-      setChoices(retained); setPreview(next); setChecked(!expanded)
-      if (!next.conflicts.some((conflict) => key(conflict.locator) === selected)) setSelected(next.conflicts[0] ? key(next.conflicts[0].locator) : '')
+      setChoices(retained); setPreview({ ...next, conflicts }); setChecked(!expanded)
+      if (!conflicts.some((conflict) => key(conflict.locator) === selected)) setSelected(conflicts[0] ? key(conflicts[0].locator) : '')
       if (expanded) setError('The affected group expanded. Assign every involved child and check these choices again.')
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Choices could not be checked.') }
     finally { setBusy(false) }

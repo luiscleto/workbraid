@@ -524,7 +524,12 @@ export function ArchitectureMap({
           try {if(!await g.submit(g.node.data('componentID'),size)&&!g.node.cy().destroyed())applyDisplaySize(g.node,g.start)}
           finally{placementPending.current=false;if(graph.current&&placementHandler.current)graph.current.nodes('[!uiAnnotation]').grabify();syncOverlays.current()}
         }}
-        onClick={()=>document.querySelector<HTMLInputElement>('[aria-label="Node width"]')?.focus()}>↘</button></div>}
+        onClick={()=>{
+          const width=document.querySelector<HTMLInputElement>('[aria-label="Node width"]')
+          const disclosure=width?.closest('details')
+          if(disclosure)disclosure.open=true
+          width?.focus()
+        }}>↘</button></div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
         if(graph.current)fitDiagram(graph.current,fitPadding)
         syncOverlays.current()

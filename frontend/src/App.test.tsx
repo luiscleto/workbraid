@@ -200,6 +200,34 @@ afterEach(() => {
   graphHarness.fail = false
 })
 
+it('keeps position and size in one initially collapsed disclosure without losing drafts', async () => {
+  window.history.replaceState({}, '', '/projects/example-project')
+  const fetchMock=vi.fn(() => response(architecture()))
+  vi.stubGlobal('fetch',fetchMock)
+  const user=userEvent.setup()
+  render(<App />)
+  await user.click((await screen.findAllByRole('button',{name:'Worker'}))[0])
+  const summary=screen.getByText('Position and size',{selector:'summary'})
+  const disclosure=summary.closest('details')!
+  expect(disclosure).not.toHaveAttribute('open')
+  expect(disclosure.querySelectorAll('details')).toHaveLength(0)
+  expect(screen.getByLabelText('Node width')).not.toBeVisible()
+  expect(screen.getByLabelText('Position X')).not.toBeVisible()
+  await user.click(summary)
+  expect(screen.getByLabelText('Position X')).toBeVisible()
+  expect(screen.getByLabelText('Node width')).toBeVisible()
+  await user.clear(screen.getByLabelText('Node width'))
+  await user.type(screen.getByLabelText('Node width'),'320')
+  expect(screen.getByRole('button',{name:'Keep position'})).toBeDisabled()
+  await user.click(summary)
+  await user.click(summary)
+  expect(screen.getByLabelText('Node width')).toHaveValue(320)
+  await user.click(within(screen.getByRole('region',{name:'Node size'})).getByRole('button',{name:'Clear edits'}))
+  expect(screen.getByLabelText('Node width')).toHaveValue(116)
+  expect(screen.getByRole('button',{name:'Keep position'})).toBeEnabled()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
 describe('slug-native project entry', () => {
   it('lists private projects and creates a project by name', async () => {
     const fetchMock = vi.fn()

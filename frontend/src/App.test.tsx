@@ -449,6 +449,58 @@ describe('slug workspace and reusable references', () => {
 })
 
 describe('candidate review regressions', () => {
+  it.each([
+    { code: 'update_failed', status: 500, stale: false, applied: false },
+    { code: 'architecture_stale', status: 409, stale: true, applied: false },
+    { code: 'updated_reload', status: 500, stale: true, applied: true },
+    { code: 'update_uncertain', status: 500, stale: true, applied: false },
+  ])('does not select Accepted for $code after Update', async ({ code, status, stale, applied }) => {
+    const initial = reviewedArchitecture()
+    const proposal = initial.changes
+    proposal.generation = proposal.review.generation
+    proposal.candidate_tree = proposal.review.candidate_tree
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${proposal.id}/review`)
+    const failure = architecture({ stale, action_error: code, action_change_set_id: proposal.id,
+      changes: { ...proposal, review: undefined, lifecycle: applied ? 'applied' : 'active', ...(applied ? { applied_revision: 'd'.repeat(40) } : {}) },
+    })
+    const fetchMock = vi.fn().mockImplementationOnce(() => response(initial)).mockImplementationOnce(() => response(failure, status))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Update architecture' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Showing Steady lantern/ })).toBeEnabled())
+    expect(screen.queryByRole('button', { name: 'Showing Accepted' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/architecture/accept')
+  })
+
+  it.each(['proposal', 'generation', 'candidate', 'store'] as const)('keeps an unmatched $0 receipt unconfirmed', async mismatch => {
+    const initial = reviewedArchitecture()
+    const proposal = initial.changes
+    proposal.generation = proposal.review.generation
+    proposal.candidate_tree = proposal.review.candidate_tree
+    window.history.replaceState({}, '', `/projects/example-project/proposals/${proposal.id}/review`)
+    const receipt = { ...proposal, lifecycle: 'applied', applied_revision: 'd'.repeat(40),
+      ...(mismatch === 'proposal' ? { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' } : {}),
+      ...(mismatch === 'generation' ? { generation: proposal.generation + 1 } : {}),
+      ...(mismatch === 'candidate' ? { candidate_tree: 'e'.repeat(40) } : {}),
+    }
+    const reported = architecture({ revision: 'd'.repeat(40), changes: receipt, action_change_set_id: receipt.id,
+      ...(mismatch === 'store' ? { store_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' } : {}),
+    })
+    const fetchMock = vi.fn().mockImplementationOnce(() => response(initial)).mockImplementationOnce(() => response(reported))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Update architecture' }))
+    expect(await screen.findByText('WorkBraid could not confirm what happened. Open this project again to check its current architecture.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Showing Accepted' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('submits immutable anchored feedback and opens its exact review route', async () => {
     const changeSetID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const reviewID = '77777777-7777-4777-8777-777777777777'

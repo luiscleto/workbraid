@@ -148,7 +148,90 @@ test('ordinary browser Change parent component keeps the existing child', async 
   await expect(page.getByRole('region', { name: 'Diagram changes', exact: true })).toContainText(movement)
   expect(inspect(app, active).change_set_state).toBe(stateBeforeRestart.change_set_state)
   expect(inspect(app, active).candidate_tree).toBe(stateBeforeRestart.candidate_tree)
+  const acceptedResponse = page.waitForResponse((response) => response.url().endsWith('/api/architecture/accept'))
+  const requests: string[] = []
+  page.on('request', request => { if (request.method() === 'POST') requests.push(new URL(request.url()).pathname) })
+  await page.getByRole('button', { name: 'Update architecture', exact: true }).click()
+  const acceptedPayload = await (await acceptedResponse).json()
+  await expect(page.getByRole('button', { name: 'Showing Accepted', exact: true })).toBeVisible()
+  await expect(page).toHaveURL(`${app.origin}/projects/${app.slug}`)
+  await expect(page.getByText('Accepted proposal', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('group', { name: 'Review side', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Review context', exact: true })).toHaveCount(0)
+  await expect(page.locator('.component-documentation').getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible()
+  expect(acceptedPayload.diagrams.find((item: any) => item.id === child).parent_anchor_component_id).toBe(worker)
+  expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(acceptedPayload.revision)
+  await page.locator('.working-pane .technical-details > summary').click()
+  await expect(page.locator('.working-pane .technical-details dd').filter({ hasText: acceptedPayload.revision })).toBeVisible()
+  expect(requests).toEqual(['/api/architecture/accept'])
+  await screenshot(page, 'ordinary-parent-after-update')
+  writeFileSync(join(evidence, 'ordinary-parent-accepted-response.json'), JSON.stringify(acceptedPayload, null, 2))
+  await page.getByRole('button', { name: 'Showing Accepted', exact: true }).click()
+  await page.getByRole('group', { name: 'Accepted proposals', exact: true }).getByRole('option', { name: active.name, exact: true }).click()
+  await expect(page.getByText('Accepted proposal', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(`${app.origin}/projects/${app.slug}/proposals/${active.id}`)
+  await page.goto(`${app.origin}/projects/${app.slug}/proposals/${active.id}/review`)
+  await expect(page.getByRole('region', { name: 'Diagram changes', exact: true }).locator('.reassignment-review-label')).toHaveText(movement)
+  await expect(page.getByRole('button', { name: 'Update architecture', exact: true })).toHaveCount(0)
 })
+
+for (const outcome of ['already applied', 'invalidated review', 'lost response'] as const) {
+  test(`Update landing handles ${outcome} without replaying acceptance`, async ({ app, page }) => {
+    const p = proposal(app, 'Gateway proposal'); component(app, p, 'Gateway')
+    const bound = app.cli(['change-set', 'review', ...state(app, p)]).result
+    await page.goto(`${app.origin}/projects/${app.slug}/proposals/${p.id}/review`)
+    const update = page.getByRole('button', { name: 'Update architecture', exact: true })
+    await expect(update).toBeVisible()
+    if (outcome === 'already applied') {
+      accept(app, p)
+      const later = proposal(app, 'Later work'); component(app, later, 'Later Accepted'); accept(app, later)
+    } else if (outcome === 'invalidated review') {
+      mutate(app, p, ['change-set', 'rename'], ['--name', 'Changed proposal'])
+      app.cli(['change-set', 'review', ...state(app, p)])
+    }
+    const before = inspect(app, p)
+    const acceptedBefore = app.cli(['architecture', 'inspect']).context.accepted_revision
+    let published: any
+    if (outcome === 'lost response') await page.route('**/api/architecture/accept', async route => {
+      const response = await route.fetch()
+      expect(response.status()).toBe(200)
+      published = await response.json()
+      await route.abort('failed')
+    })
+    const requests: string[] = []
+    page.on('request', request => { if (request.method() === 'POST') requests.push(new URL(request.url()).pathname) })
+    const response = outcome === 'lost response' ? undefined : page.waitForResponse(response => response.url().endsWith('/api/architecture/accept'))
+    await update.click()
+    if (response) published = await (await response).json()
+    if (outcome === 'already applied') {
+      await expect(page.getByRole('button', { name: 'Showing Accepted', exact: true })).toBeVisible()
+      await expect(page).toHaveURL(`${app.origin}/projects/${app.slug}`)
+      expect(published.revision).toBe(acceptedBefore)
+      expect(published.changes.applied_revision).not.toBe(published.revision)
+      expect(published.changes.candidate_tree).toBe(bound.candidate_tree)
+      await page.getByRole('navigation', { name: 'Diagrams and components' }).getByRole('button', { name: 'Later Accepted', exact: true }).click()
+      await expect(page.locator('.component-documentation').getByRole('heading', { name: 'Later Accepted', exact: true })).toBeVisible()
+      expect(inspect(app, p)).toEqual(before)
+    } else {
+      await expect(page.getByRole('button', { name: 'Showing Accepted', exact: true })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Update architecture', exact: true })).toHaveCount(0)
+      if (outcome === 'invalidated review') {
+        await expect(page.getByText('The changes were edited after this review. Review them again before updating architecture.')).toBeVisible()
+        expect(published.action_error).toBe('review_changed')
+        expect(inspect(app, p)).toEqual(before)
+      } else {
+        await expect(page.getByText('WorkBraid could not confirm what happened. Open this project again to check its current architecture.')).toBeVisible()
+        await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeDisabled()
+        expect(inspect(app, p).lifecycle).toBe('applied')
+        expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(published.revision)
+      }
+    }
+    if (outcome !== 'lost response') expect(app.cli(['architecture', 'inspect']).context.accepted_revision).toBe(acceptedBefore)
+    expect(requests).toEqual(['/api/architecture/accept'])
+    await screenshot(page, `accepted-landing-${outcome.replaceAll(' ', '-')}`)
+    writeFileSync(join(evidence, `accepted-landing-${outcome.replaceAll(' ', '-')}.json`), JSON.stringify({ before, published, after: inspect(app, p), requests }, null, 2))
+  })
+}
 
 test('one reassignment preserves separate Before and With feedback across parent contexts and restart', async ({ app, page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })

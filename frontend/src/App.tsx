@@ -1201,9 +1201,25 @@ export function App() {
       })
       const payload = (await response.json()) as ArchitectureResult | ErrorPayload
       if ('state' in payload) {
+        const accepted = response.ok && !payload.action_error && !payload.stale
+        if (accepted) {
+          const receipt = payload.changes
+          if (payload.store_id !== result.store_id || payload.action_change_set_id !== result.changes?.id ||
+            receipt?.id !== result.changes?.id || receipt?.lifecycle !== 'applied' || !receipt.applied_revision ||
+            receipt.base_revision !== review.base_revision || receipt.generation !== review.generation || receipt.candidate_tree !== review.candidate_tree) {
+            setArchitectureNotice('WorkBraid could not confirm what happened. Open this project again to check its current architecture.')
+            return
+          }
+        }
         setAcceptanceUnknown(false)
         window.history.replaceState({}, '', projectRoutePath(payload.project_slug))
-        enterWorkspace(payload, payload.changes ? 'changes' : 'documentation')
+        if (accepted) {
+          enterWorkspace({ ...payload, submitted_review: undefined, action_change_set_id: undefined }, payload.components.length ? 'documentation' : 'empty', 'accepted')
+          setChangeSetTextDirty(false)
+          resetWorkingPaneScroll()
+        } else {
+          enterWorkspace(payload, payload.changes ? 'changes' : 'documentation')
+        }
       } else {
         setArchitectureNotice('WorkBraid could not confirm what happened. Open this project again to check its current architecture.')
       }

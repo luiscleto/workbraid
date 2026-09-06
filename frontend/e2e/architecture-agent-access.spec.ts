@@ -92,6 +92,15 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(page.getByTestId('raw-diff')).toContainText('Gateway')
     await page.getByRole('button', { name: 'Update architecture' }).click()
     await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence`)
+    await expect(page.getByRole('button', { name: 'Showing Accepted', exact: true })).toBeVisible()
+    await expect(page.locator('.component-documentation').getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible()
+    await expect(page.locator('.component-documentation')).toContainText('Routes requests.')
+    await expect(page.getByRole('group', { name: 'Review side', exact: true })).toHaveCount(0)
+    const revisionR1 = agent(binary, application.origin, ['architecture', 'inspect']).context.accepted_revision!
+    expect(revisionR1).not.toBe(revisionR0)
+    expect(await displayedRevision(page)).toBe(revisionR1)
+    await selectShowing(page, 'Change A')
+    await expect(page).toHaveURL(`${application.origin}/projects/change-set-evidence/proposals/${changeA.id}`)
     await expect(page.getByRole('heading', { name: 'Change A', level: 2 })).toBeVisible()
     await expect(page.getByText('Accepted proposal')).toBeVisible()
     await expect(page.getByText('This is the proposal that updated Architecture. It cannot be changed.')).toBeVisible()
@@ -103,8 +112,6 @@ test('built browser and Agent v2 preserve independent active/applied proposals a
     await expect(acceptedMarkdown.locator('table').locator('xpath=..')).toHaveClass(/markdown-table-scroll/)
     await expect(page.getByLabel('Name')).toHaveCount(0)
     await expect(page.getByText(/Out of date with Accepted/)).toHaveCount(0)
-    const revisionR1 = agent(binary, application.origin, ['architecture', 'inspect']).context.accepted_revision!
-    expect(revisionR1).not.toBe(revisionR0)
 
     await selectShowing(page, 'Change B · Out of date')
     await expect(page.getByText('Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.')).toBeVisible()

@@ -272,3 +272,97 @@ If any supported resolved result cannot round-trip through the one normal concre
 Exclude deletion/restore, free-floating/multiply parented Diagrams, automatic anchors, arbitrary hierarchy editing, Relationship/appearance IDs, generic graph/merge/operation frameworks, raw YAML/file patches, reconciliation-only trees, persistent resolution sessions, proposal/conflict history, extra refs/registries, merge commits, background rebase, merge-and-accept, comment migration/resolution/verdict policy, SQLite/worktrees as product storage, remote collaboration/permissions, other verticals and rich-diagram Phase 3.
 
 After explicit Reconciliation 1 PASS and completion recording, stop. No Phase 3 planning or implementation.
+
+## Execution result
+
+Status: Complete — human checkpoint PASS on 2026-09-06, including the human's direction to verify the final Accepted-landing correction without another manual review.
+
+### Exact provenance
+
+- Completed Reviews prerequisite: `94787a8b05fdc502aedd07aae34b5d016b7106a3`.
+- Approved Reconciliation baseline/roadmap: `697bdb16cbd34b3dfa40c805d9e1398a72bcbb13`; original packet-inclusive worker base: `802562170b56cd48eb8dc4bb1cec5436145ad0bc`.
+- Authorized ordinary serializer clarification: `a332f64b4d04fbe001c21b56672373c49ca99fbd`; its packet amendment: `1e2b499f3a66529d4e60639e56b4f6b1e0702381`.
+- Approved alpha compatibility clarification: `510065236f21b919424ade4b537d33cbf3d68e72`; exact resumed packet-inclusive worker base: `8ea1ce32df004d7d5910176dd07ff7018558f9c1`.
+- The same implementation worker continued through ordinary H1 serialization (`1cf69b0`), ordinary reassignment (`7a91c54`), reconciliation (`afda8b1`), bounded structural-context/choice corrections (`e4aae3a`, `d5aa9fd`, `7c4ea34`, `8b213fa`), contrast (`bb5050e`), task/review discoverability (`8cd238e`), grouped move presentation (`027f404`), and the final Accepted-landing correction recorded below.
+- Accepted landing: `2d3a0aba2ff2f6cb4ad1a602e339e45bbc8fce68`; unknown-status corrections: `ffa8f150dc9071df76b566e7d7de6501a49155f0` and `22e45e977be0de4276b3a40c7ab8683dd058b5bf`.
+- Final implementation: `22e45e977be0de4276b3a40c7ab8683dd058b5bf`; tree `1adf5fddb4fe87d647fac5243784bf522907bcc5`. Full implementation range: `8ea1ce32df004d7d5910176dd07ff7018558f9c1..22e45e977be0de4276b3a40c7ab8683dd058b5bf`.
+
+One existing Herdr worker, `wb_reconcile1_worker`, session `01a0738e-041f-7ff2-a295-38f581915008`, used a separate workspace/worktree. The independent reviewer, `wb_reconcile1_review`, session `01a07405-f3f7-78c3-bb37-6a5c08b12853`, reviewed the full range and bounded corrections in a separate workspace. No additional implementation worker or product increment was dispatched. Only exact reviewed commits were fast-forwarded into the clean integration tree.
+
+### Authority, corrections and independent review
+
+The implementation keeps one Manager, one ordinary typed Change Set reconstruction/validator and one accepted-ref acceptance path. Reconciliation Preview/Check changes no authoritative ref. Apply verifies exact Accepted and active state, changes only that proposal's base/generation/residual, and clears its current review. It never updates Accepted or writes a reconciliation session, receipt, history chain or merge commit. Ordinary detail reassignment is final Diagram-to-anchor composition jointly evaluated with final homes; only parent-owned links move.
+
+The original real-Git unterminated-H1 reproduction stopped feature implementation until the human approved the ordinary serializer exception. The same ordinary serializer now inserts one LF structural terminator only when an unchanged unterminated ATX/Setext H1 precedes a non-empty exact Description. Empty and already-terminated cases gain no separator, and every Description byte survives reparse. Candidate residual/reconstruction tests include the original B/A/P failure; no Reconciliation-only source override or compatibility serializer was added.
+
+Independent review required bounded structural-context and expanded-choice corrections before integration. The complete code/authority/fidelity review passed at `8b213fa954d80305ed6dfd8615825507e7d151bf`; the stronger canonical gate separately passed. Later frontend-only corrections preserved that backend evidence and received their own independent rereviews and production-browser checks. No Grok approval substituted for direct real-browser inspection.
+
+Human UX findings were fixed before closure: explanatory disabled-feedback text; discoverable return to proposal/reconciliation/design document; a compact underlined parent action without shifting the Diagram index; one readable reassignment heading retaining separate exact Before/With comment targets; and successful Update landing on Accepted rather than its retained proposal. Historical feedback remains exact. Failures and uncertain acceptance do not become apparent success.
+
+The last independent browser rereview found a pre-existing contradictory not-updated sentence after a successful server Update whose response was lost. The same worker suppressed that definitive status while the existing local unknown-outcome flag or server `update_uncertain` result applies. Root caught and prevented an assertion that would have preserved the same contradiction for server-reported uncertainty. This changes no recovery path or authority state; the existing warning and safeguards remain. The final corrected head received bounded rereview before integration.
+
+### Checks and production browser
+
+- Integrated Go checks passed at `8b213fa954d80305ed6dfd8615825507e7d151bf`: `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`, `go mod verify`. All four packages passed; modules verified. Every later delta is frontend/test-only.
+- Final integrated `npm test --prefix frontend`: 88/88 tests across four files, 11.78s. Standard `npm run build --prefix frontend` and full-range `git diff --check`: PASS. The integrated Agent Access/Reconciliation production-browser run passed all 14 cases, one worker, zero retries, 28.2s. The independent final review is `/tmp/overlays/workbraid-reconciliation1-review-22e45e9.md`: full-range PASS, with the earlier full-suite evidence plus fresh focused success/uncertainty checks and actual screenshots.
+- Final binary `workbraid-22e45e9` reports exact code revision `22e45e977be0de4276b3a40c7ab8683dd058b5bf`, `vcs.modified=false`; SHA256 `f7a3b75f5c2d40c1b1507594627e015676c208c74bc3e308034848530948f08d`. Built JS `index-C1qjAVMc.js`: SHA256 `db853e03a5c4a4c18db640a815da920c5da7127c6e43b45efb554535b33b3e21`; CSS `index-CGISThHx.css`: SHA256 `795337e6c914fe01996a68dae87dbaaa25af98d185d2a416d9861d3a06f2ee2c`. No build artifacts were committed.
+- Bounded browser cases use real temporary Go/Git authorities and runner-owned test lifecycles. They cover ordinary parent reassignment, competing-child resolution, long text/manual choices, old feedback, unsent guards, exact review/acceptance, grouped side-specific comments, restart and the final Accepted landing. No browser-owned merged tree or fake Git authority was introduced.
+- Existing Vite bundle-size advice remains non-gating. No unbounded watcher/retry loop or new test framework was added.
+
+### Parallel weak-agent and independent canonical gate
+
+Fresh Luna authors independently used CLI/embedded skill and MCP discovery against one process and one fresh project. They received business tasks, not source/design docs/private Git or command/locator tutoring. A separate weak feedback agent submitted useful exact feedback on B. A fresh weak reconciliation agent independently discovered the out-of-date proposal, checked/corrected choices, applied, inspected, reviewed and deliberately Updated. Their separate workspaces were closed after transcript capture.
+
+Project `reconciliation-agent-gate`, store `036afb15-ee35-4f2c-a29c-994773b96166`:
+
+| State | Exact revision/tree |
+| --- | --- |
+| R0 Accepted | `70c6215b79f7ff6d0e05f80c4c128cb0236129fd`; tree `2e8558cf9cb1fa767e7ee8300f05099ee8af87f8` |
+| A reviewed | `1407b78d184dd3405189a47a590c22c3fb050c66`; generation 11; tree `2a207c18ce546aaf3de1cf10dcaa8941649d530f` |
+| B originally reviewed | `02766a635adbbd98d53c2c064f68a8455a5cec18`; generation 9; tree `1857677dc17c0784e5f48c15cb897b6d65fb34a4` |
+| R1 after A Update | `0b0443601a5cb6c7c2e5399664d385dc866ad421`; sole parent R0; tree equals A |
+| B immediately after reconciliation | `1b0be48d4c251f78948a7a8d7d7747bc7215adb1`; generation 10; base/sole parent R1; tree `0c95d4c9c9c3103581c78a9e38f82c63c2978458`; no review block |
+| B subsequent ordinary Review | `15ec02fba7204640dc6d6a559eecc2a232bd404f`; same generation/tree |
+| R2 after B Update | `73c82ccac8d70372e5379e4a56fcabf9fc3a19d8`; sole parent R1; tree equals reconciled B |
+
+A is Delivery operations, UUID `33d04e89-bf3c-435a-adcd-95011b3f3869`; B is Request reliability, UUID `d1f0e424-4493-4f31-b0cf-68f35d039ad7`. Their Applied receipts are respectively `131ba87f4831c74fd31a8324e2b3fccee34f1b09` and `f05d1644a87beb44707e10ff328ca1d75c456dd1`.
+
+The resolver retained Proposed Reliable Worker title, Accepted Storage home, manual writes multiplicity four, and exact manual Description:
+
+```json
+"Processes requests with at most three attempts and bounded backoff.\n\nUses an idempotency key for every write to Records, and reports permanent failures to Retry Monitor.\n"
+```
+
+Operations `17661349-0208-4682-a4e6-3f39af613a8e` was explicitly assigned to Operations anchor; Request path `ebbb6014-0727-4810-9680-891ee229b54d` remained on Gateway. Both identities/subtrees survived. Independent Audit and Retry Monitor work and same-result Shared contracts survived. Accepted stayed exactly R1 during reconciliation. UUID/name/proposal Markdown stayed exact; one new generation, base R1 and cleared current review were verified before ordinary Review/Update.
+
+The independent stronger verifier loaded six exact proposal states through production readers and `ConstructCandidate`; every tree matched. Compared with R1, only existing worker/root blobs changed; new Retry Monitor/Request path reused exact Proposed paths/blobs/modes, and unrelated Accepted entries remained exact. No alternate representation, reconciliation ref/session/registry, SQLite, product worktree or hidden history exists.
+
+Historical review `e7f4831a-6e74-4d0d-872b-6b812dd4db0c` remains commit `f3a47bbeed215232ade566f62c7d0f50b7e7985f`, sole parent B's original generation-9 state. Its exact body/comments, Worker Markdown line 3 and Retry Monitor home-composition anchors, Before/With sources and diff survived. Reachability was verified from the review ref with `git rev-list --objects`, without active old refs or reflogs; this gate did not run GC. The earlier Reviews gate's actual GC evidence was not relabelled as a new GC run.
+
+Complete process stop/start changed PID 64618 to 22912 with connection failure between and no project selected initially. A fresh browser reopened the project route; public Accepted, Applied A/B and feedback envelopes matched exactly. The independent verifier confirmed private/public equality and one-parent topology.
+
+Discovery was not flawless: the feedback agent guessed unsupported Relationship-anchor field names, received `invalid_request` without mutation, and independently used the expressly permitted composition alternative. This is not claimed as successful Relationship-anchor discovery; it remains a bounded usability observation. The resolver independently corrected its mistyped UUID after a typed Check rejection without hints. Some batched outputs were truncated; intact Apply/immediate inspect plus independent Git/public reads establish exact state. A later Review-state observation was not used as evidence of the earlier unreviewed Apply state.
+
+### Human checkpoint and final restart
+
+Separate product-created human project `reconciliation-ui-checkpoint`, store `8dd3fa96-a761-4671-806c-c0985f4d6234`, used original Accepted R0 `f79ae15bb9ce9573c9bd00bbd56454685203ff38` and R1 `aae8caaf6b321fbc3dedab59bc7b0855c9dd47fb`.
+
+Request path proposal `fffb51a0-7fd0-4f44-9410-983896a4f29b` began reviewed at generation 9, state `b5c54056e979629885d7d5a7539b36c92f323e2f`, tree `5a66961446d7deef1da372203975de838bb0a7d3`. After human Apply it became generation 10, state `1347b92b5b6f6620781fa39c4f3559aed8957983`, base R1, tree `2b06c89e8e972276fcd219e64fb7643a1ea1209f`, with no current review and unchanged Accepted. The human kept Proposed title and exact long Description, Accepted Storage home, four writes, Request path on Gateway and Operations on Operations anchor. Earlier review `6c1119bb-2b0b-410a-9c98-538537d97cb0` remained attached to the original generation 9.
+
+The human exercised ordinary parent authoring/composition-only review in separate Parent component check `94c64b41-6711-44ef-838a-3f63d15cb858` and passed it. Its generation-1 reviewed state `86363a7e384dbf1e940188ae5194e126a72a1d08`, tree `46ce7dd2e456b3ab2d0f10784fae875d9afbb6bc`, changes only the Operations parent link. It was not accepted or silently deleted; it remains preserved as an out-of-date test proposal after the main acceptance.
+
+The human then deliberately Updated the main reviewed proposal and supplied final Accepted `350875a349baf56180e60189e574e67a01cb7e64`. It has sole parent R1 and exactly the reconciled candidate tree. Main Applied receipt is `20c91ce60ae965a29d07d6c346b69c90a743cfe3`, generation 10, original post-reconciliation base R1. Root verified full accepted Component/Diagram projections against the reconciled proposal, exact old feedback, and all retained proposal refs.
+
+The human passed behavior/UX after corrections, requested successful Update land on Accepted, then explicitly said: “Yea, no need for me to review that change, just confirm it works after doing it and proceed assuming pass”. This final instruction authorizes completion after automated/independent verification of that correction, not omission of the restart or authority checks.
+
+Final exact-build restart stopped the previous human process PID 53625 and proved `connection_failed` before starting the clean final binary with identical app data and UI on literal loopback `127.0.0.1:18431`. The first restart browser diagnostic selected a hidden author label in collapsed review history rather than the visible submitted-feedback region. Root scoped that diagnostic selector correctly without product changes, stopped PID 20618, again proved connection failure, and repeated the fresh-process check as PID 23834. Initial status had no loaded project; a new browser opened `/projects/reconciliation-ui-checkpoint`, displayed Accepted R2 and its hierarchy, inspected exact earlier feedback, and returned to Accepted without page errors. Root inspected both final screenshots.
+
+Complete public status/catalog/Accepted/main Applied record/old feedback/all Change Sets and both gate stores' ref listings were equal before and after restart. This includes the retained out-of-date Parent component check; no fixture proposal was silently discarded. The final diagnostic's equality is over complete envelopes and exact ref object IDs, not just revision text. No extra acceptance or reconstruction bypass occurred.
+
+After verification, root stopped PID 23834 and confirmed the pane returned to its shell and the public CLI reported `connection_failed`. All browser-suite processes completed teardown. Task-owned Herdr workspaces `w8G`, `w8H`, `w8K` were closed; the two clean task worktrees were removed after their exact commits had been integrated. Committed source remains recoverable from Git. Gate stores, binary, transcripts, reports and screenshots outside those worktrees were retained. Unrelated workspaces/worktrees were not touched. The implementation tree was clean before this separate documentation-only completion commit.
+
+### Evidence and stop
+
+Local artifacts are retained under `/tmp/workbraid-reconciliation1-gate.w24i89` (native author/reviewer/resolver transcripts, exact Apply response, public snapshots, private store, human evidence), `/tmp/workbraid-reconciliation1-integrated.Z2Cizy` (integrated commands/results), `/tmp/workbraid-reconciliation1-accepted-landing.TKtO7W` (final verification), and the worker/reviewer task directories. Reports include `/tmp/overlays/workbraid-reconciliation1-review-8b213fa.md`, `/tmp/overlays/workbraid-reconciliation1-canonical-gate-8b213fa.md` and the bounded UI rereviews. Exact durable outcomes are recorded here rather than depending solely on temporary artifacts.
+
+Architecture Reconciliation 1 is complete. Stop here. Rich-diagram Phase 3 remains deferred and unstarted.

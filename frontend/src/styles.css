@@ -3224,7 +3224,8 @@ button.catalog-project:hover { border-color: var(--ink); }
 .parent-choice small { display: block; color: var(--muted, #696358); }
 .position-controls { margin: 1rem 0; padding: .8rem 0; border-top: 1px solid var(--line, #ccc4b4); }
 .position-controls summary { cursor: pointer; text-decoration: underline; text-underline-offset: .2em; }
+.position-controls form { padding: 0; border: 0; }
 .position-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin: .8rem 0; }
 .position-fields label { min-width: 0; }
-.position-fields input { box-sizing: border-box; width: 100%; min-width: 0; }
+.position-fields input { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem .5rem; letter-spacing: normal; }
 .position-controls .button-group { flex-wrap: wrap; gap: .7rem; }

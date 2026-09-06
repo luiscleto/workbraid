@@ -82,6 +82,68 @@ async function screenshot(page: Page, name: string) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
+for (const action of ['Edit component', 'Add component', 'Create detail diagram']) {
+  test(`Position draft guards ${action} without leaving phantom dirty state`, async ({app,page}) => {
+    await page.setViewportSize({width:1280,height:900})
+    const seed = proposal(app,'Position draft seed'), worker = component(app,seed,'Worker')
+    accept(app,seed)
+    const p = proposal(app,'Position draft')
+    mutate(app,p,['diagram','set-position'],['--diagram-id',app.main,'--component-id',worker,'--x=-167','--y=50'])
+    await openProposal(app,page,p)
+    await page.getByRole('navigation',{name:'Diagrams and components'}).getByRole('button',{name:'Worker',exact:true}).click()
+    await page.locator('.position-controls summary').click()
+    await page.getByLabel('Position X',{exact:true}).fill('7654')
+    await page.getByLabel('Position Y',{exact:true}).fill('-100000')
+    const initial = inspect(app,p)
+    await page.getByRole('button',{name:action,exact:true}).click()
+    const guard = page.getByRole('dialog',{name:'Leave without keeping?'})
+    await expect(guard).toBeVisible()
+    await guard.getByRole('button',{name:'Keep editing',exact:true}).click()
+    await expect(page.getByLabel('Position X',{exact:true})).toHaveValue('7654')
+    await expect(page.getByLabel('Position Y',{exact:true})).toHaveValue('-100000')
+    expect(inspect(app,p).change_set_state).toBe(initial.change_set_state)
+    await page.getByRole('button',{name:action,exact:true}).click()
+    await guard.getByRole('button',{name:'Leave without keeping',exact:true}).click()
+    await page.getByRole('button',{name:'Cancel',exact:true}).click()
+    await page.locator('.position-controls summary').click()
+    await expect(page.getByLabel('Position X',{exact:true})).toHaveValue('-167')
+    await expect(page.getByLabel('Position Y',{exact:true})).toHaveValue('50')
+    await expect(page.getByRole('button',{name:'Reset layout',exact:true})).toBeEnabled()
+    expect(await page.getByTestId('architecture-map').evaluate((el,id)=>(el as any)._cyreg.cy.getElementById(id).grabbable(),worker)).toBe(true)
+    await page.getByRole('button',{name:'Clear selection',exact:true}).click()
+    await expect(guard).toHaveCount(0)
+    await expect(page.getByRole('heading',{name:'Select a component',exact:true})).toBeVisible()
+    expect(inspect(app,p).change_set_state).toBe(initial.change_set_state)
+    await screenshot(page,`position-draft-${action.replaceAll(' ','-')}`)
+  })
+}
+
+test('Position fields show complete bounded coordinates at 1280px', async ({app,page}) => {
+  await page.setViewportSize({width:1280,height:900})
+  const seed = proposal(app,'Coordinate seed'), worker = component(app,seed,'Worker')
+  accept(app,seed)
+  await page.goto(`${app.origin}/projects/${app.slug}`)
+  await page.getByRole('navigation',{name:'Diagrams and components'}).getByRole('button',{name:'Worker',exact:true}).click()
+  await page.locator('.position-controls summary').click()
+  await page.getByLabel('Position X',{exact:true}).fill('7654')
+  await page.getByLabel('Position Y',{exact:true}).fill('-100000')
+  await page.getByLabel('Position Y',{exact:true}).blur()
+  const geometry = await page.locator('.position-fields input').evaluateAll(inputs => inputs.map(input => {
+    const el = input as HTMLInputElement, style = getComputedStyle(el)
+    const canvas = document.createElement('canvas'), context = canvas.getContext('2d')!
+    context.font = style.font
+    return {value:el.value,width:el.clientWidth,scrollWidth:el.scrollWidth,required:context.measureText(el.value).width+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+24}
+  }))
+  await screenshot(page,'position-field-width')
+  writeFileSync(join(app.data,'position-field-geometry.json'),JSON.stringify(geometry,null,2))
+  for (const field of geometry) expect(field.width).toBeGreaterThan(field.required)
+  await page.getByRole('button',{name:'Keep position',exact:true}).click()
+  await expect(page).toHaveURL(/\/proposals\//)
+  await page.getByRole('button',{name:'Clear selection',exact:true}).click()
+  await expect(page.getByRole('dialog',{name:'Leave without keeping?'})).toHaveCount(0)
+  expect(app.cli(['change-set','inspect','--store-id',app.store,'--change-set-id',page.url().split('/').at(-1)!]).result.candidate.diagrams[0].appearances.find((a:any)=>a.component_id===worker).position).toEqual({x:7654,y:-100000})
+})
+
 for (const outcome of ['stale', 'response-loss'] as const) {
   test(`placement ${outcome} inspects authority without replay`, async ({app, page}) => {
     page.setDefaultTimeout(15000)
@@ -122,6 +184,7 @@ for (const outcome of ['stale', 'response-loss'] as const) {
 
 test('placement reconciliation combines independent nodes and keeps old Diagram feedback exact', async ({app,page}) => {
   page.setDefaultTimeout(15000)
+  await page.setViewportSize({width:1280,height:900})
   const seed = proposal(app,'Seed parallel arrangement')
   const x = component(app,seed,'Gateway'), y = component(app,seed,'Worker'), shared = component(app,seed,'Records')
   accept(app,seed)
@@ -157,6 +220,14 @@ test('placement reconciliation combines independent nodes and keeps old Diagram 
   await expect(task).toContainText('Automatic')
   await task.getByRole('button',{name:'Choose manually',exact:true}).click()
   await task.getByRole('checkbox',{name:'Automatic',exact:true}).uncheck()
+  await task.getByLabel('Final position X',{exact:true}).fill('-100000')
+  await task.getByLabel('Final position Y',{exact:true}).fill('100000')
+  await task.getByLabel('Final position Y',{exact:true}).blur()
+  for (const field of await task.locator('.position-fields input').evaluateAll(inputs=>inputs.map(input=>({width:input.clientWidth,scrollWidth:input.scrollWidth})))) {
+    expect(field.width).toBeGreaterThan(120)
+    expect(field.scrollWidth).toBe(field.width)
+  }
+  await screenshot(page,'placement-reconciliation-bounded-fields')
   await task.getByLabel('Final position X',{exact:true}).fill('-180')
   await task.getByLabel('Final position Y',{exact:true}).fill('420')
   await task.getByRole('button',{name:'Check choices',exact:true}).click()

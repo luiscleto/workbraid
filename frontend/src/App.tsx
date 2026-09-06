@@ -134,6 +134,7 @@ type RelationshipTarget = {
 
 function PositionControls({position,busy,onDirty,onKeep}:{position:{x:number;y:number}|null;busy:boolean;onDirty:(v:boolean)=>void;onKeep:(p:{x:number;y:number}|null)=>Promise<boolean>}) {
   const [x,setX]=useState(String(position?.x??0)),[y,setY]=useState(String(position?.y??0))
+  useEffect(() => () => onDirty(false), [onDirty])
   return <details className="position-controls"><summary>Position · {position?`${position.x}, ${position.y}`:'Automatic'}</summary>
     <form onSubmit={async e=>{e.preventDefault();const p={x:Number(x),y:Number(y)};if(!Number.isInteger(p.x)||!Number.isInteger(p.y)||Math.abs(p.x)>100000||Math.abs(p.y)>100000)return;if(await onKeep(p))onDirty(false)}}>
       <div className="position-fields"><label>X<input aria-label="Position X" type="number" min={-100000} max={100000} step={1} required value={x} onChange={e=>{setX(e.target.value);onDirty(true)}} /></label><label>Y<input aria-label="Position Y" type="number" min={-100000} max={100000} step={1} required value={y} onChange={e=>{setY(e.target.value);onDirty(true)}} /></label></div>
@@ -285,6 +286,7 @@ type NavigationIntent =
   | { kind: 'clear' }
   | { kind: 'review-result'; result: ArchitectureResult }
   | { kind: 'review-context-replacement'; apply: () => void }
+  | { kind: 'authoring-pane'; apply: () => void }
   | { kind: 'continue-editing' }
 
 type ErrorCode =
@@ -640,6 +642,8 @@ export function App() {
   const [reviewVisible, setReviewVisible] = useState(false)
   const [selectedContextID, setSelectedContextID] = useState('accepted')
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
+  const [positionDirty, setPositionDirty] = useState(false)
+  const [positionDraftEpoch, setPositionDraftEpoch] = useState(0)
   const [reviewCommentDirty, setReviewCommentDirty] = useState(false)
   const [reviewCommentTarget, setReviewCommentTarget] = useState<ReviewCommentTarget>()
   const openCommentEditor = (target: ReviewCommentTarget) => setReviewCommentTarget({ ...target, editorKey: crypto.randomUUID() })
@@ -812,7 +816,7 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1352,7 +1356,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -1377,6 +1381,10 @@ export function App() {
       setReviewCommentDirty(false)
       intent.apply()
       return
+    }
+    if (positionDirty) {
+      setPositionDirty(false)
+      setPositionDraftEpoch(epoch => epoch + 1)
     }
     if (intent.kind === 'continue-editing') {
       if (state.kind === 'ready') {
@@ -1414,6 +1422,11 @@ export function App() {
     setNewChangeSetName('')
     setAuthoringError('')
     setArchitectureNotice('')
+    if (intent.kind === 'authoring-pane') {
+      setChangeSetTextDirty(false)
+      intent.apply()
+      return
+    }
     if (intent.kind === 'reconcile') {
       if (state.kind !== 'ready' || !state.value.changes) return
       const changes = state.value.changes
@@ -2451,10 +2464,10 @@ export function App() {
                   position: result.changes?.validation_relationship_position ?? 0,
                   field: result.changes?.validation_relationship_field ?? 'target',
                 })}
-                onAddComponent={(result.format_version ?? 0) >= 2 ? (diagramID) => addComponent(diagramID) : undefined}
-                onCreateDetail={(result.format_version ?? 0) >= 2 ? (componentID) => setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' }) : undefined}
-                onEditDiagramTitle={(result.format_version ?? 0) >= 2 ? (diagramID, title, invalid) => setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid }) : undefined}
-                onMoveHome={(result.format_version ?? 0) >= 2 ? beginHomeMove : undefined}
+                onAddComponent={(result.format_version ?? 0) >= 2 ? (diagramID) => requestNavigation({kind:'authoring-pane',apply:()=>addComponent(diagramID)}) : undefined}
+                onCreateDetail={(result.format_version ?? 0) >= 2 ? (componentID) => requestNavigation({kind:'authoring-pane',apply:()=>setDiagramEditor({ kind: 'detail', componentID, title: '', initialTitle: '' })}) : undefined}
+                onEditDiagramTitle={(result.format_version ?? 0) >= 2 ? (diagramID, title, invalid) => requestNavigation({kind:'authoring-pane',apply:()=>setDiagramEditor({ kind: 'title', diagramID, title, initialTitle: title, invalid })}) : undefined}
+                onMoveHome={(result.format_version ?? 0) >= 2 ? (componentID)=>requestNavigation({kind:'authoring-pane',apply:()=>beginHomeMove(componentID)}) : undefined}
                 onShowComponent={(diagramID, componentID) => changeReference(result, diagramID, componentID, true)}
                 onStopShowing={(diagramID, componentID) => changeReference(result, diagramID, componentID, false)}
                 onReview={() => reviewChanges(result)}
@@ -2470,10 +2483,10 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
-				{authoringAvailable&&selectedAppearance&&activeDiagram&&<PositionControls key={`${activeDiagram.id}:${selected.id}:${selectedAppearance.position?.x}:${selectedAppearance.position?.y}`} position={selectedAppearance.position??null} busy={architectureBusy||placementBlocked} onDirty={setChangeSetTextDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
+				{authoringAvailable&&selectedAppearance&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedAppearance.position?.x}:${selectedAppearance.position?.y}`} position={selectedAppearance.position??null} busy={architectureBusy||placementBlocked} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
                 {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
-                    {authoringAvailable && <button className="inline-action" type="button" onClick={() => editAccepted(selected, result)}>Edit component</button>}
+                    {authoringAvailable && <button className="inline-action" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>editAccepted(selected, result)})}>Edit component</button>}
                     {selectedAppearance?.detail_diagram_id && (
                       <button className="secondary-action detail-link" type="button" onClick={() => selectDiagram(selectedAppearance.detail_diagram_id!)}>
                         Open {selectedAppearance.detail_diagram_title}
@@ -2484,10 +2497,10 @@ export function App() {
                         <span>Diagram</span>
                         <div>
                           {selectedAppearance.role === 'home' && !selectedAppearance.detail_diagram_id && (
-                            <button className="text-action diagram-composition-link" type="button" onClick={() => setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })}>Create detail diagram</button>
+                            <button className="text-action diagram-composition-link" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>setDiagramEditor({ kind: 'detail', componentID: selected.id, title: '', initialTitle: '' })})}>Create detail diagram</button>
                           )}
-                          {selectedAppearance.role === 'home' && result.home_move_destinations?.find((destinations) => destinations.component_id === selected.id)?.diagram_ids.length ? <button className="text-action diagram-composition-link" type="button" onClick={() => beginHomeMove(selected.id)}>Change where {componentAuthoringLabel(compositionProjection.components, selected.id)} lives</button> : null}
-                          {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => changeReference(result, activeDiagram.id, selected.id, false)}>Stop showing here</button>}
+                          {selectedAppearance.role === 'home' && result.home_move_destinations?.find((destinations) => destinations.component_id === selected.id)?.diagram_ids.length ? <button className="text-action diagram-composition-link" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>beginHomeMove(selected.id)})}>Change where {componentAuthoringLabel(compositionProjection.components, selected.id)} lives</button> : null}
+                          {selectedAppearance.role === 'reference' && activeDiagram && <button className="text-action diagram-composition-link" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>{void changeReference(result, activeDiagram.id, selected.id, false)}})}>Stop showing here</button>}
                         </div>
                       </div>
                     )}

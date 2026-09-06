@@ -1,11 +1,10 @@
-# WorkBraid Architecture v0
+# WorkBraid Architecture
 
-Status: approved design baseline  
-Scope: Architecture vertical, first real slice
+Status: Approved living contract
 
-This document records approved Architecture decisions. It separates portable domain/store invariants from the initial implementation profile. It is not an implementation plan.
+This document owns the shared Architecture semantics, portable v2 foundation, source fidelity and runtime/catalog authority. [Placement](architecture-placement-amendment-v0.md) defines the approved complete v3 extension; [Proposals and Reviews](architecture-proposals-v0.md) owns durable authoring and feedback; [Reconciliation](architecture-reconciliation-v0.md) owns deliberate residual construction; [UI](ui-v0.md) owns presentation. The [active plan](plans/architecture-phase-3.1-execution.md) tracks implementation and later boundaries.
 
-## 1. Domain boundary
+## Domain boundary
 
 WorkBraid has three related verticals:
 
@@ -17,7 +16,7 @@ Only Architecture is currently in scope. It must be buildable and usable without
 
 Agents may act across verticals through authorized operations. Shared agent access does not merge domain models. Planning may originate an Architecture proposal but cannot directly mutate accepted Architecture.
 
-## 2. Canonical authority
+## Canonical authority
 
 Accepted Architecture is canonical Markdown plus minimal structural metadata stored in a private WorkBraid-owned Git repository.
 
@@ -43,7 +42,7 @@ WorkBraid does not require or open an arbitrary source-project folder. Export or
 
 The Git/Markdown contract is independent of Go, Git CLI usage, bare-repository layout, or any particular WorkBraid implementation.
 
-## 3. Store contract
+## Store contract
 
 The closed format-v2 accepted tree layout is:
 
@@ -100,7 +99,7 @@ Its exact fields and types are:
 
 The v2 manifest schema is closed. Unknown keys at the top level or inside `project` are invalid rather than ignored. Future semantic fields require format evolution.
 
-Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. This alpha contract supports only the exact format v2 defined here. Old alpha stores are disposable; WorkBraid provides no format-v1 loader, setup action, migration, compatibility adapter, or downgrade.
+Format and version are compatibility guards. WorkBraid rejects unsupported values rather than interpreting them using current assumptions. Portable v2 remains supported and normally writable for non-placement work. Approved v3 adds complete visible-node positions under the placement contract. Portable v1 remains unsupported; do not confuse it with supported operational change-state v1/v2 over portable v2. The rejected partial-pinning v3 trial is preserved as evidence but has no compatibility requirement. No automatic conversion or deletion of that trial data is authorized.
 
 The WorkBraid store ID is the store's immutable identity. Project name and slug are human-facing project information only:
 
@@ -285,11 +284,11 @@ For one active Diagram:
 
 Within one active Diagram, WorkBraid derives at most one boundary/external reference for each absent external Component. Every crossing Relationship occurrence to or from that Component connects to that one derived reference while retaining its exact direction, label, and multiplicity. Derived boundary references have no canonical identity, membership, or separate Architecture meaning. Activating one navigates to the external Component's home Diagram. A canonical reference appearance is a real Diagram appearance and therefore uses an ordinary Component node and Relationship edge rather than a boundary reference.
 
-## 4. Initialization and loading
+## Initialization and loading
 
 ### Bootstrap revision
 
-Architecture-store initialization is an explicit human action.
+Architecture-store initialization is a deliberate authorized project-creation action, through the browser or public agent interface.
 
 Initialization succeeds only when:
 
@@ -298,9 +297,9 @@ Initialization succeeds only when:
 
 Any earlier failure is incomplete initialization, not provisional canonical state.
 
-The parentless bootstrap revision is valid format v2. It contains:
+The parentless bootstrap revision is native format v3 under the placement contract. It contains:
 
-- the normative v2 `architecture.yaml`, written as mode `100644`;
+- the manifest defined above with `version: 3`, written as mode `100644`;
 - one newly generated stable root Diagram ID named by manifest `root_diagram`; and
 - one ordinary `diagrams/root.yaml` blob, written as mode `100644`, whose title is initially derived from the project name and whose appearances are empty.
 
@@ -336,7 +335,7 @@ Opening or explicit refresh:
 3. constructs and minimally validates the complete replacement snapshot;
 4. switches to it only after successful construction.
 
-The first slice has no filesystem watcher, polling loop, per-read ref resolution, or required persisted Architecture projection.
+There is no filesystem watcher or polling loop. Reads do not implicitly Refresh. Mutations and explicit authority observations recheck real refs under their exact preconditions; loaded snapshots and caches never replace Git authority.
 
 For v2, snapshot construction validates the complete Diagram set, unique home appearances, hierarchy, membership, Component references, and global Relationships before publication. Diagram tree, selected Diagram, map, index, documentation, boundary references, and topology always come from that one snapshot.
 
@@ -346,9 +345,9 @@ If `accepted` advances to invalid or unsupported state, WorkBraid may retain the
 
 `Review changes` is one deliberate review task over the same complete candidate used by final confirmation. A successful review is bound to:
 
-- the exact accepted base commit;
+- the proposal's exact base commit;
 - the exact candidate tree;
-- the pending change set's exact in-process generation.
+- the addressed durable Change Set's exact generation.
 
 The review contains one immutable snapshot reconstructed from the exact base commit and one immutable snapshot constructed from the validated candidate tree. Both use the existing version-aware Architecture parser and validation semantics. WorkBraid does not construct another candidate, graph, parser, or review authority for visual review.
 
@@ -358,7 +357,7 @@ If the current review selection is a Diagram that exists only in **With changes*
 
 Invalid pending state does not produce reviewed snapshots. It remains non-canonical work under Changes in progress with actionable validation guidance.
 
-## 5. Structural validation
+## Structural validation
 
 Validation remains intentionally small.
 
@@ -382,65 +381,9 @@ A valid accepted Architecture requires:
 
 No general schema, prose linting, policy engine, or speculative validation framework is introduced.
 
-## 6. Pending change sets and direct commits
+## Structured authoring
 
-A first-slice pending Architecture change set is not a draft owned by one component.
-
-Each pending change set:
-
-- is based on one exact accepted Git revision;
-- may eventually change multiple Components, Relationships, Diagrams, membership, hierarchy links, and canonical files coherently;
-- remains non-canonical until deliberate compare-and-swap advancement of `refs/heads/accepted` succeeds;
-- is owned by the local backend while the application is running;
-- survives validation, commit creation, and ref-update failures that occur before the acceptance success boundary during that running application session.
-
-Transient unsent browser edits are allowed, but the browser does not own the authoritative pending change set. Persistence and recovery of pending change sets across backend restart are deferred.
-
-A human may explicitly discard the entire non-canonical pending change set. Discard removes only that pending state; it does not modify accepted Architecture, Git refs or objects, arbitrary user files, or persisted Architecture state. If a current accepted revision is successfully loaded, new pending work may then begin from it. Partial discard, merge, rebase, reconciliation, undo/redo, and a broader draft lifecycle remain deferred.
-
-The canonical Git store remains unchanged until successful compare-and-swap advancement of `refs/heads/accepted`. Validation, commit creation, or ref-update failure before that boundary preserves:
-
-- the previous accepted revision;
-- the pending change set for continued editing or retry during the running application session.
-
-Candidate construction starts from the exact base tree. Unchanged paths reuse their exact base-tree entries and blobs; only changed or newly created canonical files are serialized into new blobs. Editing an existing regular file preserves its regular-file mode; newly created canonical files use `100644`. Diagram-only and membership-only changes do not rewrite Component files. Structural, Diagram-hierarchy, membership, and Relationship validation runs against the complete resulting candidate tree before commit.
-
-### Direct human commit flow
-
-A human may directly update accepted Architecture without creating a proposal.
-
-The backend:
-
-1. constructs the complete candidate Architecture from the pending change set and its exact accepted base;
-2. performs minimal structural validation and constructs the immutable candidate snapshot from that validated state;
-3. generates an exact unified diff between the base and candidate Git trees;
-4. gives the user an opportunity to inspect the complete diff;
-5. on confirmation, verifies that `refs/heads/accepted` still equals the pending change set's exact base;
-6. creates the successor commit;
-7. atomically advances `refs/heads/accepted` from the base to the successor;
-8. after successful advancement, marks the pending change set as committed/consumed and publishes the already-validated candidate snapshot under the successor commit identity.
-
-The diff includes the entire pending change set, including canonical Component frontmatter, manifest, and Diagram-file changes. It is review evidence, not another canonical artifact. No semantic diff engine is required.
-
-Visual review is assistive evidence derived from the same bound base and candidate snapshots. Candidate structural validation and the complete exact unified diff remain sufficient review evidence if visual rendering fails clearly. The visual review does not create an additional acceptance prerequisite or authority.
-
-Successful atomic advancement of `refs/heads/accepted` is the acceptance success boundary. Once that compare-and-swap succeeds, the successor commit is canonical even if subsequent in-memory publication or the HTTP/UI response fails. WorkBraid must not treat that change as still uncommitted or offer to commit it again. A post-CAS publication failure is recovered by loading the revision named by `accepted`; restart and reopen independently prove reconstruction from canonical state.
-
-If the atomic ref update fails:
-
-- accepted Architecture has not changed;
-- the pending change set is stale;
-- WorkBraid does not silently overwrite newer accepted state.
-
-Commit or object creation without successful compare-and-swap advancement is not accepted state. The previous accepted revision remains authoritative and the pending change set remains uncommitted.
-
-After success, WorkBraid exposes the exact accepted commit identity and parent diff without requiring the SHA to dominate the normal UI.
-
-Proposal approval is a separate future workflow.
-
-## 7. First-slice authoring
-
-The browser provides structured format-v2 Architecture authoring rather than raw-frontmatter editing as the normal flow.
+The browser provides structured Architecture authoring rather than raw-frontmatter editing. Every kept change belongs to one named durable proposal; Accepted-origin editing creates its first mutation atomically under exact store/revision preconditions.
 
 Initial controls include:
 
@@ -478,7 +421,7 @@ If a submitted normalized Title is unchanged, its existing H1 source is preserve
 
 The structural exception exists solely to preserve the ordinary structured-edit round trip: reparsing serialized source must recover the intended normalized Title and the intended exact Description bytes. For example, preserved H1 `# API` plus Description `\nBody\n` serializes as `# API\n\nBody\n`, not `# API\nBody\n`. No raw-source override, storage field, or separate Markdown interpretation is introduced.
 
-### Initial Diagram authoring
+### Diagram authoring
 
 Normal Diagram authoring is structured composition editing rather than raw YAML editing. The first Diagram slice may:
 
@@ -486,62 +429,12 @@ Normal Diagram authoring is structured composition editing rather than raw YAML 
 - set or change a Diagram title;
 - move a Component's home to another Diagram;
 - add or remove a reference appearance;
+- reassign a detail Diagram to another eligible home Component through the ordinary [reassignment contract](architecture-reconciliation-v0.md#ordinary-detail-link-reassignment); and
 - navigate through the root, Diagram tree, breadcrumbs, parent anchor, and detail link.
 
-These operations update the one backend-owned pending Architecture change set. Diagram deletion, partial pending discard, multiple detail Diagrams per anchor, multiple Diagram parents, and general hierarchy lifecycle are not part of the first Diagram slice.
+These operations update only the explicitly addressed backend-owned durable Change Set. Diagram deletion, partial discard, multiple detail Diagrams per anchor, multiple Diagram parents, and general hierarchy lifecycle remain outside ordinary authoring.
 
-## 8. Accepted Diagram map and candidate review map
-
-The normal workspace map is an interactive projection of one exact accepted Architecture revision: the selected accepted Diagram's exact composition plus derived cross-Diagram boundary references.
-
-A v2 workspace begins at the root Diagram and provides the complete accepted Diagram tree. Selecting a Diagram switches its Component index, map, documentation context, ordinary Relationships, and derived boundary references together. Selecting a Component focuses its accepted documentation. Activating a home Component's detail link drills into its child Diagram; breadcrumbs and back navigation return to the parent and identify the anchor. Activating a derived boundary reference navigates to the external Component's home Diagram.
-
-Product presentation distinguishes a canonical reference appearance, meaning the Component is **also shown here**, from a derived boundary reference, meaning the related Component **lives elsewhere**. Neither wording changes Component or Relationship semantics.
-
-Multiple Relationships between the same Components remain representable and inspectable. A component inspector may simultaneously show pending edits from a change set based on that accepted revision, but the normal accepted map does not preview pending topology or pending Diagram composition.
-
-The map and Diagram tree rebuild only when accepted state advances successfully or an accepted revision is explicitly reloaded.
-
-`Review changes` may instead display the exact immutable reviewed candidate snapshot and allow a compact switch to the review's exact immutable base snapshot. The candidate map is the primary visual review canvas. Switching snapshots switches the Diagram tree, selected Diagram, index, map, selected documentation/detail, titles, canonical appearances, boundary references, and relationship topology as one revision-pinned unit. The normal workspace map remains accepted-only.
-
-Visual change matching follows these rules:
-
-- components match by stable component ID;
-- relationship facts compare as a multiset of `(source component ID, target component ID, exact relationship label)`, including multiplicity;
-- a relationship target or label edit appears as one removed fact and one added fact;
-- identical parallel facts remain semantically indistinguishable;
-- projection-only edge keys may distinguish rendered edges but have no Architecture meaning.
-
-Component deletion is not part of this slice, so review does not introduce removed-component semantics or visualization. Review may distinguish added components and relationships, changed existing components, and removed relationship facts. Selecting a changed component or relationship may focus its review context and the relevant region of the exact unified diff.
-
-For v2 review:
-
-- Diagrams match by stable Diagram ID;
-- added Diagrams, title changes, home/reference appearance additions or removals, home moves, and detail-link changes are Diagram-composition changes;
-- a home move is a removal from one Diagram and addition to another, not a Component identity or Relationship change;
-- an ordinary internal edge becoming a boundary edge, or the reverse, solely because composition changed is presentation change and is not reported as an Architecture Relationship addition or removal;
-- the exact canonical diff remains authoritative evidence for manifest and Diagram-file changes.
-
-When a selected Diagram exists only in the candidate, **Before changes** follows the base-owned fallback defined for reviewed candidate snapshots: nearest surviving ancestor, otherwise the bound base root. Candidate-only Diagram state never leaks into the base projection.
-
-Selection, viewport, and automatic-layout details are UI state, not canonical Architecture. Pan, zoom, and fit are desirable initial UX rather than domain invariants.
-
-Review layout is deterministic and stable-ID-aware so unchanged components do not move gratuitously between the bound base and candidate views. Reusing transient positions from an already rendered base map within the current browser session is allowed, but coordinates remain unpersisted UI state and have no effect on review correctness.
-
-Deferred map behavior includes:
-
-- graphical creation or editing;
-- draft-topology preview;
-- manual or persisted layout;
-- grouping;
-- relationship editing on the map;
-- Diagram deletion or general hierarchy lifecycle;
-- multiple Diagram parents or Diagram reuse;
-- multiple appearances of one Component within one Diagram;
-- runtime or Planning overlays;
-- source-code inference.
-
-## 9. Project catalog and locator
+## Project catalog and locator
 
 WorkBraid discovers projects directly from its private Architecture-store area. A WorkBraid-created repository lives operationally at `architecture/<store-uuid>.git` under application data. That directory naming is an implementation convention, not portable project identity or a human-facing locator.
 
@@ -551,9 +444,9 @@ Catalog slugs must be unique. If more than one valid discovered store has the sa
 
 `/projects/<slug>` resolves the one valid catalog entry with that exact slug. An unknown slug produces a normal not-found state and never initializes, repairs, or selects a project implicitly. After resolution, the backend uses the manifest store UUID as canonical store identity; the route slug does not replace it.
 
-Project creation accepts a human-readable name, generates a new store UUID and locally unique slug, creates the native-v2 bootstrap, and exposes the project in the catalog only as valid accepted state. Project names need not be unique. No source folder, source-root association, reassociation, arbitrary project filesystem root, or second catalog persistence exists.
+Project creation accepts a human-readable name, generates a new store UUID and locally unique slug, creates the native-v3 bootstrap, and exposes the project in the catalog only as valid accepted state. Project names need not be unique. No source folder, source-root association, reassociation, arbitrary project filesystem root, or second catalog persistence exists.
 
-## 10. Initial implementation profile
+## Implementation profile
 
 These are v0 implementation choices, not portable store semantics.
 
@@ -615,69 +508,17 @@ WorkBraid does not configure or require the bare repository's `HEAD` to point to
 
 Bare layout is an implementation choice, not part of the portable store contract.
 
-Bare repositories remain compatible with ordinary branches and linked worktrees. Future proposal branches may coexist with `accepted`, and agents may later receive linked worktrees. Exact proposal representation and acceptance semantics remain undecided.
+Bare repositories remain compatible with ordinary branches and linked worktrees. Product proposals use the exact private ref/envelope representation in the Proposals and Reviews contract. A checkout or worktree is never a product-authoring authority.
 
 ### Persistence boundary
 
 The current Architecture product has no demonstrated SQLite need and does not initialize or depend on SQLite. Project discovery comes from private Git stores, and no Architecture, Diagram, catalog, pending, review, navigation, or layout projection is persisted outside them.
 
-Future recoverable draft persistence or another demonstrated operational need requires a separate approved decision. Any persisted derived state introduced later must identify its exact canonical revision and be rebuildable from Git.
+Durable proposals, immutable reviews and v3 placement are stored only in their approved Git trees/refs. Any later operational persistence requires a demonstrated need and an approved decision; derived state must identify its exact canonical revision and be rebuildable from Git.
 
-## 11. First real gate
 
-Using the real WorkBraid application through production code paths:
+## Candidate fidelity and acceptance boundary
 
-1. Start with fresh WorkBraid application data and no projects.
-2. Create a project by human-readable name.
-3. Verify its generated valid unique slug, `/projects/<slug>` route, immutable store UUID, and catalog entry.
-4. Verify the parentless format-v2 bootstrap commit, its manifest-identified empty root Diagram, and the `accepted` ref.
-5. Verify that `architecture.yaml` contains stable store identity, project name, current slug, and root Diagram identity while `diagrams/root.yaml` carries no authority beyond its canonical contents.
-6. Create a tiny Architecture through WorkBraid.
-7. Review and deliberately commit its exact candidate diff.
-8. See the accepted map and navigate Component documentation.
-9. Edit accepted Architecture through a pending change set, verify that validation, commit creation, or ref-update failure before successful compare-and-swap preserves it while the application remains running, and then commit a valid accepted revision.
-10. Verify the exact resulting commit identity and parent diff.
-11. Reload `/projects/<slug>` and verify it resolves the same store and revision.
-12. Restart WorkBraid after the accepted commit.
-13. Reopen the route and reconstruct the same Architecture, documentation, Relationships, Diagrams, and map solely from private Git. Recovery of an uncommitted pending change set across backend restart is not part of this gate.
-14. Verify that no source-root association, SQLite catalog, or other Architecture projection exists.
+Construct from the exact base tree. Untouched paths reuse their exact entries/blobs; changed existing regular files retain their modes; new files use `100644`. Composition alone does not rewrite Component files. Validate the complete candidate, never a partial graph. `ConstructCandidate(base, concrete facts).Tree` must equal the stored candidate tree for every supported valid active/applied/historical record. No parallel builder, raw blob override or compatibility rewrite may weaken that equality.
 
-Use real private Git repositories, real filesystem state, and the real backend-to-Git path. Focused tests may support the gate, but fake Git APIs and large synchronization simulators do not satisfy it.
-
-## 12. Deferred and open decisions
-
-Deferred beyond the first slice:
-
-- proposal representation, proposal branches/refs, review, conflict handling, and acceptance semantics;
-- automatic merge or reconciliation behavior;
-- persistence and recovery of pending change sets across backend restart;
-- stale-change-set reconciliation UX;
-- non-component Architecture documents;
-- component deletion and inbound-relationship handling;
-- file-renaming UI;
-- deliberate identity replacement;
-- raw-frontmatter editing;
-- stable relationship identity or relationship lifecycle;
-- relationship taxonomy, hierarchy, and grouping;
-- draft-aware or graph-based editing;
-- persisted/manual map layout;
-- node sizing, edge routing and bend points, shapes, Diagram annotations, and renderer state;
-- project-scoped persistence of pending spatial edits;
-- Diagram deletion and general hierarchy lifecycle;
-- multiple Diagram parents or reusable Diagram DAGs;
-- multiple appearances of one Component inside one Diagram;
-- multiple detail Diagrams per anchor;
-- Diagram-local presentation identity for parallel rendered edges;
-- additional Diagram kinds and kind-specific semantics;
-- alternate renderers such as isometric presentation;
-- full revision-history browsing;
-- arbitrary revision comparison;
-- revert UI;
-- semantic diffing;
-- project rename and slug-change lifecycle;
-- project deletion, import, unavailable-store recovery, and custom private-store locations;
-- repository export/synchronization and external divergence handling;
-- Jira, Linear, or other external surfaces;
-- remote/embedded Markdown resource behavior;
-- authentication, tailnet exposure, mobile UX, and multi-user behavior;
-- any persisted Architecture projection not justified by a demonstrated need.
+Only deliberate Update of a valid current exact review can advance Accepted, using the atomic accepted/active/applied ref transaction defined in the Proposals and Reviews contract. Pre-CAS failure retains the original durable proposal and Accepted. Post-CAS publication/response failure cannot make a successful update uncommitted: recover the actual applied receipt and authoritative Accepted context, never blindly replay. Commit creation without ref publication does not accept anything. The complete canonical diff remains available even if visual rendering fails; this technical review path does not waive the active feature's human visual acceptance gate.

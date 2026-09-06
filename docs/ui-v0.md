@@ -46,19 +46,19 @@ WorkBraid offers no slug-edit action. If explicit **Refresh** adopts an authorit
 
 Project names need not be unique. When names collide, show the minimum slug context needed to distinguish them. An unknown route shows an ordinary not-found state with an action back to the project catalog and never creates a project. Duplicate discovered slugs show an explicit catalog conflict and never select a winner. A discovered malformed store appears as unavailable with bounded technical context where practical rather than silently disappearing; no repair or recovery workflow is implied.
 
-Project opening and creation are entry states, not permanent workspace chrome. Once a project is open, the catalog is gone and WorkBraid shows a map-centered Architecture workbench. The application frame keeps the current project visible and provides an unobtrusive way to open another project through the catalog. Existing dirty-editor and backend-held pending-change guards still apply before leaving.
+Project opening and creation are entry states, not permanent workspace chrome. Once a project is open, the catalog is gone and WorkBraid shows a map-centered Architecture workbench. The application frame keeps the current project visible and provides an unobtrusive way to open another project through the catalog. Unsent browser-local editor/review-composer guards apply before leaving. Durable proposals survive project/context switches; they do not have to be discarded.
 
 On a normal desktop viewport, the workbench has:
 
 - a compact Diagram navigator and Component index;
-- the selected accepted Diagram as the primary canvas;
+- the selected Diagram from the explicit Accepted or named-proposal context as the primary canvas;
 - one contextual working pane for the current task: accepted component documentation or structured authoring.
 
-The Diagram tree, component index, map, and documentation are projections of the same exact accepted Architecture revision. Pending title, Diagram, membership, or hierarchy changes do not alter those normal surfaces before acceptance, and pending new Components or Diagrams do not appear in them. Pending work remains reachable through **Changes in progress**.
+The Diagram tree, index, map and documentation project one exact selected context: Accepted, a complete valid named proposal, or a read-only applied record. A proposal is never overlaid on Accepted. Invalid proposals show their exact authored values, validation and repair actions without a partial map. The compact proposal selector and Changes in progress task follow [Proposals and Reviews](architecture-proposals-v0.md).
 
 The component index is not a management or dashboard surface. It selects components by stable identity and primarily shows their titles, plus only the minimal component-creation affordance needed. When titles collide, show the minimum filename or shortened-ID context needed to disambiguate them. Do not make IDs or paths general index chrome, and do not add status columns, per-component management controls, filters, or speculative controls.
 
-Selecting a component from the map or index focuses the same accepted component and shows its documentation in the working pane. For a writable accepted Architecture, Add/Edit uses that pane for structured component and relationship authoring. The accepted map does not preview pending topology.
+Selecting a component from the map or index focuses the same context-owned Component and shows its documentation in the working pane. For a writable accepted Architecture, Add/Edit uses that pane for structured component and relationship authoring. The Accepted context does not preview proposed topology.
 
 **Changes in progress** is a compact visible workspace affordance. It reuses the working area for pending editing, review, and acceptance rather than becoming another permanent region. Exact diff review may temporarily expand into more of the workspace when the task requires it.
 
@@ -81,17 +81,19 @@ In the candidate view:
 - removed relationship facts are visibly distinct, such as ghosted or dashed;
 - selecting a changed component or relationship focuses its review context and the relevant region of the exact unified diff.
 
+Components and Diagrams match by stable UUID. Relationships compare as a multiset of exact `(source Component ID, target Component ID, label)` facts, preserving direction and multiplicity; a target/label edit is a removed fact plus an added fact. Render-only edge keys never give identical parallel facts domain identity. Ordinary Component deletion is not an authoring capability and does not introduce removed-Component ghosts into this review.
+
 For Diagram candidates, the same review task also distinguishes added Diagrams, Diagram title changes, home/reference appearance changes, home moves, and detail-link changes. A Component home move is shown as Diagram-composition removal/addition. If composition alone makes a real Relationship change between ordinary and boundary presentation, do not describe that as an Architecture Relationship addition or removal. Selecting a Diagram or membership change focuses its Diagram context and corresponding canonical Diagram-file diff.
 
 If the selected Diagram exists only in **With changes**, switching to **Before changes** selects the nearest ancestor which exists in the bound base, or the bound base root when no ancestor survives. Show a restrained note that the previously selected Diagram exists only with the changes. Never retain that candidate-only Diagram's composition, index, documentation context, boundary references, or topology on the base side. Restoring its exact focus when returning to **With changes** is optional UI behavior.
 
 The raw unified diff remains directly inspectable in the same Review changes surface. Basic added/removed line coloring may improve readability, but it does not become a semantic or rendered-Markdown diff. If the visual map fails to render, say so clearly and retain the validated candidate and complete unified diff review path.
 
-Automatic review layout should be deterministic and stable-ID-aware, keeping unchanged components as stable as practical between Before changes and With changes. No review coordinates are canonical or persisted.
+Before/With use their own snapshot coordinates in a common logical frame; toggling must not independently fit away the movement. V2 uses deterministic read-time fallback; v3 uses exact complete saved positions. Opening review/history never initializes or saves layout. Position changed is distinct from content, membership and Relationship deltas, including for boundary nodes.
 
 Validation-bearing rows in Changes in progress visibly indicate which component needs attention. Fix affordances must look actionable, and opening one highlights and focuses the exact affected relationship control. The contextual pane also provides a clear/deselect action where selection would otherwise trap the current document or task.
 
-Pending work whose accepted base is stale remains visible and read-only through **Changes in progress**. It cannot be reviewed or accepted. The human may discard that whole non-canonical change set so new work can begin from current accepted Architecture; discard is not partial editing, reconciliation, or undo.
+An out-of-date valid proposal remains editable and reviewable against its exact original base, with conspicuous **Out of date with Accepted** context. It cannot Update until its base equals current Accepted. [Reconciliation](architecture-reconciliation-v0.md) is the explicit task for combining it with Accepted; Apply changes the proposal, then ordinary Review/Update follows. Unknown/non-current Accepted authority is distinct and pauses mutation/new review/acceptance while preserving inspection.
 
 The application frame keeps the current project and Architecture context visible, with compact actions for explicit refresh and returning to the project catalog. Do not permanently display a positive current/accepted status merely because it exists. Make stale or non-current state conspicuous when relevant; otherwise let the workspace stay quiet.
 
@@ -108,7 +110,7 @@ For the selected Diagram:
 - selecting a Component from the tree/index/map opens the same canonical documentation in the contextual pane;
 - activating a home Component's detail affordance drills into its child Diagram; this navigation action is visually distinct from Component editing and appears below the edit action in the contextual pane;
 - back/breadcrumb navigation returns to the parent with the anchor Component identifiable;
-- activating a boundary reference opens the external Component in its home Diagram.
+- selecting a boundary node exposes local positioning without forcing navigation; **Open home** remains an explicit action to the external Component's home Diagram.
 
 For each absent external Component, the active Diagram shows at most one derived boundary reference. Every crossing Relationship occurrence connects to that one reference, retaining its own direction, label, and multiplicity.
 
@@ -125,13 +127,7 @@ Diagram authoring reuses the contextual working pane. The first Diagram slice pr
 
 Newly initialized Architecture is already ready for Diagram and Component authoring and receives no setup, migration, source-folder, or linking explanation.
 
-Automatic Diagram layout remains disposable presentation. No drag position, route, bend point, size, shape, or view state is implied or persisted.
+Every visible Component node, including a **Lives in** node, has a stable saved v3 center. Dragging one node keeps all peers and the viewport fixed through response/navigation/restart. The contextual pane offers precise X/Y and **Keep position**; selected-Diagram **Auto-layout** deliberately saves all visible positions in one mutation. Remove trial Reset position/Reset layout and ongoing manual/Automatic modes. Fit/zoom/pan are view actions. Review/history are read-only. The [placement contract](architecture-placement-amendment-v0.md) defines visibility, v2 fallback and complete coverage. No sizing, routing, shapes or viewport persistence is implied.
 
-## Map references
 
-These images are tone and information-design references for a later map, not the first-slice widget set and not a 3D assignment:
-
-- [System map](ui-v0-ref-system-map.jpg)
-- [Loop map](ui-v0-ref-loop-map.jpg)
-
-An approved screenshot of the live product can be added here once a screen matches this direction.
+The drafting-table text specification above is the living visual direction. Superseded inspiration images are removed; a real product interaction and explicit human visual gate determine acceptance.

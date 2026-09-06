@@ -1,6 +1,6 @@
 # Post-Gate Architecture roadmap
 
-Status: Approved direction
+Status: Approved direction, including Phase 3.1
 
 Scope: Architecture as a standalone product after Gate 1
 
@@ -35,7 +35,7 @@ At Phase 1 completion the normal workspace map remained accepted-only. Change Se
 
 Introduce canonical format-v2 Architecture Diagrams while preserving Components and Relationships as the semantic Architecture facts.
 
-Approved domain direction:
+Domain direction delivered in Phase 2 (the approved Phase 3.1 format/placement extension is below):
 
 - every Diagram has an immutable stable ID and mutable human-readable title;
 - every v2 Architecture has exactly one manifest-identified root Diagram;
@@ -46,7 +46,7 @@ Approved domain direction:
 - automatic layout remains disposable and non-canonical;
 - new projects are created by name, receive a WorkBraid-non-editable stable human-facing slug plus immutable store UUID, and initialize directly as writable v2 with one empty manifest-identified root Diagram;
 - private accepted Git stores are the project catalog authority, `/projects/<slug>` restores a project, and no source-folder association or SQLite catalog is retained;
-- old alpha format-v1 stores and path-association databases are disposable and unsupported; there is no setup transition, migration, compatibility adapter, or v3;
+- old alpha format-v1 stores and path-association databases are disposable and unsupported; Phase 2 introduced no setup transition, migration, compatibility adapter, or v3;
 - candidate-aware Diagram review extends the existing exact base/candidate snapshots, unified diff, binding, confirmation, and accepted-ref CAS path.
 
 The smallest useful product slice includes slug-native catalog/create/open/reload, direct-v2 initialization and normal Component/Relationship authoring, root viewing, detail-Diagram creation and titling, home movement, reference appearance authoring, tree/breadcrumb/drill navigation, boundary-reference navigation, exact candidate review, deliberate acceptance, and restart reconstruction. Diagram deletion and general hierarchy lifecycle are not part of this slice.
@@ -102,7 +102,7 @@ Reviews use their own private-Git ref namespace and retain the exact reviewed Ch
 
 Architecture Reviews 1 is complete at completion record `94787a8b05fdc502aedd07aae34b5d016b7106a3`, with final implementation `892f3254ad13b0fdabe02202e0070ac153f07bb8`.
 
-## Architecture Reconciliation 1 — next utility stage; approved
+## Architecture Reconciliation 1 — complete
 
 Add deliberate reconciliation for an out-of-date change set using three exact inputs retained by Change Sets 1:
 
@@ -116,13 +116,34 @@ The approved ordinary domain extension is explicit reassignment of an existing n
 
 External deletion/restoration and other unsupported lifecycle choices remain outside this first slice. Report unsupported choices individually where another valid representable result remains available; valid external Accepted state stays authoritative. Divergent independently added same-UUID Component/Diagram objects are unsupported identity collisions, with no replacement choice; identical complete supported semantic facts coalesce once. Description comparison remains byte-exact, including Markdown whitespace, while structured Title and source-fidelity concerns remain distinct. The approved exact units, operational pending-schema extension, preview/apply binding, conflict controls and Agent Access contract are in `docs/architecture-reconciliation-v0.md`; execution is governed by `docs/plans/architecture-reconciliation-1-execution.md`.
 
-One combined implementation/review/gate cycle is approved. Reconciliation adds no second candidate representation, merge-only tree, Git merge/rebase product, reconciliation refs, persistent resolution session, proposal history, comment retargeting, or auto-acceptance. Apply is exact-state-bound: known-success response recovery reads the real active ref, and an old-state retry is rejected rather than applied twice or assigned a guessed receipt. Verification uses parallel weak-agent proposals, fresh agent resolution, independent canonical/restart checks and a small human UI checkpoint.
+The combined implementation/review/gate cycle is complete. Reconciliation adds no second candidate representation, merge-only tree, Git merge/rebase product, reconciliation refs, persistent resolution session, proposal history, comment retargeting, or auto-acceptance. Apply is exact-state-bound: known-success response recovery reads the real active ref, and an old-state retry is rejected rather than applied twice or assigned a guessed receipt. Verification used parallel weak-agent proposals, fresh agent resolution, independent canonical/restart checks and a small human UI checkpoint.
 
-## Phase 3 — Durable rich diagram editing — deferred until after the utility stages
+Architecture Reconciliation 1 is complete at completion record `62575d4522d1719ea9f57680d7e4a9afde32a8bd`, with final implementation `22e45e977be0de4276b3a40c7ab8683dd058b5bf`. The Architecture utility sequence is now complete.
 
-After Change Sets 1, Reviews 1, and Reconciliation 1, add deliberately authored diagram presentation such as manual layout, sizing, routing and bend points, shapes, and any approved annotations. Durable named proposals will already keep valuable proposed work across process restarts; the separate product decisions for spatial editing, review, and reconciliation must still be made before adding canonical presentation fields.
+## Phase 3.1 — Durable manual node placement — approved
 
-This phase must preserve the distinction between Architecture semantic identity and diagram-presentation identity. It does not imply relationship domain IDs or a generic diagram-node model.
+Begin with one bounded product increment, not the entire rich-Diagram roadmap:
+
+- persist optional integer center coordinates for canonical home/reference appearances, addressed by Diagram UUID + Component UUID;
+- pin deliberately positioned nodes while other nodes remain automatic; one drag never captures the whole automatic canvas;
+- introduce an explicit closed portable v3 extension without redefining v2; new projects bootstrap v3, existing v2 remains writable, and its first actual persistent placement edit upgrades that proposal through normal review;
+- retain exact historical v2 Change Set/Review reconstruction, with operational version 3 for new final placement facts;
+- use ordinary proposal mutation, exact Before/With placement review, normal acceptance and fresh-process reconstruction;
+- extend existing reconciliation with whole-coordinate-pair conflicts, distinguishing absent appearances from Automatic, composition-dependent removal and explicit monotonic v2/v3 result selection;
+- provide browser drag/reset and typed CLI/MCP/skill parity without canonical boundary or Relationship placement; and
+- make real human visual usability the primary gate, supported by bounded agent/real-Git evidence.
+
+`docs/architecture-rich-diagrams-v0.md` contains the approved exact schema, transition, interaction and reconciliation decisions. The proposal's requested v3 version survives resets even with no positions; Reset layout clears visible manual placement without deleting necessary internal non-resurrection nulls. `docs/plans/architecture-phase-3.1-execution.md` governs the one approved implementation/review/human-gate cycle after its exact baseline and packet commits. Completed records remain historical; this is not another utility vertical.
+
+Placement comes first because existing appearance addressability is sufficient. Center coordinates avoid making future sizing a prerequisite. No Relationship IDs, appearance IDs, generic canonical nodes/edges or new acceptance authority are implied.
+
+## Later Phase 3 — recorded boundaries, not designed or approved
+
+- **Phase 3.2 — Richer node presentation:** potential manual sizing and separately approved node visual treatment. No size fields are predeclared by 3.1.
+- **Phase 3.3 — Edge routing:** first decide persistent presentation addressability for Relationship occurrences, especially identical parallel facts and identity-free derived boundary edges. Node placement does not solve or prejudge that identity question.
+- **Phase 3.4 — Shapes/annotations and richer canvas authoring:** only after demonstrated need and a separate canonical model.
+
+This ordering keeps the first increment useful without bundling later features. Later numbering is indicative: routing may be reprioritized if its identity decision and product need justify it, but no routing, sizing, shapes or annotation design is part of 3.1. Durable proposals, Reviews and Reconciliation remain the common workflow for any later approved presentation state.
 
 ## Phase 4A — Additional semantic diagram kinds
 
@@ -134,14 +155,14 @@ Explore optional alternate presentations, including an isometric view, as render
 
 Phases 4A and 4B are not ordered relative to each other. Either may follow Phase 3 according to demonstrated product value.
 
-## Decisions deliberately deferred beyond the first Diagram slice
+## Decisions deliberately deferred beyond Phase 3.1
 
 - Diagram deletion and general hierarchy lifecycle;
 - multiple parents or reusable Diagram DAGs;
 - multiple appearances of one Component inside one Diagram;
 - multiple detail Diagrams per anchor;
-- canonical layout, routing, shape, and annotation fields;
+- sizing, routing, shape, annotation, grouping and richer canvas fields;
 - Diagram-local presentation identity needed by later routing or repeated visual facts;
-- interaction between durable change sets and substantial spatial editing;
+- multi-node/spatial editing beyond one-node placement and Diagram reset;
 - Diagram kinds and kind-specific semantic models;
 - any renderer-specific persisted presentation.

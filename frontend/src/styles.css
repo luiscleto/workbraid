@@ -2613,6 +2613,9 @@ dd {
   justify-self: start;
 }
 
+.reassignment-review-label { margin: 4px 0 8px; font-size: .88rem; line-height: 1.5; }
+.reassignment-review-side + .reassignment-review-side { border-top: 1px solid var(--hairline); margin-top: 5px; padding-top: 5px; }
+
 .diagram-review-summary button {
   max-width: 100%;
   min-height: 28px;

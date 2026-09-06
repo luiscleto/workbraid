@@ -2910,12 +2910,38 @@ function ChangesTask({
                 const presentation = appearanceReviewPresentation(changes.review!, appearance, index)
                 const { subject, description, focus, movedChild } = presentation
                 const label = `${subject} ${description}`
+                if (movedChild) {
+                  const sides = [...changes.review!.comparison.appearances!.entries()].filter(([, item]) => item.status === 'detail_changed' && item.detail_diagram_id === appearance.detail_diagram_id)
+                  if (sides[0][0] !== index) return null
+                  sides.sort(([, a], [, b]) => a.side === b.side ? 0 : a.side === 'before' ? -1 : 1)
+                  const resultChild = changes.review!.with_changes.diagrams!.find((diagram) => diagram.id === appearance.detail_diagram_id)!
+                  return <li className="composition-review-change" key={`reassignment:${appearance.detail_diagram_id}`}>
+                    <p className="reassignment-review-label"><strong>{diagramAuthoringOptionLabel(resultChild)}</strong> {description}</p>
+                    {sides.map(([sideIndex, item]) => {
+                      const snapshot = item.side === 'before' ? changes.review!.before : changes.review!.with_changes
+                      const parent = snapshot.diagrams!.find((diagram) => diagram.id === item.diagram_id)!
+                      const child = snapshot.diagrams!.find((diagram) => diagram.id === item.detail_diagram_id)!
+                      const sideLabel = item.side === 'before' ? 'Before changes' : 'With changes'
+                      const sideContext = `${componentAuthoringLabel(snapshot.components, item.component_id)} → ${diagramAuthoringOptionLabel(child)} · in ${diagramAuthoringOptionLabel(parent)}`
+                      const sideFocus = appearanceReviewPresentation(changes.review!, item, sideIndex).focus
+                      const anchor: ReviewAnchor = { kind: 'composition', side: item.side, diagram_id: item.diagram_id, component_id: item.component_id, aspect: 'detail', detail_diagram_id: item.detail_diagram_id }
+                      const contextKey = `appearance-change:${item.diagram_id}:${item.component_id}:${item.status}:${sideIndex}`
+                      const annotations = compositionAnnotation(reviewAnnotationComments, item.side, item.diagram_id, item.component_id, `${sideLabel} · ${sideContext}`)
+                      return <div className="reassignment-review-side" key={item.side}>
+                        <span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.(sideFocus)}><strong>{sideLabel}</strong> · {sideContext}</button>
+                          <span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label: `${sideLabel} · ${sideContext}`, anchor })}>Comment on {sideLabel}</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span>
+                        </span>
+                        {inlineCommentEditor(contextKey)}
+                      </div>
+                    })}
+                  </li>
+                }
                 const detailDiagramID = appearance.status === 'detail_changed' ? appearance.detail_diagram_id : undefined
                 const anchor: ReviewAnchor = { kind: 'composition', side: appearance.side, diagram_id: appearance.diagram_id, component_id: appearance.component_id,
                   aspect: detailDiagramID ? 'detail' : appearance.role, ...(detailDiagramID ? { detail_diagram_id: detailDiagramID } : {}) }
                 const annotations = compositionAnnotation(reviewAnnotationComments, appearance.side, appearance.diagram_id, appearance.component_id, label)
                 const contextKey = `appearance-change:${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`
-                return <li className="composition-review-change" key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.(focus)}><strong>{subject}</strong> {description}{movedChild && <> · {appearance.side === 'before' ? 'Before changes' : 'With changes'} in {focus.title}</>}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label, anchor })}>Comment on this change</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
+                return <li className="composition-review-change" key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.(focus)}><strong>{subject}</strong> {description}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label, anchor })}>Comment on this change</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
               })}
             </ul>
           </section>
@@ -3180,10 +3206,8 @@ function appearanceReviewPresentation(review: ChangeReview, appearance: ReviewAp
   let subject = component?.title ?? 'Component'
   let description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
   if (movedChild) {
-    const from = review.before.components.find((item) => item.id === beforeChild!.parent_anchor_component_id)
-    const to = review.with_changes.components.find((item) => item.id === withChild!.parent_anchor_component_id)
-    subject = (appearance.side === 'before' ? beforeChild : withChild)!.title
-    description = `moved from ${from?.title ?? 'Component'} to ${to?.title ?? 'Component'}`
+    subject = diagramAuthoringOptionLabel((appearance.side === 'before' ? beforeChild : withChild)!)
+    description = `moved from ${componentAuthoringLabel(review.before.components, beforeChild!.parent_anchor_component_id!)} to ${componentAuthoringLabel(review.with_changes.components, withChild!.parent_anchor_component_id!)}`
   }
   const focus: Extract<ReviewFocus, { kind: 'diagram' }> = {
     kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`,

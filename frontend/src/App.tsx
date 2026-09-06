@@ -149,6 +149,7 @@ type ChangeReview = {
     appearances?: { diagram_id: string; component_id: string; role: 'home' | 'reference'; status: 'added' | 'removed' | 'detail_changed'; side: 'before' | 'with_changes'; detail_diagram_id?: string; path: string }[]
   }
 }
+type ReviewAppearanceChange = NonNullable<ChangeReview['comparison']['appearances']>[number]
 
 type ReviewAnchor = {
   kind: 'proposal' | 'proposal_markdown' | 'component' | 'component_markdown' | 'diagram' | 'composition' | 'relationship'
@@ -225,7 +226,7 @@ type ReviewSide = 'with' | 'before'
 type ReviewFocus =
   | { kind: 'component'; key: string; componentID: string; title: string; path: string; status: 'added' | 'content_changed' | 'unchanged' }
   | ({ kind: 'relationship' } & ReviewRelationshipSelection)
-  | { kind: 'diagram'; key: string; diagramID: string; title: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed'; componentID?: string; role?: 'home' | 'reference'; compositionAspect?: 'home' | 'reference' | 'detail'; detailDiagramID?: string; reviewSide?: ReviewSide }
+  | { kind: 'diagram'; key: string; diagramID: string; title: string; description?: string; path: string; status: 'added' | 'title_changed' | 'appearance_changed'; componentID?: string; role?: 'home' | 'reference'; compositionAspect?: 'home' | 'reference' | 'detail'; detailDiagramID?: string; reviewSide?: ReviewSide }
 
 type ComponentEditor = {
   kind: 'add' | 'edit'
@@ -1614,6 +1615,26 @@ export function App() {
       ? diagramProjection.diagrams?.find((diagram) => diagram.id === (candidateFallbackDiagramID ?? selectedDiagramID))
         ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
+    const focusReviewDiagram = (focus: Extract<ReviewFocus, { kind: 'diagram' }>) => requestReviewContextReplacement(() => {
+      setReviewSelectionCleared(false)
+      if (focus.reviewSide && focus.reviewSide !== reviewSide) setReviewSide(focus.reviewSide)
+      setSelectedDiagramID(focus.diagramID)
+      const focusProjection = focus.reviewSide === 'before' ? review?.before : review?.with_changes
+      const focusDiagram = focusProjection?.diagrams?.find((diagram) => diagram.id === focus.diagramID)
+      setSelectedComponentID(focus.componentID && focusDiagram?.appearances.some((appearance) => appearance.component_id === focus.componentID)
+        ? focus.componentID
+        : undefined)
+      setReviewFocus(focus)
+    })
+    const mapComposition = new Map<string, ReturnType<typeof appearanceReviewPresentation>>()
+    for (const [index, appearance] of (review?.comparison.appearances ?? []).entries()) {
+      if (!review || appearance.diagram_id !== activeDiagram?.id || (reviewSide === 'before' && appearance.side !== 'before')) continue
+      const presentation = appearanceReviewPresentation(review, appearance, index)
+      // The two parent-owned rows describe one child movement. Prefer the
+      // visible side's row; a removed link can focus its exact Before context.
+      const identity = presentation.movedChild ? `detail:${appearance.detail_diagram_id}` : presentation.focus.key
+      if (!mapComposition.has(identity) || appearance.side === reviewSideValue(reviewSide)) mapComposition.set(identity, presentation)
+    }
     const authorityIndeterminate = result.action_error === 'refresh_failed'
     const authoringAvailable = !reconciliation && !result.stale && !authorityIndeterminate && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
@@ -2155,6 +2176,7 @@ export function App() {
                   reviewSide,
                   reviewComponents: review.comparison.components,
                   reviewRelationships: review.comparison.relationships,
+                  reviewComposition: mapComposition.size ? [...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>) : undefined,
                   reviewDiagramID: activeDiagram?.id,
                   selectedRelationshipKey: reviewFocus?.kind === 'relationship' ? reviewFocus.key : undefined,
                   onSelectRelationship: selectRelationship,
@@ -2288,17 +2310,7 @@ export function App() {
                   setSelectedComponentID(undefined)
                   setReviewFocus(null)
                 })}
-                onFocusDiagram={(focus) => requestReviewContextReplacement(() => {
-                  setReviewSelectionCleared(false)
-                  if (focus.reviewSide && focus.reviewSide !== reviewSide) setReviewSide(focus.reviewSide)
-                  setSelectedDiagramID(focus.diagramID)
-                  const focusProjection = focus.reviewSide === 'before' ? review?.before : review?.with_changes
-                  const focusDiagram = focusProjection?.diagrams?.find((diagram) => diagram.id === focus.diagramID)
-                  setSelectedComponentID(focus.componentID && focusDiagram?.appearances.some((appearance) => appearance.component_id === focus.componentID)
-                    ? focus.componentID
-                    : undefined)
-                  setReviewFocus(focus)
-                })}
+                onFocusDiagram={focusReviewDiagram}
                 onEdit={(component) => editPending(component, undefined, result.stale || result.changes?.stale)}
                 onFixRelationship={(component) => editPending(component, {
                   position: result.changes?.validation_relationship_position ?? 0,
@@ -2884,21 +2896,15 @@ function ChangesTask({
                 return <li key={`${diagram.diagram_id}:${diagram.status}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `diagram:${diagram.diagram_id}`, diagramID: diagram.diagram_id, title: diagram.title, path: diagram.path, status: diagram.status })}><strong>{diagram.title}</strong> {diagram.status === 'added' ? 'added' : 'title changed'}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label: diagram.title, anchor: { kind: 'diagram', side, diagram_id: diagram.diagram_id } })}>Add comment</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
               })}
               {changes.review.comparison.appearances?.map((appearance, index) => {
-                const exactSide = appearance.side === 'before' ? changes.review?.before : changes.review?.with_changes
-                const otherSide = appearance.side === 'before' ? changes.review?.with_changes : changes.review?.before
-                const projection = exactSide?.components.find((component) => component.id === appearance.component_id)
-                  ?? otherSide?.components.find((component) => component.id === appearance.component_id)
-                const preferredDiagrams = exactSide?.diagrams
-                const fallbackDiagrams = otherSide?.diagrams
-                const diagram = preferredDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
-                  ?? fallbackDiagrams?.find((candidate) => candidate.id === appearance.diagram_id)
-                const description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
+                const presentation = appearanceReviewPresentation(changes.review!, appearance, index)
+                const { subject, description, focus, movedChild } = presentation
+                const label = `${subject} ${description}`
                 const detailDiagramID = appearance.status === 'detail_changed' ? appearance.detail_diagram_id : undefined
                 const anchor: ReviewAnchor = { kind: 'composition', side: appearance.side, diagram_id: appearance.diagram_id, component_id: appearance.component_id,
                   aspect: detailDiagramID ? 'detail' : appearance.role, ...(detailDiagramID ? { detail_diagram_id: detailDiagramID } : {}) }
-                const annotations = compositionAnnotation(reviewAnnotationComments, appearance.side, appearance.diagram_id, appearance.component_id, `${projection?.title ?? 'Component'} · ${description}`)
+                const annotations = compositionAnnotation(reviewAnnotationComments, appearance.side, appearance.diagram_id, appearance.component_id, label)
                 const contextKey = `appearance-change:${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`
-                return <li className="composition-review-change" key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.({ kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`, diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role, compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID, reviewSide: appearance.side === 'before' ? 'before' : 'with' })}><strong>{projection?.title ?? 'Component'}</strong> {description}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label: `${projection?.title ?? 'Component'} · ${description}`, anchor })}>Comment on this change</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
+                return <li className="composition-review-change" key={`${appearance.diagram_id}:${appearance.component_id}:${appearance.status}:${index}`}><span className="diagram-review-row"><button className="diagram-review-target text-action" type="button" onClick={() => onFocusDiagram?.(focus)}><strong>{subject}</strong> {description}{movedChild && <> · {appearance.side === 'before' ? 'Before changes' : 'With changes'} in {focus.title}</>}</button><span className="diagram-review-actions">{!activeReviewSubmission && <button className="annotation-add-action" type="button" onClick={() => setCommentTarget({ contextKey, label, anchor })}>Comment on this change</button>}{annotations && onOpenAnnotation && <AnnotationMarker group={annotations} onToggle={() => onOpenAnnotation(annotations)} />}</span></span>{inlineCommentEditor(contextKey)}</li>
               })}
             </ul>
           </section>
@@ -3148,6 +3154,35 @@ function appearanceReviewDescription(role: 'home' | 'reference', status: 'added'
   if (status === 'detail_changed') return `detail diagram link changed in ${diagramTitle}`
   if (role === 'home') return status === 'added' ? `now lives in ${diagramTitle}` : `no longer lives in ${diagramTitle}`
   return status === 'added' ? `shown in ${diagramTitle}` : `no longer shown in ${diagramTitle}`
+}
+
+function appearanceReviewPresentation(review: ChangeReview, appearance: ReviewAppearanceChange, index: number) {
+  const exactSide = appearance.side === 'before' ? review.before : review.with_changes
+  const otherSide = appearance.side === 'before' ? review.with_changes : review.before
+  const component = exactSide.components.find((item) => item.id === appearance.component_id)
+    ?? otherSide.components.find((item) => item.id === appearance.component_id)
+  const diagram = exactSide.diagrams?.find((item) => item.id === appearance.diagram_id)
+    ?? otherSide.diagrams?.find((item) => item.id === appearance.diagram_id)
+  const detailDiagramID = appearance.status === 'detail_changed' ? appearance.detail_diagram_id : undefined
+  const beforeChild = detailDiagramID ? review.before.diagrams?.find((item) => item.id === detailDiagramID) : undefined
+  const withChild = detailDiagramID ? review.with_changes.diagrams?.find((item) => item.id === detailDiagramID) : undefined
+  const movedChild = Boolean(beforeChild?.parent_anchor_component_id && withChild?.parent_anchor_component_id && beforeChild.parent_anchor_component_id !== withChild.parent_anchor_component_id)
+  let subject = component?.title ?? 'Component'
+  let description = appearanceReviewDescription(appearance.role, appearance.status, diagram?.title ?? 'Diagram')
+  if (movedChild) {
+    const from = review.before.components.find((item) => item.id === beforeChild!.parent_anchor_component_id)
+    const to = review.with_changes.components.find((item) => item.id === withChild!.parent_anchor_component_id)
+    subject = (appearance.side === 'before' ? beforeChild : withChild)!.title
+    description = `moved from ${from?.title ?? 'Component'} to ${to?.title ?? 'Component'}`
+  }
+  const focus: Extract<ReviewFocus, { kind: 'diagram' }> = {
+    kind: 'diagram', key: `appearance:${appearance.diagram_id}:${appearance.component_id}:${index}`,
+    diagramID: appearance.diagram_id, title: diagram?.title ?? 'Diagram', description: `${subject} ${description}`,
+    path: appearance.path, status: 'appearance_changed', componentID: appearance.component_id, role: appearance.role,
+    compositionAspect: detailDiagramID ? 'detail' : appearance.role, detailDiagramID,
+    reviewSide: appearance.side === 'before' ? 'before' : 'with',
+  }
+  return { subject, description, movedChild, focus }
 }
 
 function verdictLabel(verdict: ReviewSubmissionSummary['verdict']) {
@@ -3408,7 +3443,7 @@ function ReviewContext({
     return (
       <section className="review-context" aria-label="Review context">
         <div className="review-context-heading"><div><p className="eyebrow">Diagram composition</p><h3>{focus.title}</h3></div><button className="text-action" type="button" onClick={onClear}>Clear focus</button></div>
-        <p>{focus.status === 'added' ? 'This diagram is added with the changes.' : focus.status === 'title_changed' ? 'This diagram title changes.' : 'A component placement changes in this diagram.'}</p>
+        <p>{focus.description ?? (focus.status === 'added' ? 'This diagram is added with the changes.' : focus.status === 'title_changed' ? 'This diagram title changes.' : 'A component placement changes in this diagram.')}</p>
         <div className="context-comment-actions">{onComment && <button className="text-action" type="button" onClick={() => onComment({ contextKey, label: focus.title, anchor })}>{focus.componentID ? 'Comment on this change' : 'Comment on diagram'}</button>}{annotations && <AnnotationMarker group={annotations} onToggle={() => openAnnotation(annotations)} />}</div>
         {renderCommentEditor?.(contextKey)}
       </section>

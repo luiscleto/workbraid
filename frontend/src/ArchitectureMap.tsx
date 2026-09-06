@@ -63,6 +63,7 @@ type ArchitectureMapProps = {
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
   reviewRelationships?: ReviewMapRelationshipChange[]
+  reviewComposition?: ReactNode
   reviewDiagramID?: string
   selectedRelationshipKey?: string
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
@@ -89,6 +90,7 @@ export function ArchitectureMap({
   reviewSide,
   reviewComponents = [],
   reviewRelationships = [],
+  reviewComposition,
   reviewDiagramID,
   selectedRelationshipKey,
   onSelectRelationship,
@@ -318,6 +320,7 @@ export function ArchitectureMap({
       components={components}
       componentChanges={reviewComponents}
       relationshipChanges={reviewRelationships}
+      compositionChanges={reviewComposition}
       reviewDiagramID={reviewDiagramID}
       onSelectComponent={onSelect}
       onSelectRelationship={onSelectRelationship}
@@ -410,6 +413,7 @@ function ReviewChangeControls({
   components,
   componentChanges,
   relationshipChanges,
+  compositionChanges,
   reviewDiagramID,
   onSelectComponent,
   onSelectRelationship,
@@ -418,6 +422,7 @@ function ReviewChangeControls({
   components: MapComponent[]
   componentChanges: ReviewMapComponentChange[]
   relationshipChanges: ReviewMapRelationshipChange[]
+  compositionChanges?: ReactNode
   reviewDiagramID?: string
   onSelectComponent: (id: string) => void
   onSelectRelationship?: (relationship: ReviewRelationshipSelection) => void
@@ -430,13 +435,14 @@ function ReviewChangeControls({
     const fact = `${relationship.status}\u0000${relationship.source_id}\u0000${relationship.target_id}\u0000${relationship.label}`
     facts.set(fact, (facts.get(fact) ?? 0) + 1)
   }
-  if (!visibleComponentChanges.length && !visibleRelationshipChanges.length) {
+  if (!visibleComponentChanges.length && !visibleRelationshipChanges.length && !compositionChanges) {
     return <p className="map-review-empty">No visual changes in this {reviewDiagramID ? 'diagram' : 'view'}.</p>
   }
   return (
     <div className="map-review-controls" aria-label="Visual changes">
-      <p className="map-review-key"><span>＋ Added</span><span>△ Content changed</span><span>− Removed relationship</span></p>
+      {(visibleComponentChanges.length > 0 || visibleRelationshipChanges.length > 0) && <p className="map-review-key"><span>＋ Added</span><span>△ Content changed</span><span>− Removed relationship</span></p>}
       <ul>
+        {compositionChanges}
         {visibleComponentChanges.map((change) => {
           const title = titles.get(change.component_id)
           if (!title) return null

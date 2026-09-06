@@ -110,6 +110,8 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/diagrams/create-detail", h.agentDiagramCreateDetail)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/parent-options", h.agentDetailParentOptions)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/reassign-detail", h.agentReassignDetail)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-preview", h.agentReconciliationPreview)
+	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-apply", h.agentReconciliationApply)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/show-component", h.agentDiagramShowComponent)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/stop-showing-component", h.agentDiagramStopShowingComponent)
@@ -157,7 +159,7 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 	}
 	if _, required := any(value).(interface{ RequiresExactGeneration() }); required {
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(contents, &fields); err != nil || fields["generation"] == nil {
+		if err := json.Unmarshal(contents, &fields); err != nil || fields["generation"] == nil || string(fields["generation"]) == "null" {
 			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "The exact change-set generation is required.", map[string]any{"field": "generation"})
 			return zero, false
 		}
@@ -245,7 +247,7 @@ func agentMessage(code string) string {
 	case "change_set_not_editable":
 		return "Applied change sets are read-only. Choose an active change set."
 	case "change_set_out_of_date":
-		return "This change set is out of date with Accepted. It can still be edited and reviewed, but not accepted until reconciliation exists."
+		return "This change set is out of date with Accepted. It can still be edited and reviewed. Reconcile with current Accepted before updating Architecture."
 	case "target_not_found":
 		return "That Component or Diagram is not in the current Architecture, accepted or pending."
 	case "target_not_eligible":

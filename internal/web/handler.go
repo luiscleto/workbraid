@@ -63,6 +63,11 @@ type Handler struct {
 	// changeSetLoadFailure is a focused test seam for transient private-Git
 	// change-set recovery failure. Production never sets it.
 	changeSetLoadFailure func() error
+	// Narrow checkpoints around the real reconciliation transaction. Tests
+	// change real refs or drop a real response; production leaves these nil.
+	beforeReconciliationReobserve   func()
+	beforeReconciliationTransaction func()
+	afterReconciliationTransaction  func()
 }
 
 type loadedProject struct {

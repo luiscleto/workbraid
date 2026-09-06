@@ -140,6 +140,10 @@ func TestDescriptionResidualRoundTripAgainstUnterminatedAcceptedH1(t *testing.T)
 	if result.Tree() != proposed.Tree() {
 		t.Fatal("same exact final Architecture did not yield the P tree")
 	}
+	reconciled, err := manager.Reconcile(ctx, base, accepted, proposed, nil)
+	if err != nil || reconciled.Status != "ready" || reconciled.Candidate == nil || reconciled.Candidate.Tree() != result.Tree() {
+		t.Fatalf("ordinary exact Description residual through reconciliation: %+v %v", reconciled, err)
+	}
 	if gitText(t, "--git-dir", storePath, "show-ref") != refs {
 		t.Fatal("construction changed refs")
 	}

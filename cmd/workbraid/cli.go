@@ -295,6 +295,8 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
 	case "diagram_parent_options", "diagram_reassign_detail":
 		return parseDetailParentCommand(operation, flags, actionArgs, invalid)
+	case "change_set_reconcile_preview", "change_set_reconcile_apply":
+		return parseReconciliationCommand(operation, flags, actionArgs, stdin, invalid)
 	case "diagram_create_detail", "diagram_edit_title", "diagram_show_component", "diagram_stop_showing_component":
 		return parseDiagramCommand(operation, flags, actionArgs, invalid)
 	default:
@@ -631,6 +633,47 @@ func parseDetailParentCommand(operation string, flags *flag.FlagSet, args []stri
 	return operation, agentapi.DiagramReassignDetailRequest{StatePreconditions: state, DiagramID: diagramID, AnchorComponentID: anchorID}, nil
 }
 
+func parseReconciliationCommand(operation string, flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
+	storeID, changeSetID, generation := addStateFlags(flags)
+	var inputs agentapi.ReconciliationInputs
+	var filename string
+	flags.StringVar(&inputs.ChangeSetState, "change-set-state", "", "exact active state S from inspect")
+	flags.StringVar(&inputs.BaseRevision, "base-revision", "", "exact proposal base B")
+	flags.StringVar(&inputs.CandidateTree, "candidate-tree", "", "exact valid proposal tree P")
+	flags.StringVar(&inputs.AcceptedRevision, "accepted-revision", "", "exact known-current Accepted A")
+	flags.StringVar(&filename, "resolutions-file", "", "exact typed resolutions JSON file, or - for stdin; Apply requires [] for automatic work")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*storeID, *changeSetID, *generation, inputs.ChangeSetState, inputs.BaseRevision, inputs.CandidateTree, inputs.AcceptedRevision) {
+		return invalid("Reconciliation requires exact store, Change Set, generation and S/B/A/P inputs from inspect.")
+	}
+	parsed, err := parseRequiredGeneration(*generation)
+	if err != nil || parsed == nil {
+		return invalid("Generation must be a non-negative integer.")
+	}
+	inputs.StatePreconditions = agentapi.StatePreconditions{StoreID: *storeID, ChangeSetID: *changeSetID, Generation: *parsed}
+	request := agentapi.ReconciliationApplyRequest{ReconciliationInputs: inputs}
+	if filename != "" {
+		var data []byte
+		if filename == "-" {
+			data, err = io.ReadAll(stdin)
+		} else {
+			data, err = os.ReadFile(filename)
+		}
+		if err != nil {
+			return invalid("The resolutions file could not be read.")
+		}
+		if err = json.Unmarshal(data, &request.Resolutions); err != nil || request.Resolutions == nil {
+			return invalid("Resolutions must be a closed typed JSON array, with [] for automatic work.")
+		}
+	}
+	if operation == "change_set_reconcile_preview" {
+		return operation, agentapi.ReconciliationPreviewRequest{ReconciliationInputs: inputs, Resolutions: request.Resolutions}, nil
+	}
+	if filename == "" {
+		return invalid("Apply requires --resolutions-file, with [] for a fully automatic result.")
+	}
+	return operation, request, nil
+}
+
 func parseDiagramCommand(operation string, flags *flag.FlagSet, args []string, invalid invalidCommand) (string, any, *agentapi.Envelope) {
 	storeID, revision, generation := addStateFlags(flags)
 	var componentID, diagramID string
@@ -709,6 +752,8 @@ Authoring commands:
   relationship remove <state> --source-id <uuid> --target-id <raw> (--label <raw>|--label-file <path|->) [--occurrence <n>]
   diagram parent-options <state> --diagram-id <uuid>
   diagram reassign-detail <state> --diagram-id <uuid> --anchor-component-id <uuid>
+  change-set reconcile-preview <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> [--resolutions-file <path|->]
+  change-set reconcile-apply <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> --resolutions-file <path|->
   diagram create-detail <state> --component-id <uuid> --title <text>
   diagram edit-title <state> --diagram-id <uuid> --title <text>
   diagram show-component <state> --diagram-id <uuid> --component-id <uuid>

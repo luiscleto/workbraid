@@ -13,7 +13,7 @@ import (
 
 type noToolInput struct{}
 
-const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. Address proposed work by exact change_set_id and generation. Prepare change_set_review for exact acceptance evidence and its review_url. Review submissions are separate immutable informational feedback: list, inspect, or submit them against the exact reviewed_state and binding. They never accept Architecture."
+const mcpInstructions = "WorkBraid has one Accepted Architecture and durable named change sets. Address proposed work by exact change_set_id and generation. diagram_parent_options and diagram_reassign_detail change a Diagram's parent through ordinary authoring. For out-of-date proposals, inspect exact S/B/A/P, use change_set_reconcile_preview to inspect/check typed choices, then deliberately change_set_reconcile_apply. Both competing children need explicit parents. Reconciliation changes only the proposal; on response loss inspect, never replay old S. Prepare change_set_review for exact acceptance evidence and its review_url. Review submissions are separate immutable informational feedback: list, inspect, or submit them against the exact reviewed_state and binding. They never accept Architecture."
 
 type nopWriteCloser struct{ io.Writer }
 
@@ -102,6 +102,8 @@ func reviewSubmissionInputSchema() *jsonschema.Schema {
 }
 
 func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
+	addMCPToolWithSchema[agentapi.ReconciliationPreviewRequest](server, client, "change_set_reconcile_preview", "Reconcile with Accepted", "Prepare or check complete typed choices for exact S/B/A/P. Inspect supplies S and P without Review changes. This creates no state, review, generation or refs. Description values preserve every Markdown byte. Both competing children require explicit final anchors; divergent same-new-UUID objects cannot be replaced.", readAnnotations("Reconcile with Accepted"), reconciliationInputSchema(false))
+	addMCPToolWithSchema[agentapi.ReconciliationApplyRequest](server, client, "change_set_reconcile_apply", "Apply reconciliation", "Recompute exact S/B/A/P and complete choices, then atomically verify Accepted A and update only this active Change Set from S. Required resolutions: [] for automatic work. Review is cleared; use ordinary Review changes afterward. On response loss inspect; retry with old S returns change_set_state_mismatch with current context and never reapplies. No reconciliation receipt or automatic retry exists.", mutationAnnotations("Apply reconciliation", false, false), reconciliationInputSchema(true))
 	addMCPTool[noToolInput](server, client, "status", "Check WorkBraid", "Check the local agent protocol, current project, Accepted revision, and authority state. This never opens or refreshes a project.", readAnnotations("Check WorkBraid"))
 	addMCPTool[noToolInput](server, client, "projects_list", "List projects", "List the project catalog with names, slugs, stable store UUIDs, revisions, conflicts, and unavailable entries. This does not change the current project.", readAnnotations("List projects"))
 	addMCPTool[noToolInput](server, client, "project_current", "Inspect current project", "Return the current project or null. All MCP connections use the same current WorkBraid project.", readAnnotations("Inspect current project"))

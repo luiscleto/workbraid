@@ -431,6 +431,34 @@ func (manager *Manager) WriteActiveChangeSet(ctx context.Context, storeID string
 }
 
 func (manager *Manager) writeChangeSet(ctx context.Context, storeID string, record ChangeSet, expectedObject string) (string, error) {
+	commit, err := manager.prepareChangeSet(ctx, storeID, record)
+	if err != nil {
+		return "", err
+	}
+	storePath, err := manager.StorePath(storeID)
+	if err != nil {
+		return "", err
+	}
+	ref := changeSetRef(record.Lifecycle, record.ID)
+	if expectedObject == "" {
+		err = manager.git.createRef(ctx, storePath, ref, commit)
+	} else {
+		err = manager.git.updateRef(ctx, storePath, ref, commit, expectedObject)
+	}
+	if err != nil {
+		return "", err
+	}
+	return commit, nil
+}
+
+func (manager *Manager) PrepareActiveChangeSet(ctx context.Context, storeID string, record ChangeSet) (string, error) {
+	if record.Lifecycle != "active" || record.AppliedRevision != "" {
+		return "", errors.New("only an active change set can be prepared")
+	}
+	return manager.prepareChangeSet(ctx, storeID, record)
+}
+
+func (manager *Manager) prepareChangeSet(ctx context.Context, storeID string, record ChangeSet) (string, error) {
 	storePath, err := manager.StorePath(storeID)
 	if err != nil {
 		return "", err
@@ -477,15 +505,6 @@ func (manager *Manager) writeChangeSet(ctx context.Context, storeID string, reco
 	if err != nil {
 		return "", fmt.Errorf("create change-set state commit: %w", err)
 	}
-	ref := changeSetRef(record.Lifecycle, record.ID)
-	if expectedObject == "" {
-		err = manager.git.createRef(ctx, storePath, ref, commit)
-	} else {
-		err = manager.git.updateRef(ctx, storePath, ref, commit, expectedObject)
-	}
-	if err != nil {
-		return "", err
-	}
 	return commit, nil
 }
 
@@ -495,34 +514,18 @@ func (manager *Manager) PrepareAppliedChangeSet(ctx context.Context, storeID str
 	}
 	// Write the immutable envelope and commit without publishing a ref. The
 	// later three-ref transaction is the sole lifecycle boundary.
+	return manager.prepareChangeSet(ctx, storeID, record)
+}
+
+func (manager *Manager) PublishReconciliation(ctx context.Context, storeID, id, accepted, oldState, newState string) error {
+	if !canonicalUUID(id) || !validObjectID(accepted) || !validObjectID(oldState) || !validObjectID(newState) {
+		return errors.New("invalid reconciliation transaction inputs")
+	}
 	storePath, err := manager.StorePath(storeID)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if err := manager.validateChangeSetForWrite(ctx, storeID, record); err != nil {
-		return "", err
-	}
-	metadata := changeSetMetadata{Format: "workbraid-change-set", Version: 1, ID: record.ID, Name: record.Name, BaseRevision: record.BaseRevision, Generation: record.Generation, AppliedRevision: record.AppliedRevision}
-	metadata.Review = &changeSetReview{BaseRevision: record.Review.BaseRevision, CandidateTree: record.Review.CandidateTree, Generation: record.Review.Generation}
-	metadataBytes, _ := yaml.Marshal(metadata)
-	changesBytes, err := marshalChangeState(record.Changes, record.Composition)
-	if err != nil {
-		return "", err
-	}
-	blobs := make(map[string]string, 3)
-	for path, contents := range map[string][]byte{"change-set.yaml": metadataBytes, "proposal.md": []byte(record.Proposal), "changes.yaml": changesBytes} {
-		blob, writeErr := manager.git.writeBlob(ctx, storePath, contents)
-		if writeErr != nil {
-			return "", writeErr
-		}
-		blobs[path] = blob
-	}
-	treeSource := fmt.Sprintf("040000 tree %s\tarchitecture\n100644 blob %s\tchange-set.yaml\n100644 blob %s\tchanges.yaml\n100644 blob %s\tproposal.md\n", record.Candidate.Tree(), blobs["change-set.yaml"], blobs["changes.yaml"], blobs["proposal.md"])
-	tree, err := manager.git.makeTree(ctx, storePath, []byte(treeSource))
-	if err != nil {
-		return "", err
-	}
-	return manager.git.makeStateCommit(ctx, storePath, tree, record.AppliedRevision)
+	return manager.git.reconcileChangeSet(ctx, storePath, accepted, changeSetRef("active", id), oldState, newState)
 }
 
 func (manager *Manager) DeleteActiveChangeSet(ctx context.Context, storeID, id, expectedObject string) error {

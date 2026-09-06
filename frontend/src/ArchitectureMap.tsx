@@ -58,6 +58,7 @@ type ArchitectureMapProps = {
   selectedID?: string
   onSelect: (id: string) => void
   emptyMessage?: string
+  fitPadding?: number
   layoutComponentIDs?: string[]
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
@@ -83,6 +84,7 @@ export function ArchitectureMap({
   selectedID,
   onSelect,
   emptyMessage,
+  fitPadding = 72,
   layoutComponentIDs,
   reviewSide,
   reviewComponents = [],
@@ -137,7 +139,7 @@ export function ArchitectureMap({
       instance = cytoscape({
         container: container.current,
         elements,
-        layout: { name: 'preset', animate: false, fit: true, padding: 72 },
+        layout: { name: 'preset', animate: false, fit: true, padding: fitPadding },
         minZoom: 0.35,
         maxZoom: 2.5,
         style: mapStyles,
@@ -269,7 +271,7 @@ export function ArchitectureMap({
       graph.current = null
       instance?.destroy()
     }
-  }, [elements])
+  }, [elements, fitPadding])
 
   useEffect(() => {
     const instance = graph.current
@@ -343,11 +345,11 @@ export function ArchitectureMap({
   useEffect(() => {
     const animationFrame = requestAnimationFrame(() => {
       graph.current?.resize()
-      graph.current?.fit(undefined, 72)
+      graph.current?.fit(undefined, fitPadding)
       syncOverlays.current()
     })
     return () => cancelAnimationFrame(animationFrame)
-  }, [dockCollapsed, visibleDockPane, hasExternalReferences, hasReviewControls])
+  }, [dockCollapsed, visibleDockPane, hasExternalReferences, hasReviewControls, fitPadding])
   const dockPanes = [
     ...(hasReviewControls ? [{ id: 'changes' as const, label: 'Changes' }] : []),
     ...(hasExternalReferences ? [{ id: 'external' as const, label: 'External references' }] : []),
@@ -395,7 +397,7 @@ export function ArchitectureMap({
       )}
       {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
-        graph.current?.fit(undefined, 72)
+        graph.current?.fit(undefined, fitPadding)
         syncOverlays.current()
       }}>Fit map</button>}
       {bottomDock}
@@ -654,6 +656,8 @@ const mapStyles: cytoscape.StylesheetJson = [
       'font-size': 13,
       'text-wrap': 'wrap',
       'text-max-width': '128px',
+      'text-valign': 'center',
+      'text-halign': 'center',
       width: 116,
       height: 54,
       shape: 'round-rectangle',

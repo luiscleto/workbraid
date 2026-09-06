@@ -80,4 +80,13 @@ func TestOrdinaryDetailReassignmentAcrossRestart(t *testing.T) {
 	if len(h.changeSets[state.ChangeSetID].detailReassignments) != 0 {
 		t.Fatal("return to base retained a redundant fact")
 	}
+	// The destination comes from the complete candidate, including Components
+	// authored after the child already existed in Accepted.
+	newParent := create("Candidate-only parent")
+	call("diagrams/parent-options", agentapi.DiagramParentOptionsRequest{StatePreconditions: state, DiagramID: child})
+	call("diagrams/reassign-detail", agentapi.DiagramReassignDetailRequest{StatePreconditions: state, DiagramID: child, AnchorComponentID: newParent})
+	anchor, _, _ := h.changeSets[state.ChangeSetID].candidate.Snapshot().DiagramParent(child)
+	if anchor != newParent {
+		t.Fatal("candidate-only destination was unavailable")
+	}
 }

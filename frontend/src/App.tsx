@@ -8,6 +8,7 @@ import {
 } from './ArchitectureMap'
 import { MarkdownBody } from './MarkdownBody'
 import { RawDiff } from './RawDiff'
+import { ReconciliationTask, type ReconciliationPreview, type ReconciliationResolution, type ReconciliationSnapshot } from './ReconciliationTask'
 
 type CatalogProject = { name?: string; slug?: string; revision?: string; store_id?: string; unavailable?: boolean; conflict?: boolean }
 
@@ -89,6 +90,9 @@ type AuthoringComponent = {
 type PendingComponent = AuthoringComponent & { new: boolean }
 
 type ChangesInProgress = {
+  change_set_state: string
+  candidate_tree?: string
+  detail_reassignments?: { diagram_id: string; anchor_component_id: string }[]
   id: string
   name: string
   lifecycle: 'active' | 'applied' | 'no_longer_active'
@@ -252,6 +256,7 @@ type DiagramEditor =
 type WorkspaceTask = 'documentation' | 'changes' | 'empty'
 
 type NavigationIntent =
+  | { kind: 'reconcile' }
   | { kind: 'component'; id: string }
   | { kind: 'diagram'; id: string; focusComponentID?: string }
   | { kind: 'changes' }
@@ -603,6 +608,8 @@ export function App() {
   const [state, setState] = useState<ViewState>({ kind: 'looking' })
   const [editor, setEditor] = useState<ComponentEditor | null>(null)
   const [diagramEditor, setDiagramEditor] = useState<DiagramEditor | null>(null)
+  const [reconciliation, setReconciliation] = useState<ReconciliationPreview | null>(null)
+  const [reconciliationDirty, setReconciliationDirty] = useState(false)
   const [authoringError, setAuthoringError] = useState('')
   const [architectureNotice, setArchitectureNotice] = useState('')
   const [architectureBusy, setArchitectureBusy] = useState(false)
@@ -790,7 +797,7 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1273,7 +1280,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -1291,6 +1298,8 @@ export function App() {
 
   async function performNavigation(intent: NavigationIntent) {
     setNavigationIntent(null)
+    setReconciliation(null)
+    setReconciliationDirty(false)
     if (intent.kind === 'review-context-replacement') {
       setReviewCommentTarget(undefined)
       setReviewCommentDirty(false)
@@ -1333,6 +1342,26 @@ export function App() {
     setNewChangeSetName('')
     setAuthoringError('')
     setArchitectureNotice('')
+    if (intent.kind === 'reconcile') {
+      if (state.kind !== 'ready' || !state.value.changes) return
+      const changes = state.value.changes
+      setArchitectureBusy(true)
+      try {
+        const response = await postJSON('/api/agent/v2/change-sets/reconcile-preview', {
+          store_id: state.value.store_id, change_set_id: changes.id, generation: changes.generation,
+          change_set_state: changes.change_set_state, base_revision: changes.base_revision,
+          candidate_tree: changes.candidate_tree, accepted_revision: state.value.revision,
+        })
+        const payload = await response.json()
+        if (stateRef.current !== state) return
+        if (!payload.ok) { setArchitectureNotice(payload.error?.message ?? 'Reconciliation could not be prepared. Refresh and inspect this proposal.'); return }
+        setReviewVisible(false)
+        setReconciliation(payload.result as ReconciliationPreview)
+        resetWorkingPaneScroll()
+      } catch { setArchitectureNotice('Reconciliation could not be prepared. Refresh and inspect this proposal.') }
+      finally { setArchitectureBusy(false) }
+      return
+    }
     if (intent.kind === 'component') {
       setSelectedComponentID(intent.id)
       setWorkspaceTask('documentation')
@@ -1586,7 +1615,7 @@ export function App() {
         ?? diagramProjection.diagrams?.find((diagram) => diagram.id === diagramProjection.root_diagram_id)
       : undefined
     const authorityIndeterminate = result.action_error === 'refresh_failed'
-    const authoringAvailable = !result.stale && !authorityIndeterminate && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
+    const authoringAvailable = !reconciliation && !result.stale && !authorityIndeterminate && !result.changes?.stale && !result.changes?.read_only && !acceptanceUnknown
     const compositionProjection = result.changes?.candidate ?? result
     const compositionDiagrams = result.changes?.diagram_options ?? compositionProjection.diagrams ?? result.diagrams ?? []
     const editorDiagrams = diagramEditor?.kind === 'move'
@@ -1957,7 +1986,7 @@ export function App() {
             <button className="notice-dismiss" type="button" aria-label="Dismiss message" onClick={() => setArchitectureNotice('')}>×</button>
           </div>
         )}
-        <div className={`architecture-workbench ${review ? 'reviewing' : ''}`}>
+        <div className={`architecture-workbench ${review ? 'reviewing' : ''} ${reconciliation ? 'reconciling' : ''}`}>
           <nav className="component-index" aria-label={diagramProjection.format_version === 2 ? 'Diagrams and components' : 'Components'}>
             {diagramProjection.format_version === 2 && (
               <div className="diagram-navigator">
@@ -2072,7 +2101,7 @@ export function App() {
               </label>
             )}
           </nav>
-          <section className={`map-region ${activeDiagram ? 'has-diagram' : ''}`}>
+          {!reconciliation && <section className={`map-region ${activeDiagram ? 'has-diagram' : ''}`}>
             <div className="region-label">{review ? (reviewSide === 'with' ? 'With changes map' : 'Before changes map') : activeDiagram?.title ?? 'Architecture map'}</div>
             {candidateOnlyDiagramBefore && <p className="candidate-only-note">That diagram exists only with the changes. Before changes shows the earlier architecture map.</p>}
             {activeDiagram && (
@@ -2172,9 +2201,46 @@ export function App() {
                 annotationOverlay={annotationOverlay}
               />
             )}
-          </section>
+          </section>}
           <aside className="working-pane" aria-label="Architecture task" ref={workingPaneRef}>
-            {creatingChangeSet ? (
+            {reconciliation ? <ReconciliationTask
+              key={reconciliation.inputs.change_set_state}
+              name={result.changes?.name ?? 'Proposal'}
+              initial={reconciliation}
+              onDirty={setReconciliationDirty}
+              onLeave={() => requestNavigation({ kind: 'changes' })}
+              onCheck={async (resolutions: ReconciliationResolution[]) => {
+                const response = await postJSON('/api/agent/v2/change-sets/reconcile-preview', { ...reconciliation.inputs, resolutions })
+                const payload = await response.json()
+                if (stateRef.current !== state) throw new Error('The workspace changed. Prepare again from the current proposal.')
+                if (!payload.ok) throw new Error(payload.error?.message ?? 'Choices could not be checked.')
+                return payload.result as ReconciliationPreview
+              }}
+              onApply={async (resolutions: ReconciliationResolution[]) => {
+                const response = await postJSON('/api/agent/v2/change-sets/reconcile-apply', { ...reconciliation.inputs, resolutions })
+                const payload = await response.json()
+                if (!payload.ok) throw new Error(payload.error?.message ?? 'The Apply response could not be confirmed.')
+                if (stateRef.current !== state) return
+                setReconciliation(null)
+                setReconciliationDirty(false)
+                editorDirtyRef.current = false
+                enterProposalResult(payload.result.workspace as ArchitectureResult, reconciliation.inputs.change_set_id)
+                setArchitectureNotice(payload.result.remaining_changes ? 'Reconciliation applied to this proposal. Review changes to continue.' : 'No Architecture changes remain. This proposal stays open on the current Accepted basis.')
+              }}
+              renderCandidate={(projection: ReconciliationSnapshot, requestedID, selectedID, onSelect) => {
+                const snapshot = projection as ReviewSnapshot
+                const diagram = snapshot.diagrams?.find((item) => item.id === (requestedID ?? snapshot.root_diagram_id))
+                const nodes = diagram ? mapComponentsForDiagram(snapshot, diagram) : snapshot.components
+                return <ArchitectureMap
+                  revision={`${projection.revision}:${diagram?.id ?? ''}`}
+                  components={nodes}
+                  selectedID={nodes.find((node) => (('component_id' in node && node.component_id) || node.id) === selectedID)?.id}
+                  onSelect={(id) => { const node = nodes.find((node) => node.id === id); onSelect((node && 'component_id' in node && node.component_id) || id) }}
+                  emptyMessage="This diagram has no components."
+                  fitPadding={12}
+                />
+              }}
+            /> : creatingChangeSet ? (
               <NewChangesTask
                 name={newChangeSetName}
                 busy={architectureBusy}
@@ -2267,6 +2333,7 @@ export function App() {
               />
             ) : workspaceTask === 'changes' && result.changes ? (
               <ChangesTask
+                onReconcile={result.changes.out_of_date && result.changes.valid && !result.changes.read_only && !result.stale && !authorityIndeterminate ? () => requestNavigation({ kind: 'reconcile' }) : undefined}
                 result={result}
                 busy={architectureBusy}
                 acceptanceUnknown={acceptanceUnknown}
@@ -2331,7 +2398,7 @@ export function App() {
             ) : (
               <div className="workspace-empty"><p className="eyebrow">Architecture</p><h2>Start with a component</h2><p>Add the first part of this architecture to begin the map.</p></div>
             )}
-            {!creatingChangeSet && !(workspaceTask === 'changes' && result.changes) && !review && (
+            {!reconciliation && !creatingChangeSet && !(workspaceTask === 'changes' && result.changes) && !review && (
               <details className="technical-details">
                 <summary>Technical details</summary>
                 <dl><dt>Project slug</dt><dd>{result.project_slug}</dd><dt>Revision</dt><dd>{result.revision}</dd></dl>
@@ -2549,7 +2616,7 @@ function DiagramEditorForm({
   if (editor.kind === 'parent') {
     const groups = [...new Set(editor.options.eligible.map((option) => option.home_diagram_id))]
     return <form className="component-form diagram-editor" onSubmit={onSubmit}>
-      <div className="pane-heading"><p className="eyebrow">Diagram composition</p><h2>Change parent component for “{editor.options.title}”</h2></div>
+      <div className="pane-heading"><p className="eyebrow">{editor.options.title} · Diagram composition</p><h2>Change parent component</h2></div>
       <p>Currently under {editor.options.current_anchor.title} · {editor.options.current_anchor.home_diagram_title}.</p>
       {groups.length === 0 && <p className="empty-note">No free parent component is available outside this Diagram’s subtree. Add a suitable Component to the proposal, then try again.</p>}
       {groups.map((home) => <fieldset className="parent-choices" key={home}>
@@ -2628,6 +2695,7 @@ function NewChangesTask({
 }
 
 function ChangesTask({
+  onReconcile,
   result,
   busy,
   acceptanceUnknown,
@@ -2673,6 +2741,7 @@ function ChangesTask({
   onCancelDiscard,
   onDiscard,
 }: {
+  onReconcile?: () => void
   result: ArchitectureResult
   busy: boolean
   acceptanceUnknown: boolean
@@ -2908,6 +2977,7 @@ function ChangesTask({
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'
           : 'These changes have not updated Architecture yet.'}</p>
       <ChangeSetContextEditor key={`${changes.id}:${changes.generation}`} changes={changes} busy={busy} readOnly={readOnly} onRename={onRename} onSaveProposal={onSaveProposal} onDirty={onTextDirty} />
+      {onReconcile && <div className="proposal-reconciliation-action"><button className="inline-action" type="button" disabled={busy} onClick={onReconcile}>Reconcile with Accepted</button><p>Combine current Accepted work with this proposal and resolve conflicting changes.</p></div>}
       <h3 className="proposal-work-heading">Architecture work in this proposal</h3>
       <ul>
         {changes.components.map((component) => {

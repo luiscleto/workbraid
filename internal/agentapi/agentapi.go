@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"workbraid/internal/architecture"
 )
 
 const Protocol = "workbraid-agent-v2"
@@ -49,6 +51,24 @@ type StatePreconditions struct {
 	StoreID     string `json:"store_id" jsonschema:"Exact store UUID returned by the current WorkBraid server."`
 	ChangeSetID string `json:"change_set_id" jsonschema:"Exact active change-set UUID returned by WorkBraid."`
 	Generation  uint64 `json:"generation" jsonschema:"Exact generation inspected for that change set."`
+}
+
+type ReconciliationInputs struct {
+	StatePreconditions
+	ChangeSetState   string `json:"change_set_state" jsonschema:"Exact active state commit S returned by inspect. Any change invalidates these inputs, even without a generation change."`
+	BaseRevision     string `json:"base_revision" jsonschema:"Exact proposal base B returned by inspect."`
+	CandidateTree    string `json:"candidate_tree" jsonschema:"Exact valid proposal candidate P returned by inspect; no review is required."`
+	AcceptedRevision string `json:"accepted_revision" jsonschema:"Exact known-current Accepted A returned by inspect or explicit Refresh."`
+}
+
+type ReconciliationPreviewRequest struct {
+	ReconciliationInputs
+	Resolutions []architecture.ReconciliationResolution `json:"resolutions,omitempty" jsonschema:"Optional complete tentative choices, addressed by the exact typed conflict locators returned by preview. Check is non-mutating."`
+}
+
+type ReconciliationApplyRequest struct {
+	ReconciliationInputs
+	Resolutions []architecture.ReconciliationResolution `json:"resolutions" jsonschema:"Required complete explicit choices; send an empty array for a fully automatic result. Old S after a successful Apply is a state mismatch; inspect, never replay blindly."`
 }
 
 type DiagramParentOptionsRequest struct {
@@ -236,6 +256,8 @@ type DiagramComponentRequest struct {
 }
 
 var operationPaths = map[string]string{
+	"change_set_reconcile_preview":   "/api/agent/v2/change-sets/reconcile-preview",
+	"change_set_reconcile_apply":     "/api/agent/v2/change-sets/reconcile-apply",
 	"status":                         "/api/agent/v2/status",
 	"projects_list":                  "/api/agent/v2/projects/list",
 	"project_current":                "/api/agent/v2/projects/current",

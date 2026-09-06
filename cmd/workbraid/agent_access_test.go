@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 31 {
+	if err != nil || len(tools.Tools) != 33 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -424,6 +424,49 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if rejected.Error == nil || rejected.Error.Code != "change_set_out_of_date" {
 		t.Fatalf("out-of-date B update: %+v", rejected)
 	}
+	// Both transports proxy the same inspected S/B/A/P and ordinary residual.
+	beforeReconcile := runRealCLI(t, binary, origin, "change-set", "inspect", "--store-id", storeID, "--change-set-id", idB).Result.(map[string]any)
+	inputs := map[string]any{"store_id": storeID, "change_set_id": idB, "generation": beforeReconcile["generation"], "change_set_state": beforeReconcile["change_set_state"], "base_revision": beforeReconcile["base_revision"], "candidate_tree": beforeReconcile["candidate_tree"], "accepted_revision": acceptedRevision}
+	preview := runRealMCP(t, ctx, session, "change_set_reconcile_preview", inputs).Result.(map[string]any)
+	if preview["status"] != "ready" {
+		t.Fatalf("MCP reconciliation: %+v", preview)
+	}
+	cliInputs := []string{"--store-id", storeID, "--change-set-id", idB, "--generation", "3", "--change-set-state", beforeReconcile["change_set_state"].(string), "--base-revision", beforeReconcile["base_revision"].(string), "--candidate-tree", beforeReconcile["candidate_tree"].(string), "--accepted-revision", acceptedRevision}
+	cliPreview := runRealCLI(t, binary, origin, append([]string{"change-set", "reconcile-preview"}, cliInputs...)...).Result.(map[string]any)
+	if !reflect.DeepEqual(preview, cliPreview) {
+		t.Fatal("CLI/MCP previews differ")
+	}
+	command := exec.Command(binary, append(append([]string{"--server", origin, "--json", "change-set", "reconcile-apply"}, cliInputs...), "--resolutions-file", "-")...)
+	command.Stdin = strings.NewReader("[]")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("CLI stdin Apply: %s %v", output, err)
+	}
+	var applied agentapi.Envelope
+	if err := json.Unmarshal(output, &applied); err != nil || !applied.OK {
+		t.Fatalf("CLI stdin result: %s %v", output, err)
+	}
+	reconciled := applied.Result.(map[string]any)
+	if reconciled["generation"] != float64(4) || reconciled["base_revision"] != acceptedRevision || reconciled["review"] != nil {
+		t.Fatalf("CLI residual: %+v", reconciled)
+	}
+	inputs["resolutions"] = []any{}
+	retry := runRealMCPError(t, ctx, session, "change_set_reconcile_apply", inputs)
+	if retry.Error == nil || retry.Error.Code != "change_set_state_mismatch" {
+		t.Fatalf("MCP old-S retry: %+v", retry)
+	}
+	parentInputs := map[string]any{"store_id": storeID, "change_set_id": idB, "generation": 4, "diagram_id": detailID}
+	options := runRealMCP(t, ctx, session, "diagram_parent_options", parentInputs)
+	if !options.OK {
+		t.Fatal(options.Error)
+	}
+	runRealCLI(t, binary, origin, "diagram", "parent-options", "--store-id", storeID, "--change-set-id", idB, "--generation", "4", "--diagram-id", detailID)
+	parentInputs["anchor_component_id"] = componentB.Result.(map[string]any)["component_id"]
+	moved := runRealMCP(t, ctx, session, "diagram_reassign_detail", parentInputs).Result.(map[string]any)
+	if moved["generation"] != float64(5) {
+		t.Fatalf("MCP ordinary parent: %+v", moved)
+	}
+	runRealCLI(t, binary, origin, "diagram", "reassign-detail", "--store-id", storeID, "--change-set-id", idB, "--generation", "5", "--diagram-id", detailID, "--anchor-component-id", gatewayID)
 	appliedReview := runRealCLIError(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", idA, "--generation", "999")
 	if appliedReview.Error == nil || appliedReview.Error.Code != "change_set_not_editable" {
 		t.Fatalf("applied CLI review: %+v", appliedReview)
@@ -488,12 +531,12 @@ func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
 	if code := run([]string{"--help"}, &help, &stderr, bytes.NewReader(nil)); code != 0 {
 		t.Fatalf("help exit=%d", code)
 	}
-	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "review-submission list", "review-submission inspect", "review-submission submit", "--change-set-id <uuid>", "change_set_out_of_date", "review_anchor_invalid", "component_markdown", "reviewed_state", "Applied change sets are immutable evidence", "review_url"} {
+	for _, exact := range []string{"change-set list", "change-set create", "change-set inspect", "change-set rename", "change-set edit-proposal", "change-set review", "change-set discard", "review-submission list", "review-submission inspect", "review-submission submit", "--change-set-id <uuid>", "change_set_out_of_date", "review_anchor_invalid", "component_markdown", "reviewed_state", "Applied change sets are immutable evidence", "review_url", "diagram parent-options", "diagram reassign-detail", "change-set reconcile-preview", "change-set reconcile-apply", "change_set_state_mismatch", "component_description", "relationship_count", "competing_children", "replace_identity", "--resolutions-file"} {
 		if !strings.Contains(skill.String(), exact) && !strings.Contains(help.String(), exact) {
 			t.Fatalf("v2 help/skill missing %q", exact)
 		}
 	}
-	for _, obsolete := range []string{"changes inspect", "changes review", "pending_generation", "--generation <n|none>"} {
+	for _, obsolete := range []string{"changes inspect", "changes review", "pending_generation", "--generation <n|none>", "Reconciliation is a future product", "WorkBraid does not reconcile"} {
 		if strings.Contains(skill.String(), obsolete) || strings.Contains(help.String(), obsolete) {
 			t.Fatalf("v1 wording remains: %q", obsolete)
 		}
@@ -554,7 +597,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantNames := []string{
-		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_rename", "change_set_review", "change_sets_list",
+		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_reconcile_apply", "change_set_reconcile_preview", "change_set_rename", "change_set_review", "change_sets_list",
 		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
@@ -587,6 +630,55 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	called, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "status", Arguments: map[string]any{}})
 	if err != nil || called.IsError || called.StructuredContent == nil {
 		t.Fatalf("status result=%+v err=%v", called, err)
+	}
+	// Exercise the discovered closed manual union through the MCP SDK and the
+	// real HTTP/Git authority, alongside CLI stdin Check choices.
+	project := runRealMCP(t, ctx, session, "project_create", map[string]any{"name": "Typed reconciliation"})
+	store, accepted := project.Context.Project.StoreID, *project.Context.AcceptedRevision
+	root := runRealMCP(t, ctx, session, "architecture_inspect", map[string]any{}).Result.(map[string]any)["root_diagram_id"]
+	create := func(name string) string {
+		return runRealMCP(t, ctx, session, "change_set_create", map[string]any{"store_id": store, "accepted_revision": accepted, "name": name}).Result.(map[string]any)["id"].(string)
+	}
+	accept := func(id string, generation int) {
+		binding := runRealMCP(t, ctx, session, "change_set_review", map[string]any{"store_id": store, "change_set_id": id, "generation": generation}).Result.(map[string]any)
+		result := runRealMCP(t, ctx, session, "architecture_update", map[string]any{"store_id": store, "change_set_id": id, "generation": generation, "base_revision": binding["base_revision"], "candidate_tree": binding["candidate_tree"]})
+		accepted = *result.Context.AcceptedRevision
+	}
+	setup := create("Initial Gateway")
+	component := runRealMCP(t, ctx, session, "component_create", map[string]any{"store_id": store, "change_set_id": setup, "generation": 0, "diagram_id": root, "title": "Gateway", "description": ""}).Result.(map[string]any)["component_id"]
+	accept(setup, 1)
+	p := create("Proposed Description")
+	a := create("Accepted Description")
+	runRealMCP(t, ctx, session, "component_edit", map[string]any{"store_id": store, "change_set_id": p, "generation": 0, "component_id": component, "title": "Gateway", "description": "Proposed\n"})
+	runRealMCP(t, ctx, session, "component_edit", map[string]any{"store_id": store, "change_set_id": a, "generation": 0, "component_id": component, "title": "Gateway", "description": "Accepted\n"})
+	accept(a, 1)
+	inspected := runRealMCP(t, ctx, session, "change_set_inspect", map[string]any{"store_id": store, "change_set_id": p}).Result.(map[string]any)
+	inputs := map[string]any{"store_id": store, "change_set_id": p, "generation": 1, "change_set_state": inspected["change_set_state"], "base_revision": inspected["base_revision"], "candidate_tree": inspected["candidate_tree"], "accepted_revision": accepted}
+	preview := runRealMCP(t, ctx, session, "change_set_reconcile_preview", inputs).Result.(map[string]any)
+	conflicts := preview["conflicts"].([]any)
+	if len(conflicts) != 1 {
+		t.Fatalf("typed conflict: %+v", preview)
+	}
+	body := " \r\nExact **manual** Description\n"
+	resolutions := []any{map[string]any{"locator": conflicts[0].(map[string]any)["locator"], "choice": "manual", "value": map[string]any{"text": body}}}
+	encoded, _ := json.Marshal(resolutions)
+	args := []string{"--server", httpServer.URL, "--json", "change-set", "reconcile-preview", "--store-id", store, "--change-set-id", p, "--generation", "1", "--change-set-state", inspected["change_set_state"].(string), "--base-revision", inspected["base_revision"].(string), "--candidate-tree", inspected["candidate_tree"].(string), "--accepted-revision", accepted, "--resolutions-file", "-"}
+	var stdout, stderr bytes.Buffer
+	if code := run(args, &stdout, &stderr, bytes.NewReader(encoded)); code != 0 {
+		t.Fatalf("CLI typed stdin: %s %s", stdout.String(), stderr.String())
+	}
+	inputs["resolutions"] = resolutions
+	checked := runRealMCP(t, ctx, session, "change_set_reconcile_preview", inputs)
+	if !reflect.DeepEqual(decodeCLIEnvelope(t, &stdout).Result, checked.Result) {
+		t.Fatal("typed CLI/MCP Check choices differed")
+	}
+	applied := runRealMCP(t, ctx, session, "change_set_reconcile_apply", inputs).Result.(map[string]any)
+	if applied["generation"] != float64(2) || applied["base_revision"] != accepted || applied["review"] != nil {
+		t.Fatalf("MCP manual apply: %+v", applied)
+	}
+	candidate := applied["candidate"].(map[string]any)
+	if candidate["components"].([]any)[0].(map[string]any)["description"] != body {
+		t.Fatal("MCP manual value changed exact body")
 	}
 	_ = session.Close()
 	cancel()

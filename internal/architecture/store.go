@@ -1150,7 +1150,6 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 
 	homeCounts := make(map[uuid.UUID]int, len(components))
 	parentCounts := make(map[uuid.UUID]int, len(diagrams))
-	children := make(map[uuid.UUID][]uuid.UUID, len(diagrams))
 	for _, current := range diagrams {
 		seen := make(map[uuid.UUID]struct{}, len(current.appearances))
 		for _, appearance := range current.appearances {
@@ -1169,7 +1168,6 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 					return nil, uuid.Nil, fmt.Errorf("Diagram %q links to an unknown detail Diagram", current.path)
 				}
 				parentCounts[appearance.detailDiagram]++
-				children[current.id] = append(children[current.id], appearance.detailDiagram)
 			}
 		}
 	}
@@ -1186,31 +1184,15 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 			return nil, uuid.Nil, fmt.Errorf("non-root Diagram %s must have exactly one parent anchor", diagramID)
 		}
 	}
-	visiting := make(map[uuid.UUID]bool, len(diagrams))
-	visited := make(map[uuid.UUID]bool, len(diagrams))
-	var visit func(uuid.UUID) error
-	visit = func(id uuid.UUID) error {
-		if visiting[id] {
-			return errors.New("Diagram hierarchy contains a cycle")
+	// Parsed appearance uniqueness and parent cardinality above make the
+	// concrete final facts unambiguous. Share the remaining composition checks
+	// with reconciliation's diagnostics before accepting this loaded snapshot.
+	facts := snapshotReconciliationFacts(Snapshot{formatVersion: 2, components: components, diagrams: diagrams, rootDiagram: root})
+	if problems := compositionProblems(facts); len(problems) > 0 {
+		if problems[0].Reason == "hierarchy_cycle" {
+			return nil, uuid.Nil, errors.New("Diagram hierarchy contains a cycle; every Diagram must be reachable from root")
 		}
-		if visited[id] {
-			return nil
-		}
-		visiting[id] = true
-		for _, child := range children[id] {
-			if err := visit(child); err != nil {
-				return err
-			}
-		}
-		visiting[id] = false
-		visited[id] = true
-		return nil
-	}
-	if err := visit(root); err != nil {
-		return nil, uuid.Nil, err
-	}
-	if len(visited) != len(diagrams) {
-		return nil, uuid.Nil, errors.New("every Diagram must be reachable from root")
+		return nil, uuid.Nil, fmt.Errorf("invalid Diagram composition: %s", problems[0].Reason)
 	}
 	return diagrams, root, nil
 }

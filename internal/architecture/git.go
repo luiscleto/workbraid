@@ -159,6 +159,12 @@ func (gitRunner) createReview(ctx context.Context, repository, activeRef, active
 	return err
 }
 
+func (gitRunner) reconcileChangeSet(ctx context.Context, repository, accepted, activeRef, oldState, newState string) error {
+	input := strings.Join([]string{"start", "verify " + acceptedRef + " " + accepted, "update " + activeRef + " " + newState + " " + oldState, "prepare", "commit", ""}, "\n")
+	_, err := runGit(ctx, []byte(input), "--git-dir", repository, "update-ref", "--stdin")
+	return err
+}
+
 func (gitRunner) diffTrees(ctx context.Context, repository, baseTree, candidateTree string) ([]byte, error) {
 	return runGit(ctx, nil,
 		"--git-dir", repository,

@@ -975,6 +975,61 @@ dd {
   grid-template-columns: minmax(176px, 0.62fr) minmax(430px, 1.75fr) minmax(390px, 1.28fr);
 }
 
+.architecture-workbench.reconciling { grid-template-columns: minmax(180px, 0.65fr) minmax(0, 3.35fr); }
+.reconciling .working-pane { padding: 22px 26px; }
+.reconciliation-task { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.reconciliation-task h2, .reconciliation-task h3, .reconciliation-task h4 { overflow-wrap: anywhere; }
+.reconciliation-task .pane-heading { margin: 0; }
+.reconciliation-intro { margin: 0; max-width: 76ch; }
+.reconciliation-body { min-height: 200px; flex: 1; display: grid; grid-template-columns: minmax(150px, 210px) minmax(0, 1fr); gap: 22px; overflow: hidden; border-top: 1px solid var(--hairline); padding-top: 16px; }
+.reconciliation-index, .reconciliation-decision { min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding-right: 8px; }
+.reconciliation-index h3 { font-size: 1rem; margin: 0 0 12px; }
+.reconciliation-index h3 span { font-family: "IBM Plex Mono", monospace; font-size: .78rem; }
+.reconciliation-index details { margin-bottom: 24px; }
+.reconciliation-index ul { padding-left: 18px; }
+.reconciliation-index li { margin: 12px 0; overflow-wrap: anywhere; }
+.reconciliation-index small, .reconciliation-options small { display: block; font-size: .76rem; color: var(--ink-muted); overflow-wrap: anywhere; }
+.reconciliation-context { display: block; width: 100%; padding: 12px; border: 0; border-left: 3px solid transparent; background: transparent; text-align: left; color: inherit; white-space: normal; overflow-wrap: anywhere; }
+.reconciliation-context[aria-current="true"] { border-color: var(--accent); background: rgb(49 91 61 / 8%); }
+.reconciliation-context:hover { background: rgb(49 91 61 / 5%); }
+.reconciliation-sides { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.reconciliation-sides section { min-width: 0; padding: 12px; background: var(--paper, #f8f6f0); border: 1px solid var(--hairline); }
+.reconciliation-sides h4 { margin: 0 0 10px; font-size: .9rem; }
+.reconciliation-sides ul { padding-left: 16px; overflow-wrap: anywhere; }
+.exact-reconciliation-text { font-family: "IBM Plex Mono", monospace; font-size: .8rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; max-height: 280px; overflow: auto; margin: 0; }
+.exact-inline-label { white-space: pre-wrap; overflow-wrap: anywhere; font-family: "IBM Plex Mono", monospace; }
+.reconciliation-choice-section { border-top: 1px solid var(--hairline); padding-top: 16px; margin: 22px 0; }
+.reconciliation-choice-section h4 { margin: 0 0 10px; }
+.reconciliation-side-choices { display: flex; gap: 10px; flex-wrap: wrap; margin: 0; }
+.reconciliation-side-choices button { flex: 0 1 auto; max-width: 100%; padding: 12px 18px; border: 1px solid var(--hairline); background: transparent; color: inherit; white-space: normal; overflow-wrap: anywhere; }
+.reconciliation-side-choices button[aria-pressed="true"] { border-color: var(--accent); background: rgb(49 91 61 / 9%); box-shadow: inset 0 0 0 1px var(--accent); }
+.reconciliation-chosen { border-left: 3px solid var(--accent); padding: 8px 14px; margin: 20px 0; }
+.reconciliation-manual { display: flex; flex-direction: column; gap: 8px; margin: 18px 0; }
+.reconciliation-manual textarea, .reconciliation-manual input { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid var(--hairline); background: var(--paper, #fffdf8); color: inherit; font: inherit; }
+.reconciliation-manual textarea { font-family: "IBM Plex Mono", monospace; font-size: .85rem; line-height: 1.5; resize: vertical; min-height: 100px; max-height: 450px; }
+.reconciliation-options { border: 1px solid var(--hairline); padding: 12px; margin: 18px 0; max-height: 260px; overflow-y: auto; }
+.reconciliation-options legend { padding: 0 6px; font-weight: 600; overflow-wrap: anywhere; }
+.reconciliation-options label { display: flex; align-items: flex-start; gap: 10px; padding: 9px; overflow-wrap: anywhere; cursor: pointer; }
+.reconciliation-options label:has(input:checked) { background: rgb(49 91 61 / 8%); }
+.reconciliation-options input, .reconciliation-check input { width: auto; flex: 0 0 auto; accent-color: var(--accent); }
+.reconciliation-check { display: flex; gap: 10px; margin: 14px 0; }
+.reconciliation-unavailable { border-left: 3px solid #987342; background: rgb(152 115 66 / 7%); padding: 12px 16px; line-height: 1.5; }
+.reconciliation-actions { border-top: 1px solid var(--hairline); padding-top: 12px; }
+.reconciliation-actions p { margin: 0 0 10px; }
+.reconciliation-actions .technical-details { margin-top: 12px; }
+.reconciliation-actions dd { overflow-wrap: anywhere; }
+.reconciliation-map { height: 360px; min-height: 220px; position: relative; border: 1px solid var(--hairline); }
+.reconciliation-diagrams { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.reconciliation-diagrams button { padding: 8px 12px; white-space: normal; overflow-wrap: anywhere; }
+.reconciliation-diagrams button[aria-current="true"] { border-color: var(--accent); background: rgb(49 91 61 / 9%); box-shadow: inset 0 0 0 1px var(--accent); }
+.proposal-reconciliation-action { margin: 20px 0; border-left: 3px solid var(--accent); padding-left: 16px; }
+.proposal-reconciliation-action p { font-size: .88rem; line-height: 1.5; }
+@media (max-width: 1000px) {
+  .reconciliation-body { grid-template-columns: 150px minmax(0, 1fr); gap: 14px; }
+  .reconciliation-sides { grid-template-columns: 1fr; }
+  .reconciliation-sides .exact-reconciliation-text { max-height: 180px; }
+}
+
 .component-index,
 .map-region,
 .working-pane {

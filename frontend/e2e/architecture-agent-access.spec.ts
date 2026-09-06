@@ -98,6 +98,12 @@ test('durable placement uses real drag, model centers, one generation, reset, re
     await page.getByRole('button',{name:'Update architecture',exact:true}).click()
     await expect(page.getByRole('button',{name:'Showing Accepted',exact:true})).toBeVisible()
     const final=call(['architecture','inspect'])
+    await page.getByRole('button',{name:'Fit map',exact:true}).click()
+    const fitted = await node(worker), fittedBox = (await map.boundingBox())!
+    expect(fitted.x).toBeGreaterThan(fittedBox.x + 20)
+    expect(fitted.x).toBeLessThan(fittedBox.x + fittedBox.width - 20)
+    expect(fitted.y).toBeGreaterThan(fittedBox.y + 20)
+    expect(fitted.y).toBeLessThan(fittedBox.y + fittedBox.height - 20)
     await page.screenshot({path:join(runtimeRoot,'accepted.png'),fullPage:true})
     await stopWorkBraid(application);application=undefined
     expect(spawnSync(binary,['--server',origin,'--json','status'],{encoding:'utf8'}).status).not.toBe(0)

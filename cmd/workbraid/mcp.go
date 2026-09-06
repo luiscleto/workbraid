@@ -56,6 +56,19 @@ func placementInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func sizingInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[agentapi.DiagramSetSizeRequest](nil)
+	if err != nil {
+		panic(err)
+	}
+	wmin, wmax, hmin, hmax := float64(80), float64(1600), float64(48), float64(1200)
+	schema.Properties["width"].Minimum = &wmin
+	schema.Properties["width"].Maximum = &wmax
+	schema.Properties["height"].Minimum = &hmin
+	schema.Properties["height"].Maximum = &hmax
+	return schema
+}
+
 func mutationAnnotations(title string, destructive, idempotent bool) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: idempotent, OpenWorldHint: boolPointer(false), DestructiveHint: boolPointer(destructive)}
 }
@@ -143,7 +156,10 @@ func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
 	addMCPTool[agentapi.RelationshipEditRequest](server, client, "relationship_edit", "Edit Relationship", "Replace one authored Relationship in the addressed change set, selected by source ID, exact raw old target, exact raw old label, and one-based identical-pair occurrence. Empty or malformed old selectors remain repairable.", mutationAnnotations("Edit Relationship", false, false))
 	addMCPTool[agentapi.RelationshipRemoveRequest](server, client, "relationship_remove", "Remove Relationship", "Remove one authored Relationship in the addressed change set, selected by source ID, exact raw target, exact raw label, and one-based identical-pair occurrence. This request-local selector creates no Relationship identity.", mutationAnnotations("Remove Relationship", true, false))
 	addMCPTool[agentapi.DiagramParentOptionsRequest](server, client, "diagram_parent_options", "Read parent Components", "Read the current parent Component/home and eligible destination Components for one non-root Diagram at the exact proposal generation. Uses the complete candidate, including new Components. Does not create or mutate a proposal.", readAnnotations("Read parent Components"))
-	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_positions", "Read Diagram positions", "Inspect every visible Component, including boundary nodes. Position is stored for v3; display_position is derived for v2 with position_source identifying that distinction. Omit change_set_id for Accepted; explicit IDs inspect active or Applied proposals.", readAnnotations("Read Diagram positions"))
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_sizes", "Read Diagram sizes", "Inspect every visible node size. V4 has stored dimensions; v2/v3 report their legacy displayed pair as derived. Omit change_set_id for Accepted. Reading never upgrades or saves.", readAnnotations("Read Diagram sizes"))
+	addMCPToolWithSchema[agentapi.DiagramSetSizeRequest](server, client, "diagram_set_size", "Keep size", "Set a visible node width and height under exact store/proposal/generation preconditions. Width 80–1600, height 48–1200, integers. Center and peers remain fixed. Same displayed pair is a no-op before any legacy upgrade. Actual legacy change initializes sizes without resizing peers; Review and Update stay separate.", mutationAnnotations("Keep size", false, false), sizingInputSchema())
+	addMCPTool[agentapi.DiagramRestoreDefaultSizeRequest](server, client, "diagram_restore_default_size", "Restore default size", "Write the selected node current-role default once: ordinary/reference 200×96, boundary 224×112. Same displayed pair is a no-op before upgrade. Keeps positions fixed and does not enable automatic sizing.", mutationAnnotations("Restore default size", false, false))
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_positions", "Read Diagram positions", "Inspect every visible Component, including boundary nodes. Position is stored for v3/v4; display_position is derived for v2 with position_source identifying that distinction. Omit change_set_id for Accepted; explicit IDs inspect active or Applied proposals.", readAnnotations("Read Diagram positions"))
 	addMCPToolWithSchema[agentapi.DiagramSetPositionRequest](server, client, "diagram_set_position", "Keep position", "Set one visible Component center in one Diagram, integer X/Y from -100000 to 100000. Requires exact proposal generation. Peers retain their coordinates. First placement on v2 initializes every Diagram in this proposal to v3 through ordinary Review and Update.", mutationAnnotations("Keep position", false, false), placementInputSchema())
 	addMCPTool[agentapi.DiagramAutoLayoutRequest](server, client, "diagram_auto_layout", "Auto-layout", "Arrange every visible Component in the selected Diagram and persist exact coordinates once at the proposal generation. Other Diagrams stay unchanged, except full coverage initialization on first v2 placement. An unchanged arrangement preserves generation and Review. Does not accept Architecture.", mutationAnnotations("Auto-layout", false, false))
 	addMCPTool[agentapi.DiagramReassignDetailRequest](server, client, "diagram_reassign_detail", "Change parent Component", "Reassign a non-root Diagram to an eligible Component from diagram_parent_options under exact proposal generation. Preserves the child UUID, source and complete subtree; only the parent-owned link moves. The destination must be free and outside the child subtree. Current parent is a no-op. Pending-new children update their creation fact.", mutationAnnotations("Change parent Component", false, false))

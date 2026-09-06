@@ -8,6 +8,7 @@ export type MapRelationship = {
 }
 
 export type MapComponent = {
+	size?: {width:number;height:number} | null
 	position?: {x:number;y:number} | null
   id: string
   component_id?: string
@@ -54,6 +55,7 @@ export type ReviewRelationshipSelection = Omit<ReviewMapRelationshipChange, 'sta
 }
 
 type ArchitectureMapProps = {
+	onResize?: (id:string,size:{width:number;height:number})=>Promise<boolean>
 	viewKey?: string
 	onPlace?: (id:string,position:{x:number;y:number})=>Promise<boolean>
   revision: string
@@ -66,6 +68,7 @@ type ArchitectureMapProps = {
   reviewSide?: 'with' | 'before'
   reviewComponents?: ReviewMapComponentChange[]
   reviewPositionIDs?: string[]
+  reviewSizeIDs?: string[]
   reviewRelationships?: ReviewMapRelationshipChange[]
   reviewComposition?: ReactNode
   reviewDiagramID?: string
@@ -81,9 +84,10 @@ type ArchitectureMapProps = {
   onSelectRelationshipAnnotation?: (key: string) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewSizeIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
+	onResize,
 	viewKey,
 	onPlace,
   revision,
@@ -96,6 +100,7 @@ export function ArchitectureMap({
   reviewSide,
   reviewComponents = [],
   reviewPositionIDs = [],
+  reviewSizeIDs = [],
   reviewRelationships = [],
   reviewComposition,
   reviewDiagramID,
@@ -114,6 +119,14 @@ export function ArchitectureMap({
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+  const resizeHandle = useRef<HTMLButtonElement>(null)
+  const resizeGesture = useRef<{node:cytoscape.NodeSingular; start:{width:number;height:number}; x:number;y:number;zoom:number;submit:NonNullable<typeof onResize>}|null>(null)
+  const resizeCancel = useRef<()=>void>(()=>undefined)
+  resizeCancel.current = () => {
+    const gesture=resizeGesture.current;resizeGesture.current=null
+    if(gesture&&!gesture.node.cy().destroyed())applyDisplaySize(gesture.node,gesture.start)
+    syncOverlays.current()
+  }
 	const placementHandler=useRef(onPlace)
 	placementHandler.current=onPlace
 	const viewport=useRef<{key:string|undefined;zoom:number;pan:{x:number;y:number}}|null>(null)
@@ -134,6 +147,7 @@ export function ArchitectureMap({
     reviewSide,
     reviewComponents,
     reviewPositionIDs,
+    reviewSizeIDs,
     reviewRelationships,
     reviewDiagramID,
   }), [revision, reviewSide, layoutKey])
@@ -164,10 +178,12 @@ export function ArchitectureMap({
 	  let grabbed: {id:string;start:{x:number;y:number};submit:NonNullable<typeof onPlace>;cancelled:boolean}|null=null
 	  let suppressClickUntil=0
 	  const cancel=()=>{if(!grabbed||!instance)return;grabbed.cancelled=true;instance.getElementById(grabbed.id).position(grabbed.start)}
-	  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')cancel()}
+	  const cancelResize=()=>resizeCancel.current()
+	  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){cancel();cancelResize()}}
 	  window.addEventListener('keydown',escape)
 	  window.addEventListener('pointercancel',cancel)
 	  window.addEventListener('blur',cancel)
+	  window.addEventListener('blur',cancelResize)
 	  instance.on('grab','node',(event)=>{
 	    if(!placementHandler.current||placementPending.current||event.target.data('uiAnnotation'))return
 	    grabbed={id:event.target.id(),start:{...event.target.position()},submit:placementHandler.current,cancelled:false}
@@ -230,7 +246,10 @@ export function ArchitectureMap({
           if (!caption) return
           const position = node.renderedPosition()
           caption.style.left = `${position.x}px`
-          caption.style.top = `${position.y + node.renderedHeight() / 2 + 5}px`
+          const zoom=node.cy().zoom()
+          caption.style.top = `${position.y + (Number(node.data('height')) / 2 + 6)*zoom}px`
+          caption.style.width = `${Number(node.data('width'))}px`
+          caption.style.transform = `translateX(-50%) scale(${zoom})`
         })
       }
       const updateAnnotationCards = () => {
@@ -290,6 +309,17 @@ export function ArchitectureMap({
       const updateOverlays = () => {
         updateBoundaryCaptions()
         updateAnnotationCards()
+        const handle=resizeHandle.current
+        if(handle&&instance){
+          if(handle.parentElement)handle.parentElement.style.height=`${instance.height()}px`
+          const node=instance.nodes(':selected').filter('[!uiAnnotation]').first() as cytoscape.NodeSingular
+          handle.hidden=node.empty()
+          if(!node.empty()){
+            const p=node.renderedPosition(),z=instance.zoom()
+            handle.style.left=`${p.x+Number(node.data('width'))*z/2}px`
+            handle.style.top=`${p.y+Number(node.data('height'))*z/2}px`
+          }
+        }
       }
       syncOverlays.current = updateOverlays
       instance.on('pan zoom resize render position', updateOverlays)
@@ -301,11 +331,14 @@ export function ArchitectureMap({
       })
       resizeObserver?.observe(container.current)
       graph.current = instance
+      if(!viewport.current||viewport.current.key!==viewKey)fitDiagram(instance,fitPadding)
       return () => {
 	    cancel()
+	    cancelResize()
 	    window.removeEventListener('keydown',escape)
 	    window.removeEventListener('pointercancel',cancel)
 	    window.removeEventListener('blur',cancel)
+	    window.removeEventListener('blur',cancelResize)
 	    if(instance)viewport.current={key:viewKey,zoom:instance.zoom(),pan:{...instance.pan()}}
         cancelAnimationFrame(animationFrame)
         resizeObserver?.disconnect()
@@ -324,6 +357,12 @@ export function ArchitectureMap({
       instance?.destroy()
     }
   }, [elements, fitPadding,viewKey])
+
+  useEffect(()=>{
+    const gesture=resizeGesture.current
+    if(gesture&&(!onResize||gesture.node.id()!==selectedID))resizeCancel.current()
+    syncOverlays.current()
+  },[selectedID,Boolean(onResize)])
 
   useEffect(()=>{
 	const instance=graph.current;if(!instance)return
@@ -363,7 +402,8 @@ export function ArchitectureMap({
     instance.$(':selected').unselect()
     if (selectedRelationshipKey) instance.getElementById(selectedRelationshipKey).select()
     else if (selectedID) instance.getElementById(selectedID).select()
-  }, [selectedID, selectedRelationshipKey])
+    syncOverlays.current()
+  }, [selectedID, selectedRelationshipKey, elements])
 
   useEffect(() => {
     const animationFrame = requestAnimationFrame(() => syncOverlays.current())
@@ -454,8 +494,39 @@ export function ArchitectureMap({
         </div>
       )}
       {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
+      {!renderFailed && onResize && selectedID && <div className="map-resize-layer"><button ref={resizeHandle} className="map-resize-handle" type="button" aria-label="Resize selected node" title="Drag to resize; use Width and Height for precise sizing"
+        onPointerDown={event=>{
+          event.preventDefault();event.stopPropagation()
+          const node=graph.current?.nodes(':selected').filter('[!uiAnnotation]').first() as cytoscape.NodeSingular|undefined
+          if(!node||node.empty()||placementPending.current)return
+          event.currentTarget.setPointerCapture(event.pointerId)
+          resizeGesture.current={node,start:{width:Number(node.data('width')),height:Number(node.data('height'))},x:event.clientX,y:event.clientY,zoom:node.cy().zoom(),submit:onResize}
+        }}
+        onPointerMove={event=>{
+          const g=resizeGesture.current;if(!g)return
+          event.preventDefault();event.stopPropagation()
+          const size={width:g.start.width+2*(event.clientX-g.x)/g.zoom,height:g.start.height+2*(event.clientY-g.y)/g.zoom}
+          // Keep invalid preview dimensions off the renderer; release still rejects them.
+          if(size.width>0&&size.height>0)applyDisplaySize(g.node,size)
+          syncOverlays.current()
+        }}
+        onPointerCancel={()=>resizeCancel.current()}
+        onLostPointerCapture={()=>resizeCancel.current()}
+        onPointerUp={async event=>{
+          event.preventDefault();event.stopPropagation()
+          const g=resizeGesture.current;resizeGesture.current=null;if(!g)return
+          const size={width:roundPosition(g.start.width+2*(event.clientX-g.x)/g.zoom),height:roundPosition(g.start.height+2*(event.clientY-g.y)/g.zoom)}
+          applyDisplaySize(g.node,g.start)
+          if(size.width<80||size.width>1600||size.height<48||size.height>1200){syncOverlays.current();return}
+          if(size.width===g.start.width&&size.height===g.start.height){syncOverlays.current();return}
+          applyDisplaySize(g.node,size)
+          placementPending.current=true;g.node.cy().nodes().ungrabify()
+          try {if(!await g.submit(g.node.data('componentID'),size)&&!g.node.cy().destroyed())applyDisplaySize(g.node,g.start)}
+          finally{placementPending.current=false;if(graph.current&&placementHandler.current)graph.current.nodes('[!uiAnnotation]').grabify();syncOverlays.current()}
+        }}
+        onClick={()=>document.querySelector<HTMLInputElement>('[aria-label="Node width"]')?.focus()}>↘</button></div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
-        graph.current?.fit(undefined, fitPadding)
+        if(graph.current)fitDiagram(graph.current,fitPadding)
         syncOverlays.current()
       }}>Fit map</button>}
       {bottomDock}
@@ -548,6 +619,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
   }
   const titleByID = new Map(components.map((component) => [component.id, component.title]))
   const nodes: ElementDefinition[] = components.map((component) => {
+    const size=component.size??(component.node_kind==='boundary'?{width:104,height:62}:{width:116,height:54})
     const status = componentStatus.get(component.id) ?? (options.reviewSide ? 'unchanged' : '')
     const annotationCount = options.annotationNodes?.[component.id] ?? 0
     return {
@@ -555,11 +627,14 @@ export function projectionElements(components: MapComponent[], options: Projecti
         id: component.id,
         componentID: component.component_id ?? component.id,
         label: component.title,
-        displayLabel: component.title,
+        displayLabel: fittedTitle(component.title,size,component.node_kind==='boundary'),
+        width:size.width,
+        height:size.height,
         nodeKind: component.node_kind ?? '',
         boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
         positionChanged: options.reviewPositionIDs?.includes(component.component_id ?? component.id) ? 'yes' : '',
+        sizeChanged: options.reviewSizeIDs?.includes(component.component_id ?? component.id) ? 'yes' : '',
         annotationCount,
       },
       position: positions[component.id],
@@ -719,6 +794,46 @@ function relationshipStatusLabel(status: ReviewMapRelationshipChange['status']) 
   return status === 'added' ? 'Added relationship' : 'Removed relationship'
 }
 
+
+// Renderer text is disposable. Exact title source remains in label and the pane.
+let titleMeasure: CanvasRenderingContext2D | null | undefined
+export function fittedTitle(title:string,size:{width:number;height:number},boundary:boolean):string {
+ const width=Math.max(1,(boundary?size.width/2:size.width)-24)
+ const height=Math.max(1,(boundary?size.height/2:size.height)-24)
+ const lines=Math.max(1,Math.floor(height/18))
+ if(titleMeasure===undefined){
+  try{titleMeasure=document.createElement('canvas').getContext('2d')}catch{titleMeasure=null}
+ }
+ if(titleMeasure)titleMeasure.font='14px "IBM Plex Sans"'
+ const measure=(s:string)=>titleMeasure?.measureText(s).width??Array.from(s).length*8
+ const chars=Array.from(title.replace(/\s+/g,' '))
+ const result:string[]=[]
+ let rest=chars.join('')
+ while(rest&&result.length<lines){
+  let n=0
+  while(n<rest.length&&measure(rest.slice(0,n+1))<=width)n++
+  n=Math.max(1,n)
+  if(n<rest.length&&result.length<lines-1){const space=rest.lastIndexOf(' ',n);if(space>0)n=space}
+  let line=rest.slice(0,n).trimEnd();rest=rest.slice(n).trimStart()
+  if(result.length===lines-1&&rest){while(line&&measure(line+'…')>width)line=Array.from(line).slice(0,-1).join('');line+='…'}
+  result.push(line)
+ }
+ return result.join('\n')
+}
+function applyDisplaySize(node:cytoscape.NodeSingular,size:{width:number;height:number}){
+ node.data({...size,displayLabel:fittedTitle(String(node.data('label')),size,node.data('nodeKind')==='boundary')})
+}
+function fitDiagram(instance:Core,padding:number){
+ const box=instance.elements().boundingBox()
+ instance.nodes('[nodeKind = "boundary"]').forEach(node=>{
+  const p=node.position(),w=Number(node.data('width')),h=Number(node.data('height'))
+  box.x1=Math.min(box.x1,p.x-w/2);box.x2=Math.max(box.x2,p.x+w/2);box.y2=Math.max(box.y2,p.y+h/2+24)
+ })
+ box.w=box.x2-box.x1;box.h=box.y2-box.y1
+ const zoom=Math.max(instance.minZoom(),Math.min(instance.maxZoom(),(instance.width()-2*padding)/Math.max(1,box.w),(instance.height()-2*padding)/Math.max(1,box.h)))
+ instance.viewport({zoom,pan:{x:instance.width()/2-zoom*(box.x1+box.x2)/2,y:instance.height()/2-zoom*(box.y1+box.y2)/2}})
+}
+
 const mapStyles: cytoscape.StylesheetJson = [
   {
     selector: 'node',
@@ -729,13 +844,13 @@ const mapStyles: cytoscape.StylesheetJson = [
       color: '#27251f',
       label: 'data(displayLabel)',
       'font-family': 'IBM Plex Sans',
-      'font-size': 13,
+      'font-size': 14,
       'text-wrap': 'wrap',
-      'text-max-width': '128px',
+      'text-max-width': '2000px',
       'text-valign': 'center',
       'text-halign': 'center',
-      width: 116,
-      height: 54,
+      width: 'data(width)',
+      height: 'data(height)',
       shape: 'round-rectangle',
     },
   },
@@ -744,7 +859,8 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[reviewStatus = "content_changed"]', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 3, 'border-style': 'dashed' } },
   { selector: 'node[nodeKind = "reference"]', style: { 'border-style': 'dashed', 'background-color': '#eee3c8' } },
   { selector: 'node[positionChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
-  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3', width: 104, height: 62 } },
+  { selector: 'node[sizeChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
+  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3' } },
   { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','border-width':4,'overlay-opacity':0.08 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },

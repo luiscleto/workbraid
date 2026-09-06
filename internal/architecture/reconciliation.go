@@ -51,12 +51,13 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 	}
 	c.resolveComposition()
 	c.mergePositions()
+	c.mergeSizes()
 	if c.err != nil {
 		return c.result, c.err
 	}
 	for key := range c.resolutions {
 		if !c.used[key] {
-			if c.resolutions[key].Locator.Kind == "node_position" {
+			if c.resolutions[key].Locator.Kind == "node_position" || c.resolutions[key].Locator.Kind == "node_size" {
 				return c.result, &ReconciliationError{"target_not_eligible", "placement choice is no longer applicable"}
 			}
 			return c.result, &ReconciliationError{"invalid_request", "unknown or obsolete conflict locator"}
@@ -83,6 +84,11 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 		return c.result, fmt.Errorf("reconciliation constructor: %w", err)
 	}
 	reproduced := snapshotReconciliationFacts(candidate.Snapshot())
+	for k, s := range c.final.sizes {
+		if actual, exists := reproduced.sizes[k]; !exists || actual != s {
+			return c.result, fmt.Errorf("resolved size changed during initialization")
+		}
+	}
 	for k, p := range c.final.positions {
 		if actual, exists := reproduced.positions[k]; !exists || actual != p {
 			return c.result, fmt.Errorf("resolved coordinate changed during initialization")
@@ -201,6 +207,18 @@ func (f reconciliationFacts) componentContext(id string) any {
 	rels := map[reconciliationRelationship]int{}
 	refs := map[reconciliationPair]bool{}
 	children := map[string]string{}
+	positions := map[reconciliationPair]Position{}
+	sizes := map[reconciliationPair]Size{}
+	for k, v := range f.positions {
+		if k.component == id {
+			positions[k] = v
+		}
+	}
+	for k, v := range f.sizes {
+		if k.component == id {
+			sizes[k] = v
+		}
+	}
 	for k, v := range f.relationships {
 		if k.source == id || k.target == id {
 			rels[k] = v
@@ -221,7 +239,9 @@ func (f reconciliationFacts) componentContext(id string) any {
 		Relationships            map[reconciliationRelationship]int
 		References               map[reconciliationPair]bool
 		Children                 map[string]string
-	}{c.Title, c.Description, f.homes[id], rels, refs, children}
+		Positions                map[reconciliationPair]Position
+		Sizes                    map[reconciliationPair]Size
+	}{c.Title, c.Description, f.homes[id], rels, refs, children, positions, sizes}
 }
 
 func (f reconciliationFacts) diagramContext(id string) any {
@@ -232,6 +252,18 @@ func (f reconciliationFacts) diagramContext(id string) any {
 	homes := map[string]string{}
 	refs := map[reconciliationPair]bool{}
 	children := map[string]string{}
+	positions := map[reconciliationPair]Position{}
+	sizes := map[reconciliationPair]Size{}
+	for k, v := range f.positions {
+		if k.diagram == id {
+			positions[k] = v
+		}
+	}
+	for k, v := range f.sizes {
+		if k.diagram == id {
+			sizes[k] = v
+		}
+	}
 	for k, v := range f.homes {
 		if v == id {
 			homes[k] = v
@@ -253,7 +285,9 @@ func (f reconciliationFacts) diagramContext(id string) any {
 		Homes         map[string]string
 		References    map[reconciliationPair]bool
 		Children      map[string]string
-	}{d.title, f.anchors[id], f.root == id, homes, refs, children}
+		Positions     map[reconciliationPair]Position
+		Sizes         map[reconciliationPair]Size
+	}{d.title, f.anchors[id], f.root == id, homes, refs, children, positions, sizes}
 }
 
 func (c *reconciliationCalculation) object(l ReconciliationLocator, b, a, p any) bool {

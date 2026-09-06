@@ -3,6 +3,8 @@
 Status: approved product direction  
 This is not a component library or token system.
 
+Phase 3.2 adds the sizing interaction specified normatively in [Placement §9](architecture-placement-amendment-v0.md#9-complete-visible-node-sizing-phase-32), superseding the earlier sizing exclusion below. The selected editable visible node has a discoverable corner resize handle and precise width/height fields, plus Restore default size. Preview preserves center, peers and viewport; cancellation writes nothing and one release submits one mutation. Titles wrap inside the safe shape region with explicit ellipsis and full title/home context in the existing pointer/keyboard-accessible pane. Caption geometry, zoom and Fit use the exact shared envelope. Review distinguishes size changes and uses each side's dimensions in a common frame. Empty canonical diff hides its empty box and says “No Architecture changes; this proposal contains only proposal text.” No lifecycle or broader review redesign is added. Human visual PASS remains required.
+
 ## Voice
 
 The UI is for a person at a desk, not an API log. Headings are status. Body is one short sentence. Errors say what to do next.

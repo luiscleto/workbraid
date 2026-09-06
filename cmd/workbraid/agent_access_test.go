@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 36 {
+	if err != nil || len(tools.Tools) != 39 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -572,6 +572,39 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if retry := runRealMCPError(t, ctx, session, "change_set_reconcile_apply", placementInputs); retry.Error.Code != "change_set_state_mismatch" {
 		t.Fatalf("placement old-S retry: %+v", retry)
 	}
+	// The production clients share one sizing authority, including exact no-ops.
+	sizeArgs := map[string]any{"store_id": storeID, "change_set_id": placementID, "generation": 6, "diagram_id": rootID, "component_id": gatewayID, "width": 321, "height": 159}
+	sized := runRealMCP(t, ctx, session, "diagram_set_size", sizeArgs).Result.(map[string]any)
+	if sized["generation"] != float64(7) {
+		t.Fatalf("MCP sizing: %+v", sized)
+	}
+	readSize := runRealCLI(t, binary, origin, "diagram", "sizes", "--store-id", storeID, "--change-set-id", placementID, "--diagram-id", rootID)
+	mcpSize := runRealMCP(t, ctx, session, "diagram_sizes", map[string]any{"store_id": storeID, "change_set_id": placementID, "diagram_id": rootID})
+	if !reflect.DeepEqual(readSize.Result, mcpSize.Result) {
+		t.Fatal("CLI/MCP size projections differ")
+	}
+	for _, appearance := range readSize.Result.(map[string]any)["appearances"].([]any) {
+		a := appearance.(map[string]any)
+		if a["size"] == nil || a["size_source"] != "stored" || a["position"] == nil {
+			t.Fatal("native v4 incomplete geometry")
+		}
+	}
+	beforeNoop := runRealCLI(t, binary, origin, "change-set", "review", "--store-id", storeID, "--change-set-id", placementID, "--generation", "7")
+	noopSize := runRealCLI(t, binary, origin, "diagram", "set-size", "--store-id", storeID, "--change-set-id", placementID, "--generation", "7", "--diagram-id", rootID, "--component-id", gatewayID, "--width", "321", "--height", "159").Result.(map[string]any)
+	if noopSize["generation"] != float64(7) || !reflect.DeepEqual(noopSize["review"], beforeNoop.Result.(map[string]any)["review"]) {
+		t.Fatalf("CLI same-size invalidated review: %+v", noopSize)
+	}
+	invalidSize, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "diagram_set_size", Arguments: map[string]any{"store_id": storeID, "change_set_id": placementID, "generation": 7, "diagram_id": rootID, "component_id": gatewayID, "width": 79, "height": 48}})
+	if err != nil || !invalidSize.IsError {
+		t.Fatalf("MCP size bounds: %+v", invalidSize)
+	}
+	delete(sizeArgs, "width")
+	delete(sizeArgs, "height")
+	sizeArgs["generation"] = 7
+	restoredSize := runRealMCP(t, ctx, session, "diagram_restore_default_size", sizeArgs).Result.(map[string]any)
+	if restoredSize["generation"] != float64(8) {
+		t.Fatalf("MCP restore default: %+v", restoredSize)
+	}
 }
 
 func TestSkillHelpAndCLIExposeOnlyV2ChangeSetWorkflow(t *testing.T) {
@@ -649,7 +682,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	wantNames := []string{
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_reconcile_apply", "change_set_reconcile_preview", "change_set_rename", "change_set_review", "change_sets_list",
-		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
+		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))

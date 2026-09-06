@@ -29,6 +29,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 		{"home", []string{"component_id"}, "diagram_id"}, {"reference", []string{"diagram_id", "component_id"}, "present"}, {"detail_anchor", []string{"diagram_id"}, "anchor_component_id"},
 		{"component_object", []string{"component_id"}, ""}, {"diagram_object", []string{"diagram_id"}, ""},
 		{"node_position", []string{"diagram_id", "component_id"}, "position"},
+		{"node_size", []string{"diagram_id", "component_id"}, "size"},
 	} {
 		fields := map[string]*jsonschema.Schema{"kind": constant(unit.kind)}
 		for _, id := range unit.ids {
@@ -50,6 +51,10 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 				coordinate := &jsonschema.Schema{Type: "integer", Minimum: &minimum, Maximum: &maximum}
 				value = closed(map[string]*jsonschema.Schema{"x": coordinate, "y": coordinate}, "x", "y")
 			}
+			if unit.value == "size" {
+				wmin, wmax, hmin, hmax := float64(80), float64(1600), float64(48), float64(1200)
+				value = closed(map[string]*jsonschema.Schema{"width": {Type: "integer", Minimum: &wmin, Maximum: &wmax}, "height": {Type: "integer", Minimum: &hmin, Maximum: &hmax}}, "width", "height")
+			}
 			variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": locator, "choice": constant("manual"), "value": closed(map[string]*jsonschema.Schema{unit.value: value}, unit.value)}, "locator", "choice", "value"))
 		}
 	}
@@ -59,7 +64,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id", "position"} {
+	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id", "position", "size"} {
 		delete(value.Properties, field)
 	}
 	variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": composition, "choice": {Type: "string", Enum: []any{"accepted", "proposed", "manual"}}, "value": value}, "locator", "choice", "value"))

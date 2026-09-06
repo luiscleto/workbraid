@@ -2,6 +2,8 @@
 
 Status: Approved
 
+Phase 3.2 adds independent whole size pairs after final visibility, under [Placement §9](architecture-placement-amendment-v0.md#9-complete-visible-node-sizing-phase-32). The closed locator is `{kind: "node_size", diagram_id, component_id}`. Side choices have only locator/choice; manual requires exactly `value: {size: {width, height}}` with approved bounded integers. Null and absent-side values are not manual sizes. Context distinguishes `not_applicable`, legacy `derived` displayed dimensions and v4 `stored` dimensions. Older retained formats contribute no sizing edit; max(A,P) governs result format and selected stored choices survive. Size and position merge independently. Complete supported same-new-UUID comparison includes both presentation facts. Preview/Check/Apply and exact residual reconstruction remain unchanged. New operational writes use v4; historical version descriptions below remain exact.
+
 Scope: ordinary detail-link reassignment and deliberate reconciliation of one valid out-of-date active Architecture proposal
 
 This living contract owns ordinary detail-link reassignment and semantic reconciliation. [Proposals and Reviews](architecture-proposals-v0.md) owns durable envelopes and feedback; [Architecture](architecture-v0.md) owns source fidelity. The [placement contract](architecture-placement-amendment-v0.md) extends comparison to complete visible-node coordinates and mixed v2/v3 inputs.

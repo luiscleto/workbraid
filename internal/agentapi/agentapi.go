@@ -92,6 +92,16 @@ type DiagramSetPositionRequest struct {
 	Y           int    `json:"y" jsonschema:"Diagram-local center Y integer, -100000 to 100000."`
 }
 
+type DiagramRestoreDefaultSizeRequest struct {
+	DiagramAutoLayoutRequest
+	ComponentID string `json:"component_id"`
+}
+type DiagramSetSizeRequest struct {
+	DiagramRestoreDefaultSizeRequest
+	Width  int `json:"width" jsonschema:"Outer logical width, integer 80 through 1600."`
+	Height int `json:"height" jsonschema:"Outer logical height, integer 48 through 1200."`
+}
+
 type DiagramReassignDetailRequest struct {
 	StatePreconditions
 	DiagramID         string `json:"diagram_id" jsonschema:"Exact non-root Diagram UUID whose parent link will move."`
@@ -304,6 +314,9 @@ var operationPaths = map[string]string{
 	"diagram_positions":              "/api/agent/v2/diagrams/positions",
 	"diagram_set_position":           "/api/agent/v2/diagrams/set-position",
 	"diagram_auto_layout":            "/api/agent/v2/diagrams/auto-layout",
+	"diagram_sizes":                  "/api/agent/v2/diagrams/sizes",
+	"diagram_set_size":               "/api/agent/v2/diagrams/set-size",
+	"diagram_restore_default_size":   "/api/agent/v2/diagrams/restore-default-size",
 	"diagram_create_detail":          "/api/agent/v2/diagrams/create-detail",
 	"diagram_edit_title":             "/api/agent/v2/diagrams/edit-title",
 	"diagram_show_component":         "/api/agent/v2/diagrams/show-component",

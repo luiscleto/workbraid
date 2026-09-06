@@ -2,6 +2,8 @@
 
 Status: Approved living contract
 
+Phase 3.2 extends the portable foundation with complete v4 sizes under [Placement §9](architecture-placement-amendment-v0.md#9-complete-visible-node-sizing-phase-32). Native initialization now writes version 4; v2/v3 remain supported exactly. This supersedes native-v3 statements below, without changing catalog, source fidelity or acceptance authority.
+
 This document owns the shared Architecture semantics, portable v2 foundation, source fidelity and runtime/catalog authority. [Placement](architecture-placement-amendment-v0.md) defines the approved complete v3 extension; [Proposals and Reviews](architecture-proposals-v0.md) owns durable authoring and feedback; [Reconciliation](architecture-reconciliation-v0.md) owns deliberate residual construction; [UI](ui-v0.md) owns presentation. The [roadmap](roadmap.md) records later boundaries; completed execution plans remain in Git history.
 
 ## Domain boundary

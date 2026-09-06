@@ -55,6 +55,7 @@ type diagram struct {
 	title       string
 	appearances []diagramAppearance
 	positions   []diagramPosition
+	sizes       []diagramSize
 	mode        string
 }
 
@@ -145,6 +146,9 @@ type DiagramBreadcrumb struct {
 }
 
 type DiagramAppearance struct {
+	Size            *Size
+	DisplaySize     *Size
+	SizeSource      string
 	Position        *Position
 	DisplayPosition *Position
 	PositionSource  string
@@ -156,6 +160,9 @@ type DiagramAppearance struct {
 }
 
 type DiagramBoundary struct {
+	Size             *Size
+	DisplaySize      *Size
+	SizeSource       string
 	Position         *Position
 	DisplayPosition  *Position
 	PositionSource   string
@@ -180,14 +187,14 @@ type DiagramRelationship struct {
 }
 
 func (snapshot Snapshot) RootDiagramID() string {
-	if snapshot.formatVersion != 2 && snapshot.formatVersion != 3 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 4 {
 		return ""
 	}
 	return snapshot.rootDiagram.String()
 }
 
 func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
-	if snapshot.formatVersion != 2 && snapshot.formatVersion != 3 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 4 {
 		return nil
 	}
 	componentsByID := make(map[uuid.UUID]component, len(snapshot.components))
@@ -243,6 +250,7 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 		present := make(map[uuid.UUID]string, len(current.appearances))
 		for _, appearance := range current.appearances {
 			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role, Position: diagramPositionFor(current, appearance.component), DisplayPosition: diagramPositionFor(display, appearance.component), PositionSource: source}
+			value.Size, value.DisplaySize, value.SizeSource = sizeProjection(current, appearance.component, snapshot.formatVersion)
 			present[appearance.component] = appearance.component.String()
 			if appearance.hasDetailLink {
 				value.DetailDiagramID = appearance.detailDiagram.String()
@@ -277,6 +285,7 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 			b := &projection.Boundaries[i]
 			id := uuid.MustParse(b.ComponentID)
 			b.Position, b.DisplayPosition, b.PositionSource = diagramPositionFor(current, id), diagramPositionFor(display, id), source
+			b.Size, b.DisplaySize, b.SizeSource = sizeProjection(current, id, snapshot.formatVersion)
 		}
 		projections = append(projections, projection)
 	}
@@ -412,6 +421,7 @@ type ComponentChange struct {
 type CandidateComposition struct {
 	ArchitectureVersion int                         `json:"architecture_version" yaml:"architecture_version"`
 	NodePositions       []NodePositionChange        `json:"node_positions" yaml:"node_positions"`
+	NodeSizes           []NodeSizeChange            `json:"node_sizes" yaml:"node_sizes"`
 	DetailReassignments []DetailReassignment        `json:"detail_reassignments" yaml:"detail_reassignments"`
 	NewComponentHomes   []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
 	DetailDiagrams      []DetailDiagramChange       `json:"detail_diagrams" yaml:"detail_diagrams"`
@@ -476,7 +486,7 @@ var (
 
 func (snapshot Snapshot) HasDiagram(id string) bool {
 	parsed, err := uuid.Parse(id)
-	if err != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
 		return false
 	}
 	for _, current := range snapshot.diagrams {
@@ -527,7 +537,7 @@ func (snapshot Snapshot) HasDetailLink(diagramID, componentID, detailDiagramID s
 
 func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
 	parsed, err := uuid.Parse(componentID)
-	if err != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
 		return "", "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -549,7 +559,7 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) (string, bool) {
 	diagramUUID, diagramErr := uuid.Parse(diagramID)
 	componentUUID, componentErr := uuid.Parse(componentID)
-	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion != 2 && snapshot.formatVersion != 3) {
+	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
 		return "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -933,7 +943,7 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 	rootDiagramID := uuid.NewString()
 	manifestBytes, err := marshalManifest(manifest{
 		Format:      "workbraid-architecture",
-		Version:     3,
+		Version:     4,
 		StoreID:     parsedStoreID.String(),
 		Project:     manifestProject{Name: projectName, Slug: projectSlug},
 		RootDiagram: rootDiagramID,
@@ -1188,7 +1198,12 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 	homeCounts := make(map[uuid.UUID]int, len(components))
 	parentCounts := make(map[uuid.UUID]int, len(diagrams))
 	for _, current := range diagrams {
-		if version == 3 {
+		if version == 4 {
+			if err := validateSizes(current, components); err != nil {
+				return nil, uuid.Nil, err
+			}
+		}
+		if version >= 3 {
 			if err := validatePositions(current, components); err != nil {
 				return nil, uuid.Nil, err
 			}
@@ -1311,6 +1326,7 @@ func (manager *Manager) PrepareCandidate(ctx context.Context, base Snapshot, cha
 	var prepared CandidateComposition
 	input := *composition
 	input.NodePositions = append([]NodePositionChange(nil), composition.NodePositions...)
+	input.NodeSizes = append([]NodeSizeChange(nil), composition.NodeSizes...)
 	candidate, err := manager.constructCandidate(ctx, base, changes, input, &prepared)
 	if err == nil {
 		*composition = prepared
@@ -1346,7 +1362,7 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 	if target == 0 {
 		target = base.formatVersion
 	}
-	if (target != 2 && target != 3) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) {
+	if (target < 2 || target > 4) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) || (target < 4 && len(composition.NodeSizes) > 0) {
 		return Candidate{}, fmt.Errorf("%w: invalid target Architecture version", ErrInvalid)
 	}
 	if target != base.formatVersion {
@@ -1675,6 +1691,9 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 		components := make([]component, 0, len(finalComponents))
 		for _, c := range finalComponents {
 			components = append(components, c)
+		}
+		if err := applyNodeSizes(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
+			return Candidate{}, err
 		}
 		if err := applyNodePositions(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
 			return Candidate{}, err
@@ -2348,7 +2367,7 @@ func parseManifest(contents []byte) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
-	if version != 2 && version != 3 {
+	if version < 2 || version > 4 {
 		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if err := validateManifestYAML(document.Content[0], version); err != nil {
@@ -2472,7 +2491,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version != 2 && value.Version != 3 {
+	if value.Version < 2 || value.Version > 4 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -2517,6 +2536,7 @@ type diagramPositionYAML struct {
 }
 
 type diagramYAML struct {
+	Sizes       []diagramSizeYAML       `yaml:"sizes,omitempty"`
 	ID          string                  `yaml:"id"`
 	Title       string                  `yaml:"title"`
 	Appearances []diagramAppearanceYAML `yaml:"appearances,omitempty"`
@@ -2531,6 +2551,9 @@ type diagramAppearanceYAML struct {
 
 func marshalDiagram(value diagram) ([]byte, error) {
 	encoded := diagramYAML{ID: value.id.String(), Title: value.title, Appearances: make([]diagramAppearanceYAML, len(value.appearances))}
+	for _, s := range value.sizes {
+		encoded.Sizes = append(encoded.Sizes, diagramSizeYAML{s.component.String(), s.size.Width, s.size.Height})
+	}
 	for index, appearance := range value.appearances {
 		encoded.Appearances[index] = diagramAppearanceYAML{Component: appearance.component.String(), Role: appearance.role}
 		if appearance.hasDetailLink {
@@ -2612,6 +2635,15 @@ func parseDiagram(path string, contents []byte, versions ...int) (diagram, error
 		seen[id] = true
 		result.positions = append(result.positions, diagramPosition{component: id, position: Position{p.X, p.Y}})
 	}
+	seenSizes := map[uuid.UUID]bool{}
+	for _, s := range value.Sizes {
+		id, err := uuid.Parse(s.Component)
+		if err != nil || seenSizes[id] {
+			return diagram{}, errors.New("invalid or duplicate sized Component")
+		}
+		seenSizes[id] = true
+		result.sizes = append(result.sizes, diagramSize{id, Size{s.Width, s.Height}})
+	}
 	return result, nil
 }
 
@@ -2622,13 +2654,33 @@ func validateDiagramYAML(root *yaml.Node, version int) error {
 	required := map[string]bool{"id": false, "title": false}
 	seenAppearances := false
 	seenPositions := false
+	seenSizes := false
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
 		value := root.Content[index+1]
 		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
 			return errors.New("Diagram field names must be strings")
 		}
-		if key.Value == "positions" && version == 3 {
+		if key.Value == "sizes" && version == 4 {
+			if seenSizes {
+				return errors.New("Diagram contains duplicate sizes")
+			}
+			seenSizes = true
+			if value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {
+				return errors.New("sizes must be a sequence")
+			}
+			for _, item := range value.Content {
+				fields, err := validateClosedMapping(item, "size", map[string]string{"component": "!!str", "width": "!!int", "height": "!!int"}, nil)
+				if err != nil {
+					return err
+				}
+				if _, err := decodeSize(fields["width"], fields["height"]); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if key.Value == "positions" && version >= 3 {
 			if seenPositions {
 				return errors.New("Diagram contains duplicate positions")
 			}

@@ -1452,6 +1452,45 @@ dd {
   height: auto;
 }
 
+.size-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.size-actions > button {
+  margin: 0;
+}
+
+.map-resize-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.map-resize-handle {
+  position: absolute;
+  z-index: 5;
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  height: 28px;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--ink);
+  background: var(--paper, #f8f0dc);
+  color: var(--ink);
+  cursor: nwse-resize;
+  touch-action: none;
+  pointer-events: auto;
+  font-size: 20px;
+  line-height: 24px;
+}
+
 .map-boundary-captions {
   position: absolute;
   z-index: 2;
@@ -1462,12 +1501,17 @@ dd {
 
 .map-boundary-caption {
   position: absolute;
-  max-width: 8rem;
+  box-sizing: border-box;
+  height: 18px;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform-origin: top center;
   color: var(--muted-ink);
   font-family: "IBM Plex Sans", sans-serif;
-  font-size: 0.62rem;
+  font-size: 12px;
   font-style: italic;
-  line-height: 1.15;
+  line-height: 18px;
   pointer-events: none;
   text-align: center;
   transform: translateX(-50%);

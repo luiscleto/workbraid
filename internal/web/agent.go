@@ -47,6 +47,7 @@ type agentValidationProjection struct {
 type agentChangeSetProjection struct {
 	ArchitectureVersion int                                      `json:"architecture_version"`
 	NodePositions       []architecture.NodePositionChange        `json:"node_positions"`
+	NodeSizes           []architecture.NodeSizeChange            `json:"node_sizes"`
 	StateObject         string                                   `json:"change_set_state"`
 	DetailReassignments []architecture.DetailReassignment        `json:"detail_reassignments"`
 	ID                  string                                   `json:"id"`
@@ -116,6 +117,9 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/diagrams/positions", h.agentPositions)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/set-position", h.agentSetPosition)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/auto-layout", h.agentAutoLayout)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/sizes", h.agentPositions)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/set-size", h.agentSetSize)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/restore-default-size", h.agentRestoreDefaultSize)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-preview", h.agentReconciliationPreview)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-apply", h.agentReconciliationApply)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
@@ -156,7 +160,7 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
 		return zero, false
 	}
-	if strings.HasSuffix(request.URL.Path, "/set-position") || strings.HasSuffix(request.URL.Path, "/auto-layout") {
+	if strings.HasSuffix(request.URL.Path, "/set-position") || strings.HasSuffix(request.URL.Path, "/auto-layout") || strings.HasSuffix(request.URL.Path, "/set-size") || strings.HasSuffix(request.URL.Path, "/restore-default-size") {
 		if !validPlacementFields(contents, request.URL.Path, false) {
 			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the position request fields and try again.", nil)
 			return zero, false
@@ -458,6 +462,7 @@ func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agen
 	value := agentChangeSetProjection{
 		ArchitectureVersion: max(pending.architectureVersion, pending.baseSnapshot.FormatVersion()),
 		NodePositions:       append([]architecture.NodePositionChange{}, pending.nodePositions...),
+		NodeSizes:           append([]architecture.NodeSizeChange{}, pending.nodeSizes...),
 		StateObject:         pending.refObject,
 		DetailReassignments: append([]architecture.DetailReassignment{}, pending.detailReassignments...),
 		ID:                  pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,

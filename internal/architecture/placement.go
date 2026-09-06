@@ -137,7 +137,7 @@ func (s Snapshot) AutoLayout(diagramID string) ([]NodePositionChange, error) {
 		if d.id.String() != diagramID {
 			continue
 		}
-		positions, err := allocatePositions(visibleComponents(d, s.components), nil)
+		positions, err := allocateSizedPositions(d, s.components, nil, s.formatVersion)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +216,7 @@ func applyNodePositions(base Snapshot, composition *CandidateComposition, diagra
 		}
 		if initialize {
 			var err error
-			positions, err = allocatePositions(present, positions)
+			positions, err = allocateSizedPositions(d, components, positions, version)
 			if err != nil {
 				return err
 			}
@@ -326,7 +326,7 @@ func setPositionOverride(values []NodePositionChange, d, c string, p *Position) 
 }
 func SetNodePosition(base Snapshot, composition CandidateComposition, d, c string, p *Position) CandidateComposition {
 	composition.NodePositions = setPositionOverride(composition.NodePositions, d, c, p)
-	if p != nil {
+	if p != nil && composition.ArchitectureVersion < 3 && base.FormatVersion() < 4 {
 		composition.ArchitectureVersion = 3
 	}
 	if composition.ArchitectureVersion == 0 {

@@ -61,6 +61,9 @@ Reads return necessary tokens and do not implicitly Refresh, open projects, prep
 | Submitted feedback | `review-submission list`, `inspect`, `submit` | `review_submissions_list`, `review_submission_inspect`, `review_submission_submit` |
 | Reconciliation | `change-set reconcile-preview`, `reconcile-apply` | `change_set_reconcile_preview`, `change_set_reconcile_apply` |
 | Placement | `diagram positions`, `set-position`, `auto-layout` | `diagram_positions`, `diagram_set_position`, `diagram_auto_layout` |
+| Sizing | `diagram sizes`, `set-size`, `restore-default-size` | `diagram_sizes`, `diagram_set_size`, `diagram_restore_default_size` |
+
+Sizing uses API suffixes `/diagrams/sizes`, `/diagrams/set-size`, `/diagrams/restore-default-size` under agent-v2. Inspection takes store/Diagram IDs and optional Change Set ID and reports all visible pairs with stored size when v4, displayed size and `size_source: stored|derived`. Set-size takes exact store/proposal/generation/Diagram/Component plus integer `width`/`height` (CLI `--width`, `--height`). Restore takes the same state/identity without dimensions. Bounds, current-role defaults, no-op-before-upgrade and results follow [Placement §9](architecture-placement-amendment-v0.md#9-complete-visible-node-sizing-phase-32). No-op preserves version/tree/generation/Review on legacy formats too. Clients share one server operation and never capture browser geometry as authority.
 
 Placement Auto-layout and all-visible-node semantics were delivered in Phase 3.1 with human visual acceptance. The built binary's help/skill must advertise only its implemented surface. Trial reset commands/tools have no compatibility aliases in the corrected product. The old agent-v1 `changes` commands and `pending_generation` are also removed, not ambiguous aliases.
 

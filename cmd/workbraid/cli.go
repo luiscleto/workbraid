@@ -293,7 +293,7 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipEdit(flags, actionArgs, stdin, invalid)
 	case "relationship_remove":
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
-	case "diagram_positions", "diagram_set_position", "diagram_auto_layout":
+	case "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size":
 		return parsePlacementCommand(operation, flags, actionArgs, invalid)
 	case "diagram_parent_options", "diagram_reassign_detail":
 		return parseDetailParentCommand(operation, flags, actionArgs, invalid)
@@ -639,7 +639,7 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 	store := flags.String("store-id", "", "exact store UUID")
 	proposal := flags.String("change-set-id", "", "proposal UUID; omit only for Accepted positions read")
 	diagram := flags.String("diagram-id", "", "Diagram UUID")
-	if operation == "diagram_positions" {
+	if operation == "diagram_positions" || operation == "diagram_sizes" {
 		if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*store, *diagram) {
 			return invalid("Positions requires --store-id and --diagram-id.")
 		}
@@ -655,6 +655,10 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 		flags.Var(&x, "x", "integer center X, -100000..100000")
 		flags.Var(&y, "y", "integer center Y, -100000..100000")
 	}
+	if operation == "diagram_set_size" {
+		flags.Var(&x, "width", "integer outer width, 80..1600")
+		flags.Var(&y, "height", "integer outer height, 48..1200")
+	}
 	if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*store, *proposal, *diagram, *generation) {
 		return invalid("Placement requires exact store, proposal, generation and Diagram.")
 	}
@@ -669,8 +673,18 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 	if component == "" {
 		return invalid("Placement requires --component-id.")
 	}
+	sizeState := agentapi.DiagramRestoreDefaultSizeRequest{DiagramAutoLayoutRequest: state, ComponentID: component}
+	if operation == "diagram_restore_default_size" {
+		return operation, sizeState, nil
+	}
 	xv, xe := strconv.Atoi(x.value)
 	yv, ye := strconv.Atoi(y.value)
+	if operation == "diagram_set_size" {
+		if !x.set || !y.set || xe != nil || ye != nil || xv < 80 || xv > 1600 || yv < 48 || yv > 1200 {
+			return invalid("Width must be an integer 80–1600 and height 48–1200.")
+		}
+		return operation, agentapi.DiagramSetSizeRequest{DiagramRestoreDefaultSizeRequest: sizeState, Width: xv, Height: yv}, nil
+	}
 	if !x.set || !y.set || xe != nil || ye != nil || xv < -100000 || xv > 100000 || yv < -100000 || yv > 100000 {
 		return invalid("X and Y must be integers from -100000 to 100000. Use --x=-180 for negative values.")
 	}
@@ -799,6 +813,9 @@ Authoring commands:
   diagram positions --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
   diagram set-position <state> --diagram-id <uuid> --component-id <uuid> --x=-180 --y=320
   diagram auto-layout <state> --diagram-id <uuid>
+  diagram sizes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram set-size <state> --diagram-id <uuid> --component-id <uuid> --width <80..1600> --height <48..1200>
+  diagram restore-default-size <state> --diagram-id <uuid> --component-id <uuid>
   change-set reconcile-preview <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> [--resolutions-file <path|->]
   change-set reconcile-apply <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> --resolutions-file <path|->
   diagram create-detail <state> --component-id <uuid> --title <text>

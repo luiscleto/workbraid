@@ -80,6 +80,7 @@ type loadedProject struct {
 type pendingChangeSet struct {
 	architectureVersion            int
 	nodePositions                  []architecture.NodePositionChange
+	nodeSizes                      []architecture.NodeSizeChange
 	detailReassignments            []architecture.DetailReassignment
 	id                             string
 	name                           string
@@ -141,6 +142,8 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/diagrams/reassign-detail", handler.browserReassignDetail)
 	mux.HandleFunc("POST /api/architecture/diagrams/set-position", handler.browserPlacement)
 	mux.HandleFunc("POST /api/architecture/diagrams/auto-layout", handler.browserPlacement)
+	mux.HandleFunc("POST /api/architecture/diagrams/set-size", handler.browserSizing)
+	mux.HandleFunc("POST /api/architecture/diagrams/restore-default-size", handler.browserSizing)
 	mux.HandleFunc("POST /api/architecture/diagrams/title", handler.editDiagramTitle)
 	mux.HandleFunc("POST /api/architecture/components/move-home", handler.moveComponentHome)
 	mux.HandleFunc("POST /api/architecture/diagrams/show-component", handler.showComponentHere)
@@ -854,6 +857,7 @@ func pendingFromDurableChangeSet(durable architecture.ChangeSet) *pendingChangeS
 	record := &pendingChangeSet{
 		architectureVersion: durable.Composition.ArchitectureVersion,
 		nodePositions:       append([]architecture.NodePositionChange(nil), durable.Composition.NodePositions...),
+		nodeSizes:           append([]architecture.NodeSizeChange(nil), durable.Composition.NodeSizes...),
 		detailReassignments: append([]architecture.DetailReassignment(nil), durable.Composition.DetailReassignments...),
 		id:                  durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
 		appliedRevision: durable.AppliedRevision, refObject: durable.RefObject,
@@ -878,7 +882,7 @@ func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.Change
 		AppliedRevision: record.appliedRevision, RefObject: record.refObject,
 		BaseRevision: record.baseRevision, Generation: record.generation, BaseSnapshot: record.baseSnapshot,
 		Changes:     record.changes,
-		Composition: architecture.CandidateComposition{ArchitectureVersion: record.architectureVersion, NodePositions: record.nodePositions, DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
+		Composition: architecture.CandidateComposition{ArchitectureVersion: record.architectureVersion, NodePositions: record.nodePositions, NodeSizes: record.nodeSizes, DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
 		Candidate:   record.candidate,
 	}
 	if record.review != nil {
@@ -893,6 +897,7 @@ func clonePending(record *pendingChangeSet) *pendingChangeSet {
 	}
 	clone := *record
 	clone.nodePositions = append([]architecture.NodePositionChange(nil), record.nodePositions...)
+	clone.nodeSizes = append([]architecture.NodeSizeChange(nil), record.nodeSizes...)
 	clone.detailReassignments = append([]architecture.DetailReassignment(nil), record.detailReassignments...)
 	clone.changes = append([]architecture.ComponentChange(nil), record.changes...)
 	for index := range clone.changes {
@@ -1543,6 +1548,7 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 	composition := architecture.CandidateComposition{
 		ArchitectureVersion: pending.architectureVersion,
 		NodePositions:       pending.nodePositions,
+		NodeSizes:           pending.nodeSizes,
 		DetailReassignments: pending.detailReassignments,
 		NewComponentHomes:   pending.newComponentHomes,
 		DetailDiagrams:      pending.detailDiagrams,
@@ -1556,11 +1562,14 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 	candidate, err := h.architecture.PrepareCandidate(ctx, snapshot, pending.changes, &composition)
 	if err == nil {
 		pending.architectureVersion, pending.nodePositions = composition.ArchitectureVersion, composition.NodePositions
+		pending.nodeSizes = composition.NodeSizes
 	}
 	return candidate, err
 }
 
 type diagramMutationRequest struct {
+	Width                     *int    `json:"width,omitempty"`
+	Height                    *int    `json:"height,omitempty"`
 	X                         *int    `json:"x,omitempty"`
 	Y                         *int    `json:"y,omitempty"`
 	AnchorComponentID         string  `json:"anchor_component_id,omitempty"`
@@ -1970,7 +1979,7 @@ func homeMovesWithoutComponent(moves []architecture.ComponentHomeMove, component
 }
 
 func pendingChangeSetEmpty(pending *pendingChangeSet) bool {
-	return len(pending.nodePositions) == 0 && (pending.architectureVersion == 0 || pending.architectureVersion == pending.baseSnapshot.FormatVersion()) && len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
+	return len(pending.nodeSizes) == 0 && len(pending.nodePositions) == 0 && (pending.architectureVersion == 0 || pending.architectureVersion == pending.baseSnapshot.FormatVersion()) && len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
 		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 && len(pending.references) == 0 && len(pending.detailReassignments) == 0
 }
 

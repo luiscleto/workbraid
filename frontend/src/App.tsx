@@ -3029,7 +3029,7 @@ function ChangesTask({
   return (
     <section className="changes-in-progress" aria-labelledby="changes-heading">
       <div className="pane-heading"><p className="eyebrow">{changes.lifecycle === 'applied' ? 'Accepted proposal' : 'Open proposal'}</p><h2 id="changes-heading">{changes.name}</h2></div>
-      {!acceptanceUnknown && <p className="proposal-status">{changes.lifecycle === 'applied'
+      {!acceptanceUnknown && result.action_error !== 'update_uncertain' && <p className="proposal-status">{changes.lifecycle === 'applied'
         ? 'This is the proposal that updated Architecture. It cannot be changed.'
         : changes.out_of_date
           ? 'Out of date with Accepted. You can still edit and review this proposal, but it cannot update Architecture until it matches Accepted.'

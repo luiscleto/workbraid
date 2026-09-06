@@ -471,7 +471,11 @@ describe('candidate review regressions', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /^Showing Steady lantern/ })).toBeEnabled())
     expect(screen.queryByRole('button', { name: 'Showing Accepted' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Update architecture' })).not.toBeInTheDocument()
-    expect(screen.getByText(applied ? 'This is the proposal that updated Architecture. It cannot be changed.' : 'These changes have not updated Architecture yet.')).toBeInTheDocument()
+    if (code === 'update_uncertain') {
+      expect(screen.queryByText('These changes have not updated Architecture yet.')).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByText(applied ? 'This is the proposal that updated Architecture. It cannot be changed.' : 'These changes have not updated Architecture yet.')).toBeInTheDocument()
+    }
     expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls[1][0]).toBe('/api/architecture/accept')

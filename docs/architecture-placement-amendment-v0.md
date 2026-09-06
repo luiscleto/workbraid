@@ -1,10 +1,10 @@
 # Architecture placement — stable visible nodes
 
-Status: Approved by the human; Phase 3.1 implementation and visual acceptance in progress
+Status: Approved and delivered; Phase 3.1 complete with explicit human visual PASS
 
-This is a correction within Phase 3.1, not Phase 3.2. The human rejected the partial-pinning implementation during its visual gate: Queue could not be dragged because it was a boundary node, and arranging one node rearranged other nodes. Technical checks did not establish product acceptance. Phase 3.1 remains incomplete.
+This is a correction within Phase 3.1, not Phase 3.2. The human rejected the partial-pinning implementation during its visual gate: Queue could not be dragged because it was a boundary node, and arranging one node rearranged other nodes. Technical checks alone did not establish product acceptance. The corrected implementation subsequently received explicit human visual PASS and passed post-acceptance restart verification.
 
-This living contract incorporates the approved stable-canvas correction and replaces the superseded partial-pinning design. It preserves Accepted/ref authority, exact source fidelity, one constructor, supported historical formats and human visual acceptance. [Architecture](architecture-v0.md), [Proposals and Reviews](architecture-proposals-v0.md), [Reconciliation](architecture-reconciliation-v0.md) and [Agent Access](architecture-agent-access-v0.md) supply the shared contracts. Execution and later scope are in the [active plan](plans/architecture-phase-3.1-execution.md). Original failed-gate evidence remains intact.
+This living contract incorporates the approved stable-canvas correction and replaces the superseded partial-pinning design. It preserves Accepted/ref authority, exact source fidelity, one constructor, supported historical formats and human visual acceptance. [Architecture](architecture-v0.md), [Proposals and Reviews](architecture-proposals-v0.md), [Reconciliation](architecture-reconciliation-v0.md) and [Agent Access](architecture-agent-access-v0.md) supply the shared contracts. The completed execution plan remains in Git history; later scope is in the [roadmap](roadmap.md). Original failed-gate evidence remains intact.
 
 ## 1. Product behavior
 
@@ -85,7 +85,7 @@ Inspect distinguishes persisted v3 coordinates from derived v2 fallback and repo
 
 ## 7. Corrected verification and continuation
 
-Continue the same implementation worker under the active plan; root orchestrates through Herdr. No second feature worker or Phase 3.2 work. Preserve the failed gate and technical evidence. Obtain independent review of the complete corrected result; separate baseline/packet/provenance commit ceremonies are not required.
+The corrected increment completed independent review and the human gate. Preserve failed-gate and technical evidence. The following verification requirements remain regression guidance; completion does not authorize Phase 3.2.
 
 Prioritize a real built-browser interaction check before repeating expensive downstream verification: drag Queue and ordinary nodes; observe every other coordinate and viewport through grab/drop/server response; navigate away/back. Do not ask the human to accept another partial-pinning variant.
 

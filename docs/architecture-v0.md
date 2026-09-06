@@ -2,7 +2,7 @@
 
 Status: Approved living contract
 
-This document owns the shared Architecture semantics, portable v2 foundation, source fidelity and runtime/catalog authority. [Placement](architecture-placement-amendment-v0.md) defines the approved complete v3 extension; [Proposals and Reviews](architecture-proposals-v0.md) owns durable authoring and feedback; [Reconciliation](architecture-reconciliation-v0.md) owns deliberate residual construction; [UI](ui-v0.md) owns presentation. The [active plan](plans/architecture-phase-3.1-execution.md) tracks implementation and later boundaries.
+This document owns the shared Architecture semantics, portable v2 foundation, source fidelity and runtime/catalog authority. [Placement](architecture-placement-amendment-v0.md) defines the approved complete v3 extension; [Proposals and Reviews](architecture-proposals-v0.md) owns durable authoring and feedback; [Reconciliation](architecture-reconciliation-v0.md) owns deliberate residual construction; [UI](ui-v0.md) owns presentation. The [roadmap](roadmap.md) records later boundaries; completed execution plans remain in Git history.
 
 ## Domain boundary
 

@@ -62,7 +62,7 @@ Reads return necessary tokens and do not implicitly Refresh, open projects, prep
 | Reconciliation | `change-set reconcile-preview`, `reconcile-apply` | `change_set_reconcile_preview`, `change_set_reconcile_apply` |
 | Placement | `diagram positions`, `set-position`, `auto-layout` | `diagram_positions`, `diagram_set_position`, `diagram_auto_layout` |
 
-Placement Auto-layout and all-visible-node semantics are the approved Phase 3.1 correction still undergoing implementation/visual acceptance. The built binary's help/skill must advertise only its implemented surface. Trial reset commands/tools have no compatibility aliases in the corrected product. The old agent-v1 `changes` commands and `pending_generation` are also removed, not ambiguous aliases.
+Placement Auto-layout and all-visible-node semantics were delivered in Phase 3.1 with human visual acceptance. The built binary's help/skill must advertise only its implemented surface. Trial reset commands/tools have no compatibility aliases in the corrected product. The old agent-v1 `changes` commands and `pending_generation` are also removed, not ambiguous aliases.
 
 Pan, zoom, Fit, selection, dock expansion and breadcrumbs are browser view state. Agents inspect complete hierarchy/composition and exact coordinate context instead of owning navigation state. No generic call_api/execute/patch_yaml/run_git/shell/filesystem tool exists.
 

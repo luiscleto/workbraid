@@ -32,7 +32,7 @@ CLI global flags precede the command. `--help` and the embedded `--skill` descri
 
 ## Current work and contracts
 
-Architecture, durable proposals, submitted Reviews and Reconciliation are established. Phase 3.1 placement is **in progress**: the human rejected the partial-pinning trial. The approved correction requires stable saved positions for every visible Component node, including **Lives in** nodes, and deliberate **Auto-layout**. It still needs implementation verification and human visual acceptance. Do not initialize real project data with the rejected partial-placement binary; its trial controls and partial v3 format are not the final contract.
+Phase 3.1 stable placement is **complete**, with explicit human visual PASS on implementation `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. The human accepted WorkBraid’s self-Architecture at `06110ef95cec9e385d38c17831c38c5c51c6cfc3`; its seven Components, two Diagrams, complete visible coordinates and applied receipt reconstructed exactly after a full process restart. The built Accepted route passed without console errors. [Open WorkBraid locally](http://127.0.0.1:8080/projects/workbraid). Later scope is not started.
 
 | Document | Owns |
 | --- | --- |
@@ -42,6 +42,6 @@ Architecture, durable proposals, submitted Reviews and Reconciliation are establ
 | [Placement](docs/architecture-placement-amendment-v0.md) | Approved complete v3 positions, stable visible nodes, v2 transition and placement reconciliation |
 | [UI](docs/ui-v0.md) | Language, drafting-table direction, navigation and review interaction |
 | [Agent Access](docs/architecture-agent-access-v0.md) | Local CLI/MCP protocol, preconditions, discovery and recovery |
-| [Active plan and roadmap](docs/plans/architecture-phase-3.1-execution.md) | Remaining placement work, checks, human gate and later boundaries |
+| [Roadmap](docs/roadmap.md) | Future boundaries; no next increment is authorized |
 
 [AGENTS.md](AGENTS.md) describes development coordination. Completed plans and superseded designs live in Git history, not a second documentation archive. Runtime evidence and historical test fixtures remain separate from this cleanup.

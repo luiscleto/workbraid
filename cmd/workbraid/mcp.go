@@ -56,6 +56,26 @@ func placementInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func routingInputSchema(set bool) *jsonschema.Schema {
+	var schema *jsonschema.Schema
+	var err error
+	if set {
+		schema, err = jsonschema.For[agentapi.DiagramSetRouteRequest](nil)
+	} else {
+		schema, err = jsonschema.For[agentapi.DiagramRestoreDefaultRouteRequest](nil)
+	}
+	if err != nil {
+		panic(err)
+	}
+	one, minimum, maximum := float64(1), float64(-100000), float64(100000)
+	schema.Properties["occurrence"].Minimum = &one
+	if set {
+		schema.Properties["bend"].Minimum = &minimum
+		schema.Properties["bend"].Maximum = &maximum
+	}
+	return schema
+}
+
 func sizingInputSchema() *jsonschema.Schema {
 	schema, err := jsonschema.For[agentapi.DiagramSetSizeRequest](nil)
 	if err != nil {
@@ -156,6 +176,9 @@ func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
 	addMCPTool[agentapi.RelationshipEditRequest](server, client, "relationship_edit", "Edit Relationship", "Replace one authored Relationship in the addressed change set, selected by source ID, exact raw old target, exact raw old label, and one-based identical-pair occurrence. Empty or malformed old selectors remain repairable.", mutationAnnotations("Edit Relationship", false, false))
 	addMCPTool[agentapi.RelationshipRemoveRequest](server, client, "relationship_remove", "Remove Relationship", "Remove one authored Relationship in the addressed change set, selected by source ID, exact raw target, exact raw label, and one-based identical-pair occurrence. This request-local selector creates no Relationship identity.", mutationAnnotations("Remove Relationship", true, false))
 	addMCPTool[agentapi.DiagramParentOptionsRequest](server, client, "diagram_parent_options", "Read parent Components", "Read the current parent Component/home and eligible destination Components for one non-root Diagram at the exact proposal generation. Uses the complete candidate, including new Components. Does not create or mutate a proposal.", readAnnotations("Read parent Components"))
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_routes", "Read link routes", "Inspect exact Diagram/source/target/label/occurrence presentation slots, counts, custom/default, displayed bend and eligibility. Omit change_set_id for Accepted. Reads never save.", readAnnotations("Read link routes"))
+	addMCPToolWithSchema[agentapi.DiagramSetRouteRequest](server, client, "diagram_set_route", "Keep route", "Set signed integer midpoint control-point bend, -100000..100000, on an eligible link under exact store/proposal/generation. Exact tuple/occurrence is a presentation slot, not Relationship identity. Equal displayed default before first override is a no-op. Actual legacy change upgrades to v5 without moving/resizing peers. Tuple count/label/target changes clear that tuple routes; visibility loss clears only that Diagram. Review/Update remain separate.", mutationAnnotations("Keep route", false, false), routingInputSchema(true))
+	addMCPToolWithSchema[agentapi.DiagramRestoreDefaultRouteRequest](server, client, "diagram_restore_default_route", "Restore default route", "Remove one custom route under exact identity/generation. Absence restores the derived fan; absent override is a no-op. Node position/size stay fixed. Self-links and coincident centers are ineligible.", mutationAnnotations("Restore default route", false, false), routingInputSchema(false))
 	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_sizes", "Read Diagram sizes", "Inspect every visible node size. V4 has stored dimensions; v2/v3 report their legacy displayed pair as derived. Omit change_set_id for Accepted. Reading never upgrades or saves.", readAnnotations("Read Diagram sizes"))
 	addMCPToolWithSchema[agentapi.DiagramSetSizeRequest](server, client, "diagram_set_size", "Keep size", "Set a visible node width and height under exact store/proposal/generation preconditions. Width 80–1600, height 48–1200, integers. Center and peers remain fixed. Same displayed pair is a no-op before any legacy upgrade. Actual legacy change initializes sizes without resizing peers; Review and Update stay separate.", mutationAnnotations("Keep size", false, false), sizingInputSchema())
 	addMCPTool[agentapi.DiagramRestoreDefaultSizeRequest](server, client, "diagram_restore_default_size", "Restore default size", "Write the selected node current-role default once: ordinary/reference 200×96, boundary 224×112. Same displayed pair is a no-op before upgrade. Keeps positions fixed and does not enable automatic sizing.", mutationAnnotations("Restore default size", false, false))

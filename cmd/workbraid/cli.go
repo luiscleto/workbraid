@@ -293,7 +293,9 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipEdit(flags, actionArgs, stdin, invalid)
 	case "relationship_remove":
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
-	case "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size":
+	case "diagram_set_route", "diagram_restore_default_route":
+		return parseRoutingCommand(operation, flags, actionArgs, stdin, invalid)
+	case "diagram_positions", "diagram_routes", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size":
 		return parsePlacementCommand(operation, flags, actionArgs, invalid)
 	case "diagram_parent_options", "diagram_reassign_detail":
 		return parseDetailParentCommand(operation, flags, actionArgs, invalid)
@@ -639,7 +641,7 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 	store := flags.String("store-id", "", "exact store UUID")
 	proposal := flags.String("change-set-id", "", "proposal UUID; omit only for Accepted positions read")
 	diagram := flags.String("diagram-id", "", "Diagram UUID")
-	if operation == "diagram_positions" || operation == "diagram_sizes" {
+	if operation == "diagram_positions" || operation == "diagram_sizes" || operation == "diagram_routes" {
 		if flags.Parse(args) != nil || flags.NArg() != 0 || !requireCLI(*store, *diagram) {
 			return invalid("Positions requires --store-id and --diagram-id.")
 		}
@@ -814,6 +816,9 @@ Authoring commands:
   diagram set-position <state> --diagram-id <uuid> --component-id <uuid> --x=-180 --y=320
   diagram auto-layout <state> --diagram-id <uuid>
   diagram sizes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram routes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram set-route <state> --diagram-id <uuid> --source-id <uuid> --target-id <uuid> (--label <text>|--label-file <path|->) --occurrence <n> --bend <-100000..100000>
+  diagram restore-default-route <state> --diagram-id <uuid> --source-id <uuid> --target-id <uuid> (--label <text>|--label-file <path|->) --occurrence <n>
   diagram set-size <state> --diagram-id <uuid> --component-id <uuid> --width <80..1600> --height <48..1200>
   diagram restore-default-size <state> --diagram-id <uuid> --component-id <uuid>
   change-set reconcile-preview <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> [--resolutions-file <path|->]

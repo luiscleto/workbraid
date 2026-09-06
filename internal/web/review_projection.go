@@ -67,16 +67,18 @@ type diagramBoundaryResponse struct {
 }
 
 type diagramRelationshipResponse struct {
-	Key                     string `json:"key"`
-	SourceNodeKey           string `json:"source_node_key"`
-	TargetNodeKey           string `json:"target_node_key"`
-	SourceComponentID       string `json:"source_component_id"`
-	TargetComponentID       string `json:"target_component_id"`
-	Label                   string `json:"label"`
+	Routing                 architecture.RouteProjection `json:"routing"`
+	Key                     string                       `json:"key"`
+	SourceNodeKey           string                       `json:"source_node_key"`
+	TargetNodeKey           string                       `json:"target_node_key"`
+	SourceComponentID       string                       `json:"source_component_id"`
+	TargetComponentID       string                       `json:"target_component_id"`
+	Label                   string                       `json:"label"`
 	sourceRelationshipIndex int
 }
 
 type reviewComparisonResponse struct {
+	EdgeRoutes    []reviewEdgeRouteChange            `json:"edge_routes"`
 	NodeSizes     []reviewNodeSizeChange             `json:"node_sizes"`
 	NodePositions []reviewNodePositionChange         `json:"node_positions"`
 	Components    []reviewComponentChangeResponse    `json:"components"`
@@ -251,7 +253,8 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		}
 		for itemIndex, relationship := range diagram.Relationships {
 			value.Relationships[itemIndex] = diagramRelationshipResponse{
-				Key: relationship.Key, SourceNodeKey: relationship.SourceNodeKey, TargetNodeKey: relationship.TargetNodeKey,
+				Routing: relationship.Routing,
+				Key:     relationship.Key, SourceNodeKey: relationship.SourceNodeKey, TargetNodeKey: relationship.TargetNodeKey,
 				SourceComponentID: relationship.SourceComponentID, TargetComponentID: relationship.TargetComponentID, Label: relationship.Label,
 				sourceRelationshipIndex: relationship.SourceRelationshipIndex,
 			}
@@ -324,7 +327,75 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 		return a.DiagramID < b.DiagramID
 	})
 	comparison.NodeSizes = compareSizes(before, withChanges)
+	comparison.EdgeRoutes = compareRoutes(before, withChanges)
 	return before, withChanges, comparison
+}
+
+type reviewEdgeRouteChange struct {
+	architecture.RouteAddress
+	Before      *architecture.Route `json:"before"`
+	With        *architecture.Route `json:"with"`
+	BeforeState string              `json:"before_state"`
+	WithState   string              `json:"with_state"`
+	Path        string              `json:"path"`
+}
+
+func compareRoutes(before, with snapshotProjectionResponse) []reviewEdgeRouteChange {
+	old, current := map[architecture.RouteAddress]*architecture.Route{}, map[architecture.RouteAddress]*architecture.Route{}
+	paths := map[string]string{}
+	for _, side := range []struct {
+		s      snapshotProjectionResponse
+		values map[architecture.RouteAddress]*architecture.Route
+	}{{before, old}, {with, current}} {
+		for _, d := range side.s.Diagrams {
+			paths[d.ID] = "diagrams/" + d.Filename
+			for _, r := range d.Relationships {
+				side.values[r.Routing.RouteAddress] = r.Routing.Route
+			}
+		}
+	}
+	keys := map[architecture.RouteAddress]bool{}
+	for k := range old {
+		keys[k] = true
+	}
+	for k := range current {
+		keys[k] = true
+	}
+	out := []reviewEdgeRouteChange{}
+	state := func(v *architecture.Route, exists bool) string {
+		if !exists {
+			return "not_applicable"
+		}
+		if v == nil {
+			return "default"
+		}
+		return "custom"
+	}
+	for k := range keys {
+		a, ao := old[k]
+		b, bo := current[k]
+		if a == nil && b == nil || a != nil && b != nil && *a == *b {
+			continue
+		}
+		out = append(out, reviewEdgeRouteChange{k, a, b, state(a, ao), state(b, bo), paths[k.DiagramID]})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.DiagramID != b.DiagramID {
+			return a.DiagramID < b.DiagramID
+		}
+		if a.SourceID != b.SourceID {
+			return a.SourceID < b.SourceID
+		}
+		if a.TargetID != b.TargetID {
+			return a.TargetID < b.TargetID
+		}
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		return a.Occurrence < b.Occurrence
+	})
+	return out
 }
 
 func compareSizes(before, with snapshotProjectionResponse) []reviewNodeSizeChange {

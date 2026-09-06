@@ -73,6 +73,7 @@ type changeSetReview struct {
 type changeState struct {
 	ArchitectureVersion int                         `yaml:"architecture_version,omitempty"`
 	NodePositions       []NodePositionChange        `yaml:"node_positions"`
+	EdgeRoutes          []EdgeRouteChange           `yaml:"edge_routes"`
 	NodeSizes           []NodeSizeChange            `yaml:"node_sizes"`
 	DetailReassignments []DetailReassignment        `yaml:"detail_reassignments"`
 	Format              string                      `yaml:"format"`
@@ -651,7 +652,7 @@ func validObjectID(value string) bool {
 }
 
 func marshalChangeState(changes []ComponentChange, composition CandidateComposition) ([]byte, error) {
-	state := changeState{Format: "workbraid-change-state", Version: 4, ArchitectureVersion: composition.ArchitectureVersion, NodePositions: append([]NodePositionChange{}, composition.NodePositions...), NodeSizes: append([]NodeSizeChange{}, composition.NodeSizes...),
+	state := changeState{Format: "workbraid-change-state", Version: 5, EdgeRoutes: append([]EdgeRouteChange{}, composition.EdgeRoutes...), ArchitectureVersion: composition.ArchitectureVersion, NodePositions: append([]NodePositionChange{}, composition.NodePositions...), NodeSizes: append([]NodeSizeChange{}, composition.NodeSizes...),
 		DetailReassignments: append([]DetailReassignment{}, composition.DetailReassignments...),
 		Components:          make([]changeStateComponent, len(changes)),
 		NewComponentHomes:   nonNilHomes(composition.NewComponentHomes), DetailDiagrams: nonNilDetails(composition.DetailDiagrams),
@@ -694,6 +695,7 @@ func parseChangeState(contents []byte) ([]ComponentChange, CandidateComposition,
 	}
 	composition := CandidateComposition{ArchitectureVersion: state.ArchitectureVersion, NodePositions: state.NodePositions, DetailReassignments: state.DetailReassignments, NewComponentHomes: state.NewComponentHomes, DetailDiagrams: state.DetailDiagrams, DiagramTitles: state.DiagramTitles, HomeMoves: state.HomeMoves, References: state.References}
 	composition.NodeSizes = state.NodeSizes
+	composition.EdgeRoutes = state.EdgeRoutes
 	if err := validateChangeState(changes, composition); err != nil {
 		return nil, CandidateComposition{}, err
 	}
@@ -810,17 +812,28 @@ func validateChangeSetMetadataYAML(root *yaml.Node) error {
 
 func validateChangeStateYAML(root *yaml.Node) error {
 	required := map[string]string{"format": "!!str", "version": "!!int", "components": "!!seq", "new_component_homes": "!!seq", "detail_diagrams": "!!seq", "diagram_titles": "!!seq", "home_moves": "!!seq", "references": "!!seq"}
-	seen, err := validateClosedMapping(root, "changes.yaml", required, map[string]string{"detail_reassignments": "!!seq", "architecture_version": "!!int", "node_positions": "!!seq", "node_sizes": "!!seq"})
+	seen, err := validateClosedMapping(root, "changes.yaml", required, map[string]string{"detail_reassignments": "!!seq", "architecture_version": "!!int", "node_positions": "!!seq", "node_sizes": "!!seq", "edge_routes": "!!seq"})
 	if err != nil {
 		return err
 	}
-	if scalarValue(seen["format"]) != "workbraid-change-state" || (scalarValue(seen["version"]) != "1" && scalarValue(seen["version"]) != "2" && scalarValue(seen["version"]) != "3" && scalarValue(seen["version"]) != "4") {
+	if scalarValue(seen["format"]) != "workbraid-change-state" || (scalarValue(seen["version"]) != "1" && scalarValue(seen["version"]) != "2" && scalarValue(seen["version"]) != "3" && scalarValue(seen["version"]) != "4" && scalarValue(seen["version"]) != "5") {
 		return errors.New("changes.yaml format or version is unsupported")
 	}
 	if (scalarValue(seen["version"]) != "1") != (seen["detail_reassignments"] != nil) {
 		return errors.New("changes.yaml detail_reassignments is required only in version 2")
 	}
-	v4 := scalarValue(seen["version"]) == "4"
+	v5 := scalarValue(seen["version"]) == "5"
+	if v5 != (seen["edge_routes"] != nil) {
+		return errors.New("edge_routes required only in version 5")
+	}
+	if v5 {
+		for _, item := range seen["edge_routes"].Content {
+			if err := validateRouteYAML(item, true); err != nil {
+				return err
+			}
+		}
+	}
+	v4 := scalarValue(seen["version"]) == "4" || v5
 	if v4 != (seen["node_sizes"] != nil) {
 		return errors.New("node_sizes is required only in operational version 4")
 	}
@@ -830,8 +843,11 @@ func validateChangeStateYAML(root *yaml.Node) error {
 	}
 	if v3 {
 		var target int
-		if err := seen["architecture_version"].Decode(&target); err != nil || target < 2 || target > 3 && !v4 || target > 4 {
+		if err := seen["architecture_version"].Decode(&target); err != nil || target < 2 || target > 3 && !v4 || target > 4 && !v5 || target > 5 {
 			return errors.New("invalid architecture_version")
+		}
+		if v5 && target < 5 && len(seen["edge_routes"].Content) > 0 {
+			return errors.New("legacy target cannot have routes")
 		}
 		if target == 2 && len(seen["node_positions"].Content) > 0 {
 			return errors.New("version 2 cannot have positions")
@@ -955,10 +971,18 @@ func scalarValue(node *yaml.Node) string {
 }
 
 func validateChangeState(changes []ComponentChange, composition CandidateComposition) error {
-	if composition.ArchitectureVersion != 0 && (composition.ArchitectureVersion < 2 || composition.ArchitectureVersion > 4) {
+	if composition.ArchitectureVersion != 0 && (composition.ArchitectureVersion < 2 || composition.ArchitectureVersion > 5) {
 		return errors.New("invalid architecture_version")
 	}
 	seenPositions := map[string]bool{}
+	seenRoutes := map[RouteAddress]bool{}
+	for _, v := range composition.EdgeRoutes {
+		_, err := v.slot()
+		if err != nil || !canonicalUUID(v.DiagramID) || !canonicalUUID(v.SourceID) || !canonicalUUID(v.TargetID) || seenRoutes[v.RouteAddress] || composition.ArchitectureVersion < 5 || v.Route != nil && !ValidRoute(*v.Route) {
+			return errors.New("invalid route fact")
+		}
+		seenRoutes[v.RouteAddress] = true
+	}
 	seenSizes := map[string]bool{}
 	for _, v := range composition.NodeSizes {
 		key := v.DiagramID + ":" + v.ComponentID

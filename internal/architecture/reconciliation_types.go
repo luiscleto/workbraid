@@ -11,6 +11,7 @@ import (
 
 // These are request-local fact identities and choices, never durable records.
 type ReconciliationLocator struct {
+	Occurrence   int      `json:"occurrence,omitempty"`
 	Kind         string   `json:"kind"`
 	ComponentID  string   `json:"component_id,omitempty"`
 	DiagramID    string   `json:"diagram_id,omitempty"`
@@ -44,6 +45,7 @@ func (l ReconciliationLocator) MarshalJSON() ([]byte, error) {
 }
 
 type ReconciliationValue struct {
+	Route              *Route                            `json:"route,omitempty"`
 	Size               *Size                             `json:"size,omitempty"`
 	Position           *Position                         `json:"position,omitempty"`
 	Text               *string                           `json:"text,omitempty"`
@@ -72,6 +74,17 @@ type ReconciliationResolution struct {
 
 func (r ReconciliationResolution) MarshalJSON() ([]byte, error) {
 	type plain ReconciliationResolution
+	if r.Locator.Kind == "route_value" && r.Choice == "manual" && r.Value != nil {
+		return json.Marshal(struct {
+			Locator ReconciliationLocator `json:"locator"`
+			Choice  string                `json:"choice"`
+			Value   struct {
+				Route *Route `json:"route"`
+			} `json:"value"`
+		}{r.Locator, r.Choice, struct {
+			Route *Route `json:"route"`
+		}{r.Value.Route}})
+	}
 	if r.Locator.Kind == "node_position" && r.Choice == "manual" && r.Value != nil {
 		return json.Marshal(struct {
 			Locator ReconciliationLocator `json:"locator"`
@@ -112,6 +125,13 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 	}
 	required := []string{"kind"}
 	switch value.Locator.Kind {
+	case "route_value":
+		required = append(required, "diagram_id", "source_id", "target_id", "label", "occurrence")
+		if value.Locator.Occurrence < 1 {
+			return fmt.Errorf("route occurrence must be positive")
+		}
+	case "route_loss":
+		required = append(required, "diagram_id", "source_id", "target_id", "label")
 	case "component_title", "component_description", "home", "component_object":
 		required = append(required, "component_id")
 	case "diagram_title", "detail_anchor", "diagram_object":
@@ -153,6 +173,13 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 			}
 		}
 	}
+	if value.Locator.Kind == "route_loss" {
+		if value.Choice != "clear" || raw["value"] != nil {
+			return fmt.Errorf("route loss requires clear without value")
+		}
+		*r = ReconciliationResolution(value)
+		return nil
+	}
 	if value.Choice != "accepted" && value.Choice != "proposed" && value.Choice != "manual" {
 		return fmt.Errorf("unknown resolution choice")
 	}
@@ -167,6 +194,8 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 		}
 		allowed := map[string]bool{}
 		switch value.Locator.Kind {
+		case "route_value":
+			allowed["route"] = true
 		case "node_size":
 			allowed["size"] = true
 		case "node_position":
@@ -192,6 +221,18 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("manual scalar requires one value")
 		}
 		for key, rawValue := range fields {
+			if value.Locator.Kind == "route_value" {
+				if key != "route" {
+					return fmt.Errorf("manual route requires route")
+				}
+				if !bytes.Equal(rawValue, []byte("null")) {
+					var v map[string]json.RawMessage
+					if json.Unmarshal(rawValue, &v) != nil || len(v) != 1 || v["bend"] == nil || bytes.Equal(v["bend"], []byte("null")) || value.Value.Route == nil || !ValidRoute(*value.Value.Route) {
+						return fmt.Errorf("route requires bounded integer bend or null")
+					}
+				}
+				continue
+			}
 			if value.Locator.Kind == "node_size" {
 				var pair map[string]json.RawMessage
 				if json.Unmarshal(rawValue, &pair) != nil || len(pair) != 2 || pair["width"] == nil || pair["height"] == nil || bytes.Equal(pair["width"], []byte("null")) || bytes.Equal(pair["height"], []byte("null")) || value.Value.Size == nil || !ValidSize(*value.Value.Size) {
@@ -290,6 +331,12 @@ type ReconciliationSide struct {
 
 func (s ReconciliationSide) MarshalJSON() ([]byte, error) {
 	type plain ReconciliationSide
+	if s.State == "default" || s.State == "custom" {
+		return json.Marshal(struct {
+			State string `json:"state"`
+			Route *Route `json:"route"`
+		}{s.State, s.Route})
+	}
 	if s.State != "" {
 		return json.Marshal(struct {
 			State    string    `json:"state"`
@@ -307,6 +354,7 @@ type ReconciliationDiagramObject struct {
 }
 
 type ReconciliationConflict struct {
+	RouteLoss       []RouteLossContext           `json:"route_loss,omitempty"`
 	Locator         ReconciliationLocator        `json:"locator"`
 	Original        ReconciliationSide           `json:"original"`
 	Accepted        ReconciliationSide           `json:"accepted"`
@@ -351,6 +399,7 @@ type reconciliationRelationship struct{ source, target, label string }
 type reconciliationDiagram struct{ title, path string }
 
 type reconciliationFacts struct {
+	routes        map[RouteAddress]Route
 	sizes         map[reconciliationPair]Size
 	positions     map[reconciliationPair]Position
 	version       int
@@ -367,6 +416,7 @@ func snapshotReconciliationFacts(s Snapshot) reconciliationFacts {
 	f := reconciliationFacts{components: map[string]AuthoringComponent{}, diagrams: map[string]reconciliationDiagram{}, homes: map[string]string{}, references: map[reconciliationPair]bool{}, anchors: map[string]string{}, relationships: map[reconciliationRelationship]int{}, root: s.RootDiagramID()}
 	f.positions = map[reconciliationPair]Position{}
 	f.sizes = map[reconciliationPair]Size{}
+	f.routes = map[RouteAddress]Route{}
 	f.version = s.FormatVersion()
 	for _, c := range s.AuthoringComponents() {
 		f.components[c.ID] = c
@@ -376,6 +426,9 @@ func snapshotReconciliationFacts(s Snapshot) reconciliationFacts {
 	}
 	for _, d := range s.diagrams {
 		id := d.id.String()
+		for _, v := range d.routes {
+			f.routes[routeAddress(d.id, v.slot)] = v.route
+		}
 		for _, v := range d.sizes {
 			f.sizes[reconciliationPair{id, v.component.String()}] = v.size
 		}

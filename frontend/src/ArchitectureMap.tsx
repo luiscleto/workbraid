@@ -2,9 +2,15 @@ import cytoscape, { Core, ElementDefinition } from 'cytoscape'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 export type MapRelationship = {
+  routing?: RouteProjection
   target_id: string
   label: string
   projection_key?: string
+}
+
+export type RouteProjection = {
+  diagram_id: string; source_id: string; target_id: string; label: string; occurrence: number
+  count: number; route: {bend:number}|null; display_bend: number; eligible: boolean; reason?: string
 }
 
 export type MapComponent = {
@@ -55,6 +61,7 @@ export type ReviewRelationshipSelection = Omit<ReviewMapRelationshipChange, 'sta
 }
 
 type ArchitectureMapProps = {
+  onRoute?: (route:RouteProjection,bend:number)=>Promise<boolean>
 	onResize?: (id:string,size:{width:number;height:number})=>Promise<boolean>
 	viewKey?: string
 	onPlace?: (id:string,position:{x:number;y:number})=>Promise<boolean>
@@ -87,6 +94,7 @@ type ArchitectureMapProps = {
 type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewSizeIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
+  onRoute,
 	onResize,
 	viewKey,
 	onPlace,
@@ -119,6 +127,11 @@ export function ArchitectureMap({
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+  const routeHandle=useRef<HTMLButtonElement>(null)
+  const routeGuide=useRef<SVGPathElement>(null)
+  const routeGesture=useRef<{edge:cytoscape.EdgeSingular;route:RouteProjection;start:number;x:number;y:number;zoom:number;normal:{x:number;y:number};submit:NonNullable<typeof onRoute>}|null>(null)
+  const routeCancel=useRef<()=>void>(()=>undefined)
+  routeCancel.current=()=>{const g=routeGesture.current;routeGesture.current=null;if(g&&!g.edge.cy().destroyed())g.edge.data('distance',g.start);syncOverlays.current()}
   const resizeHandle = useRef<HTMLButtonElement>(null)
   const resizeGesture = useRef<{node:cytoscape.NodeSingular; start:{width:number;height:number}; x:number;y:number;zoom:number;submit:NonNullable<typeof onResize>}|null>(null)
   const resizeCancel = useRef<()=>void>(()=>undefined)
@@ -178,7 +191,7 @@ export function ArchitectureMap({
 	  let grabbed: {id:string;start:{x:number;y:number};submit:NonNullable<typeof onPlace>;cancelled:boolean}|null=null
 	  let suppressClickUntil=0
 	  const cancel=()=>{if(!grabbed||!instance)return;grabbed.cancelled=true;instance.getElementById(grabbed.id).position(grabbed.start)}
-	  const cancelResize=()=>resizeCancel.current()
+	  const cancelResize=()=>{resizeCancel.current();routeCancel.current()}
 	  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){cancel();cancelResize()}}
 	  window.addEventListener('keydown',escape)
 	  window.addEventListener('pointercancel',cancel)
@@ -221,14 +234,14 @@ export function ArchitectureMap({
       })
       instance.on('tap', 'edge', (event) => {
         const data = event.target.data() as ReviewRelationshipSelection & { reviewStatus?: string; annotationCount?: number }
-        if (data.reviewStatus && relationshipHandler.current) {
+        if (relationshipHandler.current) {
           relationshipHandler.current({
             key: data.key,
             before_key: data.before_key,
             source_id: data.source_id,
             target_id: data.target_id,
             label: data.label,
-            status: data.status,
+            status: data.status || 'unchanged',
             path: data.path,
             occurrence: data.occurrence,
             review_side: data.review_side,
@@ -309,6 +322,19 @@ export function ArchitectureMap({
       const updateOverlays = () => {
         updateBoundaryCaptions()
         updateAnnotationCards()
+        const rh=routeHandle.current,guide=routeGuide.current
+        if(rh&&instance){
+          const edge=instance.edges(':selected').first() as cytoscape.EdgeSingular
+          const geometry=edge.empty()?null:routeGeometry(edge)
+          rh.hidden=!geometry||!edge.data('routing')?.eligible
+          if(guide)guide.style.display=rh.hidden?'none':''
+          if(geometry&&!rh.hidden){
+            const z=instance.zoom(),p=instance.pan(),point=geometry.control
+            rh.style.left=`${point.x*z+p.x}px`;rh.style.top=`${point.y*z+p.y}px`
+            if(rh.parentElement)rh.parentElement.style.height=`${instance.height()}px`
+            guide?.setAttribute('d',`M ${geometry.start.x*z+p.x} ${geometry.start.y*z+p.y} L ${point.x*z+p.x} ${point.y*z+p.y} L ${geometry.end.x*z+p.x} ${geometry.end.y*z+p.y}`)
+          }
+        }
         const handle=resizeHandle.current
         if(handle&&instance){
           if(handle.parentElement)handle.parentElement.style.height=`${instance.height()}px`
@@ -357,6 +383,12 @@ export function ArchitectureMap({
       instance?.destroy()
     }
   }, [elements, fitPadding,viewKey])
+
+  useEffect(()=>{
+    const g=routeGesture.current
+    if(g&&(!onRoute||g.edge.id()!==selectedRelationshipKey))routeCancel.current()
+    syncOverlays.current()
+  },[selectedRelationshipKey,Boolean(onRoute)])
 
   useEffect(()=>{
     const gesture=resizeGesture.current
@@ -494,6 +526,15 @@ export function ArchitectureMap({
         </div>
       )}
       {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
+      {!renderFailed && onRoute && selectedRelationshipKey && <div className="map-resize-layer">
+        <svg className="route-guide" aria-hidden="true"><path ref={routeGuide}/></svg>
+        <button ref={routeHandle} type="button" className="map-route-handle" aria-label="Bend selected link" title="Drag the control point; the guide shows how it bends the link"
+          onPointerDown={event=>{event.preventDefault();event.stopPropagation();const edge=graph.current?.getElementById(selectedRelationshipKey) as cytoscape.EdgeSingular|undefined;const geometry=edge&&!edge.empty()?routeGeometry(edge):null;if(!edge||!geometry||!edge.data('routing')?.eligible)return;event.currentTarget.setPointerCapture(event.pointerId);routeGesture.current={edge,route:edge.data('routing'),start:Number(edge.data('distance')),x:event.clientX,y:event.clientY,zoom:edge.cy().zoom(),normal:geometry.normal,submit:onRoute}}}
+          onPointerMove={event=>{const g=routeGesture.current;if(!g)return;event.preventDefault();g.edge.data('distance',g.start+((event.clientX-g.x)*g.normal.x+(event.clientY-g.y)*g.normal.y)/g.zoom);syncOverlays.current()}}
+          onPointerCancel={()=>routeCancel.current()} onLostPointerCapture={()=>routeCancel.current()}
+          onPointerUp={async event=>{const g=routeGesture.current;routeGesture.current=null;if(!g)return;const bend=roundPosition(Number(g.edge.data('distance')));if(event.clientX===g.x&&event.clientY===g.y||bend===g.start){g.edge.data('distance',g.start);return}const kept=await g.submit(g.route,bend);if(!kept&&!g.edge.cy().destroyed())g.edge.data('distance',g.start)}}
+        />
+      </div>}
       {!renderFailed && onResize && selectedID && <div className="map-resize-layer"><button ref={resizeHandle} className="map-resize-handle" type="button" aria-label="Resize selected node" title="Drag to resize; use Width and Height for precise sizing"
         onPointerDown={event=>{
           event.preventDefault();event.stopPropagation()
@@ -685,7 +726,8 @@ export function projectionElements(components: MapComponent[], options: Projecti
           target_title: change?.target_title ?? titleByID.get(relationship.target_id) ?? 'Component',
           label: relationship.label,
           displayLabel: status === 'added' ? `Added — ${relationship.label}` : status === 'removed' ? `Removed — ${relationship.label}` : relationship.label,
-          distance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
+          routing: relationship.routing,
+          distance: relationship.routing?.display_bend ?? (count === 1 ? 0 : (index - (count - 1) / 2) * 52),
           reviewStatus: status,
           status,
           path: change?.path ?? (source.filename ? `components/${source.filename}` : ''),
@@ -762,6 +804,17 @@ export function projectionElements(components: MapComponent[], options: Projecti
 
 export function roundPosition(value: number): number {
   return Math.sign(value) * Math.floor(Math.abs(value) + 0.5)
+}
+
+// These are the renderer's actual shape intersections, shared with its curve
+// calculation. Reading them does not create a second shape interpretation.
+export function routeGeometry(edge:cytoscape.EdgeSingular){
+ const a=edge.source().position(),b=edge.target().position(),length=Math.hypot(b.x-a.x,b.y-a.y)
+ if(!length)return null
+ const control=edge.controlPoints()?.[0]
+ const rs=(edge as unknown as {_private:{rscratch:{srcIntn?:number[];tgtIntn?:number[]}}})._private.rscratch
+ if(!control||!rs.srcIntn||!rs.tgtIntn||![...rs.srcIntn,...rs.tgtIntn,control.x,control.y].every(Number.isFinite))return null
+ return {control,start:{x:rs.srcIntn[0],y:rs.srcIntn[1]},end:{x:rs.tgtIntn[0],y:rs.tgtIntn[1]},normal:{x:-(b.y-a.y)/length,y:(b.x-a.x)/length}}
 }
 
 export function displayPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
@@ -883,6 +936,7 @@ const mapStyles: cytoscape.StylesheetJson = [
       'curve-style': 'unbundled-bezier',
       'control-point-distances': 'data(distance)',
       'control-point-weights': 0.5,
+      'edge-distances': 'intersection',
       label: 'data(displayLabel)',
       color: '#514c41',
       'font-family': 'IBM Plex Sans',

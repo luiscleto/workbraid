@@ -113,7 +113,7 @@ func (c *reconciliationCalculation) mergeSizes() {
 		if reason != "" && (!sameSize(b.Size, chosen.Size) || b.State == "not_applicable" && chosen.Size != nil) {
 			c.automatic(l, reason, b, a, p)
 		}
-		if chosen.Size != nil && c.final.version == 4 {
+		if chosen.Size != nil && c.final.version >= 4 {
 			c.final.sizes[k] = *chosen.Size
 		}
 	}

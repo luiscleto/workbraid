@@ -17,14 +17,14 @@ import (
 func sizingLegacyFixture(t *testing.T, version int) nativeRefreshFixture {
 	t.Helper()
 	f := newNativeRefreshFixture(t, false)
-	if version == 4 {
-		return f
-	}
 	parent := f.base.Revision
-	manifest := strings.Replace(git(t, "--git-dir", f.storePath, "show", parent+":architecture.yaml"), "version: 4", fmt.Sprintf("version: %d", version), 1) + "\n"
+	manifest := strings.Replace(git(t, "--git-dir", f.storePath, "show", parent+":architecture.yaml"), "version: 5", fmt.Sprintf("version: %d", version), 1) + "\n"
 	diagram := fmt.Sprintf("id: %s\ntitle: Legacy\nappearances:\n  - component: %s\n    role: home\n", f.base.RootDiagramID, f.component)
-	if version == 3 {
+	if version >= 3 {
 		diagram += fmt.Sprintf("positions:\n  - component: %s\n    x: 123\n    y: -456\n", f.component)
+	}
+	if version == 4 {
+		diagram += fmt.Sprintf("sizes:\n  - component: %s\n    width: 200\n    height: 96\n", f.component)
 	}
 	blob := gitInput(t, []byte(diagram), "--git-dir", f.storePath, "hash-object", "-w", "--stdin")
 	diagrams := gitInput(t, []byte("100644 blob "+blob+"\troot.yaml\n"), "--git-dir", f.storePath, "mktree")

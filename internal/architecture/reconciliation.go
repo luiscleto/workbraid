@@ -52,6 +52,7 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 	c.resolveComposition()
 	c.mergePositions()
 	c.mergeSizes()
+	c.mergeRoutes()
 	if c.err != nil {
 		return c.result, c.err
 	}
@@ -84,6 +85,9 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 		return c.result, fmt.Errorf("reconciliation constructor: %w", err)
 	}
 	reproduced := snapshotReconciliationFacts(candidate.Snapshot())
+	if !reflect.DeepEqual(c.final.routes, reproduced.routes) {
+		return c.result, fmt.Errorf("resolved routes changed during construction")
+	}
 	for k, s := range c.final.sizes {
 		if actual, exists := reproduced.sizes[k]; !exists || actual != s {
 			return c.result, fmt.Errorf("resolved size changed during initialization")
@@ -209,6 +213,12 @@ func (f reconciliationFacts) componentContext(id string) any {
 	children := map[string]string{}
 	positions := map[reconciliationPair]Position{}
 	sizes := map[reconciliationPair]Size{}
+	routes := map[RouteAddress]Route{}
+	for k, v := range f.routes {
+		if k.SourceID == id || k.TargetID == id {
+			routes[k] = v
+		}
+	}
 	for k, v := range f.positions {
 		if k.component == id {
 			positions[k] = v
@@ -241,7 +251,8 @@ func (f reconciliationFacts) componentContext(id string) any {
 		Children                 map[string]string
 		Positions                map[reconciliationPair]Position
 		Sizes                    map[reconciliationPair]Size
-	}{c.Title, c.Description, f.homes[id], rels, refs, children, positions, sizes}
+		Routes                   map[RouteAddress]Route
+	}{c.Title, c.Description, f.homes[id], rels, refs, children, positions, sizes, routes}
 }
 
 func (f reconciliationFacts) diagramContext(id string) any {
@@ -254,6 +265,12 @@ func (f reconciliationFacts) diagramContext(id string) any {
 	children := map[string]string{}
 	positions := map[reconciliationPair]Position{}
 	sizes := map[reconciliationPair]Size{}
+	routes := map[RouteAddress]Route{}
+	for k, v := range f.routes {
+		if k.DiagramID == id {
+			routes[k] = v
+		}
+	}
 	for k, v := range f.positions {
 		if k.diagram == id {
 			positions[k] = v
@@ -287,7 +304,8 @@ func (f reconciliationFacts) diagramContext(id string) any {
 		Children      map[string]string
 		Positions     map[reconciliationPair]Position
 		Sizes         map[reconciliationPair]Size
-	}{d.title, f.anchors[id], f.root == id, homes, refs, children, positions, sizes}
+		Routes        map[RouteAddress]Route
+	}{d.title, f.anchors[id], f.root == id, homes, refs, children, positions, sizes, routes}
 }
 
 func (c *reconciliationCalculation) object(l ReconciliationLocator, b, a, p any) bool {

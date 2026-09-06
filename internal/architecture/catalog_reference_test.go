@@ -138,7 +138,7 @@ func TestReferenceCompositionAndHomeMoveNonResurrection(t *testing.T) {
 	moving := manager.NewComponentChange(base, []ComponentChange{anchorB, anchorC}, "Moving", "")
 	b := base.NewDetailDiagramChange(nil, "B", anchorB.ID)
 	c := base.NewDetailDiagramChange([]DetailDiagramChange{b}, "C", anchorC.ID)
-	initial, err := manager.ConstructCandidate(ctx, base, []ComponentChange{anchorB, anchorC, moving}, CandidateComposition{
+	initial, err := manager.prepareTestCandidate(ctx, base, []ComponentChange{anchorB, anchorC, moving}, CandidateComposition{
 		NewComponentHomes: []NewComponentHome{{ComponentID: anchorB.ID, DiagramID: root}, {ComponentID: anchorC.ID, DiagramID: root}, {ComponentID: moving.ID, DiagramID: root}},
 		DetailDiagrams:    []DetailDiagramChange{b, c},
 	})
@@ -146,13 +146,13 @@ func TestReferenceCompositionAndHomeMoveNonResurrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	base = acceptCandidate(t, manager, base, initial)
-	withReference, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{References: []ReferenceAppearanceChange{{DiagramID: b.ID, ComponentID: moving.ID, Present: true}}})
+	withReference, err := manager.prepareTestCandidate(ctx, base, nil, CandidateComposition{References: []ReferenceAppearanceChange{{DiagramID: b.ID, ComponentID: moving.ID, Present: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	base = acceptCandidate(t, manager, base, withReference)
 
-	moved, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{
+	moved, err := manager.prepareTestCandidate(ctx, base, nil, CandidateComposition{
 		HomeMoves:  []ComponentHomeMove{{ComponentID: moving.ID, DiagramID: c.ID}},
 		References: []ReferenceAppearanceChange{{DiagramID: root, ComponentID: moving.ID, Present: false}, {DiagramID: b.ID, ComponentID: moving.ID, Present: false}},
 	})
@@ -169,7 +169,7 @@ func TestReferenceCompositionAndHomeMoveNonResurrection(t *testing.T) {
 		t.Fatalf("destination = %q %t", role, ok)
 	}
 
-	shown, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{
+	shown, err := manager.prepareTestCandidate(ctx, base, nil, CandidateComposition{
 		HomeMoves:  []ComponentHomeMove{{ComponentID: moving.ID, DiagramID: c.ID}},
 		References: []ReferenceAppearanceChange{{DiagramID: root, ComponentID: moving.ID, Present: false}, {DiagramID: b.ID, ComponentID: moving.ID, Present: true}},
 	})

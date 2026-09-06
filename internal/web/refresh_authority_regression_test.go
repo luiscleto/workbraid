@@ -29,7 +29,7 @@ func newNativeRefreshFixture(t *testing.T, reviewed bool) nativeRefreshFixture {
 	created := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/projects/create", map[string]any{"name": "Refresh fixture"}))
 	base := *state.loadedSnapshot
 	component := state.architecture.NewComponentChange(base, nil, "Gateway", "Accepted body.\n")
-	candidate, err := state.architecture.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{component}, architecture.CandidateComposition{
+	candidate, err := prepareTestCandidate(state.architecture, context.Background(), base, []architecture.ComponentChange{component}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: component.ID, DiagramID: base.RootDiagramID()}},
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func (fixture nativeRefreshFixture) keepAndReview(t *testing.T) architectureResp
 
 func (fixture nativeRefreshFixture) advanceTitle(t *testing.T, base architecture.Snapshot, title string) string {
 	t.Helper()
-	candidate, err := fixture.state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+	candidate, err := prepareTestCandidate(fixture.state.architecture, context.Background(), base, nil, architecture.CandidateComposition{
 		DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: title}},
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestRefreshConflictScanPrecedesMandatoryFinalAcceptedObservation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	thirdCandidate, err := fixture.state.architecture.ConstructCandidate(context.Background(), observedSnapshot, nil, architecture.CandidateComposition{
+	thirdCandidate, err := prepareTestCandidate(fixture.state.architecture, context.Background(), observedSnapshot, nil, architecture.CandidateComposition{
 		DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: observedSnapshot.RootDiagramID(), Title: "Third revision"}},
 	})
 	if err != nil {

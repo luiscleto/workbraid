@@ -39,6 +39,8 @@ type diagramBreadcrumbResponse struct {
 }
 
 type diagramAppearanceResponse struct {
+	DisplayPosition    *architecture.Position `json:"display_position"`
+	PositionSource     string                 `json:"position_source"`
 	Position           *architecture.Position `json:"position"`
 	ComponentID        string                 `json:"component_id"`
 	Role               string                 `json:"role"`
@@ -47,12 +49,15 @@ type diagramAppearanceResponse struct {
 }
 
 type diagramBoundaryResponse struct {
-	Key              string `json:"key"`
-	ComponentID      string `json:"component_id"`
-	Title            string `json:"title"`
-	Context          string `json:"context,omitempty"`
-	HomeDiagramID    string `json:"home_diagram_id"`
-	HomeDiagramTitle string `json:"home_diagram_title"`
+	Position         *architecture.Position `json:"position"`
+	DisplayPosition  *architecture.Position `json:"display_position"`
+	PositionSource   string                 `json:"position_source"`
+	Key              string                 `json:"key"`
+	ComponentID      string                 `json:"component_id"`
+	Title            string                 `json:"title"`
+	Context          string                 `json:"context,omitempty"`
+	HomeDiagramID    string                 `json:"home_diagram_id"`
+	HomeDiagramTitle string                 `json:"home_diagram_title"`
 }
 
 type diagramRelationshipResponse struct {
@@ -74,11 +79,13 @@ type reviewComparisonResponse struct {
 }
 
 type reviewNodePositionChange struct {
-	DiagramID   string                 `json:"diagram_id"`
-	ComponentID string                 `json:"component_id"`
-	Before      *architecture.Position `json:"before"`
-	With        *architecture.Position `json:"with"`
-	Path        string                 `json:"path"`
+	BeforeSource string                 `json:"before_source"`
+	WithSource   string                 `json:"with_source"`
+	DiagramID    string                 `json:"diagram_id"`
+	ComponentID  string                 `json:"component_id"`
+	Before       *architecture.Position `json:"before"`
+	With         *architecture.Position `json:"with"`
+	Path         string                 `json:"path"`
 }
 
 type reviewDiagramChangeResponse struct {
@@ -210,6 +217,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		}
 		for itemIndex, appearance := range diagram.Appearances {
 			value.Appearances[itemIndex] = diagramAppearanceResponse{
+				DisplayPosition: appearance.DisplayPosition, PositionSource: appearance.PositionSource,
 				Position:    appearance.Position,
 				ComponentID: appearance.ComponentID, Role: appearance.Role,
 				DetailDiagramID: appearance.DetailDiagramID, DetailDiagramTitle: appearance.DetailDiagramTitle,
@@ -217,6 +225,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 		}
 		for itemIndex, boundary := range diagram.Boundaries {
 			value.Boundaries[itemIndex] = diagramBoundaryResponse{
+				Position: boundary.Position, DisplayPosition: boundary.DisplayPosition, PositionSource: boundary.PositionSource,
 				Key: boundary.Key, ComponentID: boundary.ComponentID, Title: boundary.Title, Context: boundary.Context,
 				HomeDiagramID: boundary.HomeDiagramID, HomeDiagramTitle: boundary.HomeDiagramTitle,
 			}
@@ -251,11 +260,17 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 		for _, a := range d.Appearances {
 			old[pair{d.ID, a.ComponentID}] = a.Position
 		}
+		for _, b := range d.Boundaries {
+			old[pair{d.ID, b.ComponentID}] = b.Position
+		}
 	}
 	for _, d := range withChanges.Diagrams {
 		paths[d.ID] = "diagrams/" + d.Filename
 		for _, a := range d.Appearances {
 			current[pair{d.ID, a.ComponentID}] = a.Position
+		}
+		for _, b := range d.Boundaries {
+			current[pair{d.ID, b.ComponentID}] = b.Position
 		}
 	}
 	keys := map[pair]bool{}
@@ -270,7 +285,17 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 		if a == nil && b == nil || a != nil && b != nil && *a == *b {
 			continue
 		}
-		comparison.NodePositions = append(comparison.NodePositions, reviewNodePositionChange{k.diagram, k.component, a, b, paths[k.diagram]})
+		source := func(positions map[pair]*architecture.Position) string {
+			p, visible := positions[k]
+			if !visible {
+				return "not_applicable"
+			}
+			if p == nil {
+				return "derived"
+			}
+			return "stored"
+		}
+		comparison.NodePositions = append(comparison.NodePositions, reviewNodePositionChange{DiagramID: k.diagram, ComponentID: k.component, Before: a, With: b, Path: paths[k.diagram], BeforeSource: source(old), WithSource: source(current)})
 	}
 	sort.Slice(comparison.NodePositions, func(i, j int) bool {
 		a, b := comparison.NodePositions[i], comparison.NodePositions[j]

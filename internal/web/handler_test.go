@@ -178,7 +178,7 @@ func TestReferenceMutationAndDiscardShareOneStateBoundary(t *testing.T) {
 	anchor := state.architecture.NewComponentChange(base, nil, "Anchor", "")
 	target := state.architecture.NewComponentChange(base, []architecture.ComponentChange{anchor}, "Target", "")
 	detail := base.NewDetailDiagramChange(nil, "Detail", anchor.ID)
-	candidate, err := state.architecture.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{anchor, target}, architecture.CandidateComposition{
+	candidate, err := prepareTestCandidate(state.architecture, context.Background(), base, []architecture.ComponentChange{anchor, target}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: anchor.ID, DiagramID: base.RootDiagramID()}, {ComponentID: target.ID, DiagramID: base.RootDiagramID()}},
 		DetailDiagrams:    []architecture.DetailDiagramChange{detail},
 		HomeMoves:         []architecture.ComponentHomeMove{{ComponentID: target.ID, DiagramID: detail.ID}},
@@ -244,7 +244,7 @@ func TestReferenceHandlersUseOneCandidateAndNormalizeRepeatedHomeMoves(t *testin
 	moving := manager.NewComponentChange(base, []architecture.ComponentChange{anchorB, anchorC}, "Moving", "")
 	b := base.NewDetailDiagramChange(nil, "B", anchorB.ID)
 	c := base.NewDetailDiagramChange([]architecture.DetailDiagramChange{b}, "C", anchorC.ID)
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{anchorB, anchorC, moving}, architecture.CandidateComposition{
+	candidate, err := prepareTestCandidate(manager, context.Background(), base, []architecture.ComponentChange{anchorB, anchorC, moving}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: anchorB.ID, DiagramID: base.RootDiagramID()}, {ComponentID: anchorC.ID, DiagramID: base.RootDiagramID()}, {ComponentID: moving.ID, DiagramID: base.RootDiagramID()}},
 		DetailDiagrams:    []architecture.DetailDiagramChange{b, c},
 		References:        []architecture.ReferenceAppearanceChange{{DiagramID: b.ID, ComponentID: moving.ID, Present: true}},
@@ -309,7 +309,7 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 	otherAnchor := manager.NewComponentChange(base, []architecture.ComponentChange{gateway, worker}, "Other", "Other body.\n")
 	runtime := base.NewDetailDiagramChange(nil, "Runtime", gateway.ID)
 	other := base.NewDetailDiagramChange([]architecture.DetailDiagramChange{runtime}, "Other diagram", otherAnchor.ID)
-	initial, err := manager.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{gateway, worker, otherAnchor}, architecture.CandidateComposition{
+	initial, err := prepareTestCandidate(manager, context.Background(), base, []architecture.ComponentChange{gateway, worker, otherAnchor}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{
 			{ComponentID: gateway.ID, DiagramID: base.RootDiagramID()},
 			{ComponentID: worker.ID, DiagramID: base.RootDiagramID()},
@@ -323,7 +323,7 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 	}
 	base = acceptArchitectureCandidate(t, manager, base, initial)
 	storage := base.NewDetailDiagramChange(nil, "Storage", worker.ID)
-	nested, err := manager.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{DetailDiagrams: []architecture.DetailDiagramChange{storage}})
+	nested, err := prepareTestCandidate(manager, context.Background(), base, nil, architecture.CandidateComposition{DetailDiagrams: []architecture.DetailDiagramChange{storage}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestHomeMoveUsesCandidateEligibilityAndRejectsWithoutMutatingPending(t *tes
 	if reparented.Changes == nil || reparented.Changes.Candidate == nil || role(reparented.Changes.Candidate, storage.ID, gateway.ID) != "home" {
 		t.Fatalf("ordered subtree reparent failed: %+v", reparented.Changes)
 	}
-	if _, err := manager.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+	if _, err := prepareTestCandidate(manager, context.Background(), base, nil, architecture.CandidateComposition{
 		HomeMoves: []architecture.ComponentHomeMove{{ComponentID: gateway.ID, DiagramID: storage.ID}},
 	}); !errors.Is(err, architecture.ErrDiagramCycle) {
 		t.Fatalf("remove-only intermediate error = %v, want Diagram cycle", err)
@@ -510,7 +510,7 @@ func TestRefreshPreservesOldBaseChangeSetAsEditableOutOfDateWork(t *testing.T) {
 	}
 
 	base := *state.loadedSnapshot
-	external, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+	external, err := prepareTestCandidate(state.architecture, context.Background(), base, nil, architecture.CandidateComposition{
 		DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "Externally renamed"}},
 	})
 	if err != nil {
@@ -620,7 +620,7 @@ func TestAcceptedCASResponseLossAndStaleRaceRemainAuthoritative(t *testing.T) {
 		kept := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/components/add", observedComponentMutation(created, componentMutationRequest{DiagramID: created.RootDiagramID, Title: "Worker"})))
 		reviewed := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(kept)))
 		base := *state.loadedSnapshot
-		externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, nil, architecture.CandidateComposition{
+		externalCandidate, err := prepareTestCandidate(state.architecture, context.Background(), base, nil, architecture.CandidateComposition{
 			DiagramTitles: []architecture.DiagramTitleChange{{DiagramID: base.RootDiagramID(), Title: "External"}},
 		})
 		if err != nil {
@@ -755,7 +755,7 @@ func TestReferenceReviewChangesCompositionWithoutSemanticDeltas(t *testing.T) {
 	source.Relationships = []architecture.AuthoringRelationship{{TargetID: target.ID, Label: "calls"}, {TargetID: target.ID, Label: "calls async"}}
 	source.RelationshipsChanged = true
 	detail := base.NewDetailDiagramChange(nil, "Detail", anchor.ID)
-	initial, err := manager.ConstructCandidate(ctx, base, []architecture.ComponentChange{anchor, target, lonely, source}, architecture.CandidateComposition{
+	initial, err := prepareTestCandidate(manager, ctx, base, []architecture.ComponentChange{anchor, target, lonely, source}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{
 			{ComponentID: anchor.ID, DiagramID: base.RootDiagramID()},
 			{ComponentID: target.ID, DiagramID: base.RootDiagramID()},
@@ -777,7 +777,7 @@ func TestReferenceReviewChangesCompositionWithoutSemanticDeltas(t *testing.T) {
 		t.Fatalf("base root boundaries=%d relationships=%d", len(rootBefore.Boundaries), len(rootBefore.Relationships))
 	}
 
-	withReferences, err := manager.ConstructCandidate(ctx, base, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
+	withReferences, err := prepareTestCandidate(manager, ctx, base, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
 		{DiagramID: base.RootDiagramID(), ComponentID: target.ID, Present: true},
 		{DiagramID: base.RootDiagramID(), ComponentID: lonely.ID, Present: true},
 	}})
@@ -805,7 +805,7 @@ func TestReferenceReviewChangesCompositionWithoutSemanticDeltas(t *testing.T) {
 	}
 
 	acceptedWithReferences := acceptArchitectureCandidate(t, manager, base, withReferences)
-	removed, err := manager.ConstructCandidate(ctx, acceptedWithReferences, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
+	removed, err := prepareTestCandidate(manager, ctx, acceptedWithReferences, nil, architecture.CandidateComposition{References: []architecture.ReferenceAppearanceChange{
 		{DiagramID: base.RootDiagramID(), ComponentID: target.ID, Present: false},
 		{DiagramID: base.RootDiagramID(), ComponentID: lonely.ID, Present: false},
 	}})

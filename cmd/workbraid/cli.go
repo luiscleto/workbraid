@@ -293,7 +293,7 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipEdit(flags, actionArgs, stdin, invalid)
 	case "relationship_remove":
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
-	case "diagram_positions", "diagram_set_position", "diagram_reset_position", "diagram_reset_layout":
+	case "diagram_positions", "diagram_set_position", "diagram_auto_layout":
 		return parsePlacementCommand(operation, flags, actionArgs, invalid)
 	case "diagram_parent_options", "diagram_reassign_detail":
 		return parseDetailParentCommand(operation, flags, actionArgs, invalid)
@@ -647,8 +647,8 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 	}
 	generation := flags.String("generation", "", "exact proposal generation")
 	component := ""
-	if operation != "diagram_reset_layout" {
-		flags.StringVar(&component, "component-id", "", "canonical Component UUID in this Diagram")
+	if operation != "diagram_auto_layout" {
+		flags.StringVar(&component, "component-id", "", "visible Component UUID in this Diagram")
 	}
 	var x, y trackedString
 	if operation == "diagram_set_position" {
@@ -662,23 +662,19 @@ func parsePlacementCommand(operation string, flags *flag.FlagSet, args []string,
 	if err != nil || g == nil {
 		return invalid("Generation must be a non-negative integer.")
 	}
-	reset := agentapi.DiagramResetLayoutRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *store, ChangeSetID: *proposal, Generation: *g}, DiagramID: *diagram}
-	if operation == "diagram_reset_layout" {
-		return operation, reset, nil
+	state := agentapi.DiagramAutoLayoutRequest{StatePreconditions: agentapi.StatePreconditions{StoreID: *store, ChangeSetID: *proposal, Generation: *g}, DiagramID: *diagram}
+	if operation == "diagram_auto_layout" {
+		return operation, state, nil
 	}
 	if component == "" {
 		return invalid("Placement requires --component-id.")
-	}
-	one := agentapi.DiagramResetPositionRequest{DiagramResetLayoutRequest: reset, ComponentID: component}
-	if operation == "diagram_reset_position" {
-		return operation, one, nil
 	}
 	xv, xe := strconv.Atoi(x.value)
 	yv, ye := strconv.Atoi(y.value)
 	if !x.set || !y.set || xe != nil || ye != nil || xv < -100000 || xv > 100000 || yv < -100000 || yv > 100000 {
 		return invalid("X and Y must be integers from -100000 to 100000. Use --x=-180 for negative values.")
 	}
-	return operation, agentapi.DiagramSetPositionRequest{DiagramResetPositionRequest: one, X: xv, Y: yv}, nil
+	return operation, agentapi.DiagramSetPositionRequest{DiagramAutoLayoutRequest: state, ComponentID: component, X: xv, Y: yv}, nil
 }
 
 func parseReconciliationCommand(operation string, flags *flag.FlagSet, args []string, stdin io.Reader, invalid invalidCommand) (string, any, *agentapi.Envelope) {
@@ -802,8 +798,7 @@ Authoring commands:
   diagram reassign-detail <state> --diagram-id <uuid> --anchor-component-id <uuid>
   diagram positions --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
   diagram set-position <state> --diagram-id <uuid> --component-id <uuid> --x=-180 --y=320
-  diagram reset-position <state> --diagram-id <uuid> --component-id <uuid>
-  diagram reset-layout <state> --diagram-id <uuid>
+  diagram auto-layout <state> --diagram-id <uuid>
   change-set reconcile-preview <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> [--resolutions-file <path|->]
   change-set reconcile-apply <state> --change-set-state <S> --base-revision <B> --candidate-tree <P> --accepted-revision <A> --resolutions-file <path|->
   diagram create-detail <state> --component-id <uuid> --title <text>

@@ -54,6 +54,8 @@ type DiagramProjection = {
 }
 
 type DiagramAppearance = {
+ display_position?: {x:number;y:number}|null
+ position_source?: 'stored'|'derived'
 	position?: {x:number;y:number}|null
   component_id: string
   role: 'home' | 'reference'
@@ -62,6 +64,9 @@ type DiagramAppearance = {
 }
 
 type DiagramBoundary = {
+ position?: {x:number;y:number}|null
+ display_position?: {x:number;y:number}|null
+ position_source?: 'stored'|'derived'
   key: string
   component_id: string
   title: string
@@ -135,10 +140,10 @@ type RelationshipTarget = {
 function PositionControls({position,busy,onDirty,onKeep}:{position:{x:number;y:number}|null;busy:boolean;onDirty:(v:boolean)=>void;onKeep:(p:{x:number;y:number}|null)=>Promise<boolean>}) {
   const [x,setX]=useState(String(position?.x??0)),[y,setY]=useState(String(position?.y??0))
   useEffect(() => () => onDirty(false), [onDirty])
-  return <details className="position-controls"><summary>Position · {position?`${position.x}, ${position.y}`:'Automatic'}</summary>
+  return <details className="position-controls"><summary>Position{position?` · ${position.x}, ${position.y}`:''}</summary>
     <form onSubmit={async e=>{e.preventDefault();const p={x:Number(x),y:Number(y)};if(!Number.isInteger(p.x)||!Number.isInteger(p.y)||Math.abs(p.x)>100000||Math.abs(p.y)>100000)return;if(await onKeep(p))onDirty(false)}}>
       <div className="position-fields"><label>X<input aria-label="Position X" type="number" min={-100000} max={100000} step={1} required value={x} onChange={e=>{setX(e.target.value);onDirty(true)}} /></label><label>Y<input aria-label="Position Y" type="number" min={-100000} max={100000} step={1} required value={y} onChange={e=>{setY(e.target.value);onDirty(true)}} /></label></div>
-      <div className="button-group"><button className="text-action" type="submit" disabled={busy}>Keep position</button>{position&&<button className="text-action" type="button" disabled={busy} onClick={async()=>{if(await onKeep(null))onDirty(false)}}>Reset position</button>}<button className="text-action" type="button" onClick={()=>{setX(String(position?.x??0));setY(String(position?.y??0));onDirty(false)}}>Clear edits</button></div>
+      <div className="button-group"><button className="text-action" type="submit" disabled={busy}>Keep position</button><button className="text-action" type="button" onClick={()=>{setX(String(position?.x??0));setY(String(position?.y??0));onDirty(false)}}>Clear edits</button></div>
     </form>
   </details>
 }
@@ -155,7 +160,7 @@ type ChangeReview = {
   before: ReviewSnapshot
   with_changes: ReviewSnapshot
   comparison: {
-	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;path:string}[]
+	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;before_source?:string;with_source?:string;path:string}[]
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
@@ -443,7 +448,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       title: component.title,
       filename: component.filename,
       node_kind: appearance.role,
-	  position: appearance.position,
+	  position: appearance.display_position ?? appearance.position,
       relationships: [],
     })
   }
@@ -454,6 +459,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       title: boundary.title,
       node_kind: 'boundary',
       boundary_home_title: boundary.home_diagram_title,
+      position: boundary.display_position ?? boundary.position,
       relationships: [],
     })
   }
@@ -689,7 +695,7 @@ export function App() {
       const selectedDiagram = contextProjection.diagrams?.find((diagram) => diagram.id === selectedDiagramID)
         ?? contextProjection.diagrams?.find((diagram) => diagram.id === contextProjection.root_diagram_id)
       setSelectedDiagramID(selectedDiagram?.id)
-      setSelectedComponentID((current) => selectedDiagram?.appearances.some((appearance) => appearance.component_id === current)
+      setSelectedComponentID((current) => selectedDiagram?.appearances.some((appearance) => appearance.component_id === current) || selectedDiagram?.boundaries.some(b=>b.component_id===current)
         ? current
         : selectedDiagram?.appearances[0]?.component_id)
     } else {
@@ -865,7 +871,7 @@ export function App() {
           if (selectedComponentID) setSelectedComponentID(undefined)
           return
         }
-        if (selectedComponentID && active.some((component) => component.id === selectedComponentID)) return
+        if (selectedComponentID && (active.some((component) => component.id === selectedComponentID) || diagram?.boundaries.some(b=>b.component_id===selectedComponentID))) return
         setSelectedComponentID(active[0]?.id)
         return
       }
@@ -889,7 +895,7 @@ export function App() {
         setSelectedDiagramID(diagram.id)
       }
       if (workspaceTask === 'empty') return
-      if (selectedComponentID && diagram?.appearances.some((appearance) => appearance.component_id === selectedComponentID)) return
+      if (selectedComponentID && (diagram?.appearances.some((appearance) => appearance.component_id === selectedComponentID) || diagram?.boundaries.some(b=>b.component_id===selectedComponentID))) return
       setSelectedComponentID(diagram?.appearances[0]?.component_id)
       return
     }
@@ -1215,7 +1221,7 @@ export function App() {
 	setArchitectureBusy(true)
 	setArchitectureNotice('')
 	try {
-	  const response=await postJSON(`/api/architecture/diagrams/${componentID?(position?'set-position':'reset-position'):'reset-layout'}`,{
+	  const response=await postJSON(`/api/architecture/diagrams/${componentID?'set-position':'auto-layout'}`,{
 	    project_slug:result.project_slug,store_id:result.store_id,expected_revision:result.revision,
 	    change_set_id:result.changes?.id,pending_generation_observed:true,expected_pending_generation:result.changes?.generation??null,
 	    diagram_id:diagramID,component_id:componentID,...(position??{}),
@@ -1746,8 +1752,10 @@ export function App() {
       : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents: MapComponent[] = diagramMapComponents ?? activeComponents
-    const selected = activeComponents.find((component) => component.id === selectedComponentID)
+    const selectedBoundary = activeDiagram?.boundaries.find(b=>b.component_id===selectedComponentID)
+    const selected = activeComponents.find((component) => component.id === selectedComponentID) ?? (selectedBoundary ? diagramProjection.components.find(c=>c.id===selectedComponentID) : undefined)
     const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
+    const selectedPosition = selectedAppearance?.display_position ?? selectedAppearance?.position ?? selectedBoundary?.display_position ?? selectedBoundary?.position ?? null
     const diagramNodeTitles = new Map<string, string>()
     for (const component of activeDiagramComponents ?? []) diagramNodeTitles.set(component.id, component.title)
     for (const boundary of activeDiagram?.boundaries ?? []) diagramNodeTitles.set(boundary.key, boundary.title)
@@ -1832,7 +1840,7 @@ export function App() {
         return
       }
       requestReviewContextReplacement(() => {
-        const component = activeComponents.find((candidate) => candidate.id === id)
+        const component = diagramProjection.components.find((candidate) => candidate.id === id)
         if (!component) return
         const change = componentReviewStatus.get(id)
         setReviewSelectionCleared(false)
@@ -1868,7 +1876,7 @@ export function App() {
       }
       const boundary = activeDiagram.boundaries.find((candidate) => candidate.key === id)
       if (boundary) {
-        selectDiagram(boundary.home_diagram_id, boundary.component_id)
+        selectComponent(boundary.component_id)
         return
       }
       selectComponent(id)
@@ -2225,7 +2233,7 @@ export function App() {
                   ? <AnnotationMarker group={activeDiagramAnnotations} onToggle={() => openReviewAnnotation(activeDiagramAnnotations)} />
                   : !submittedReview && <AnnotationAddMarker label={`Comment on ${activeDiagram.title}`} onClick={openDiagramComment} />)}
                 {!review && authoringAvailable && activeDiagram.parent_anchor_component_id && <button className="diagram-parent-action" type="button" onClick={() => requestNavigation({ kind: 'change-parent', id: activeDiagram.id })}>Change parent component</button>}
-				{!review&&authoringAvailable&&activeDiagram.appearances.some(a=>a.position)&&<button className="diagram-parent-action" type="button" disabled={architectureBusy||placementBlocked||editorDirtyRef.current} onClick={()=>keepPosition(result,activeDiagram.id,undefined,null)}>Reset layout</button>}
+				{!review&&authoringAvailable&&<button className="diagram-parent-action" type="button" disabled={architectureBusy||placementBlocked||editorDirtyRef.current} onClick={()=>keepPosition(result,activeDiagram.id,undefined,null)}>Auto-layout</button>}
               </nav>
             )}
             {reviewPresentation && activeDiagram && ((!submittedReview && reviewCommentTarget?.anchor.kind === 'diagram' && reviewCommentTarget.contextKey.startsWith('diagram-map:')) || diagramAnnotationCards.length > 0) && (
@@ -2258,7 +2266,7 @@ export function App() {
 				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
-                selectedID={selectedComponentID}
+                selectedID={selectedBoundary?.key ?? selectedComponentID}
                 onSelect={selectMapNode}
                 emptyMessage={activeDiagram ? 'This diagram has no components.' : undefined}
                 {...(review ? {
@@ -2275,7 +2283,7 @@ export function App() {
                         status: 'appearance_changed', description: 'Position changed', reviewSide,
                         diagramID: p.diagram_id, path: p.path, componentID: p.component_id,
                       })}>
-                        Position changed: {diagramProjection.components.find(c => c.id === p.component_id)?.title ?? 'Component'} · {p.before ? `${p.before.x}, ${p.before.y}` : 'Automatic'} → {p.with ? `${p.with.x}, ${p.with.y}` : 'Automatic'}
+                        Position changed: {diagramProjection.components.find(c => c.id === p.component_id)?.title ?? 'Component'} · {p.before ? `${p.before.x}, ${p.before.y}` : p.before_source==='derived'?'Derived v2 layout':'Not visible'} → {p.with ? `${p.with.x}, ${p.with.y}` : p.with_source==='derived'?'Derived v2 layout':'Not visible'}
                       </button>
                     </li>)}
                   </>,
@@ -2483,7 +2491,8 @@ export function App() {
               <article className="component-documentation">
                 <div className="pane-heading pane-heading-with-action"><div><p className="eyebrow">Component</p><h2>{selected.title}</h2></div><button className="text-action" type="button" onClick={() => requestNavigation({ kind: 'clear' })}>Clear selection</button></div>
                 <MarkdownBody source={selected.description} />
-				{authoringAvailable&&selectedAppearance&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedAppearance.position?.x}:${selectedAppearance.position?.y}`} position={selectedAppearance.position??null} busy={architectureBusy||placementBlocked} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
+				{selectedBoundary&&<button className="inline-action" type="button" onClick={()=>selectDiagram(selectedBoundary.home_diagram_id,selectedBoundary.component_id)}>Open home · {selectedBoundary.home_diagram_title}</button>}
+                {authoringAvailable&&activeDiagram&&<PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />}
                 {(authoringAvailable || selectedAppearance?.detail_diagram_id) && (
                   <div className="component-documentation-actions">
                     {authoringAvailable && <button className="inline-action" type="button" onClick={() => requestNavigation({kind:'authoring-pane',apply:()=>editAccepted(selected, result)})}>Edit component</button>}

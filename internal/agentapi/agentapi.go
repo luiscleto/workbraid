@@ -81,18 +81,15 @@ type DiagramPositionsRequest struct {
 	DiagramID   string `json:"diagram_id"`
 	ChangeSetID string `json:"change_set_id,omitempty"`
 }
-type DiagramResetLayoutRequest struct {
+type DiagramAutoLayoutRequest struct {
 	StatePreconditions
 	DiagramID string `json:"diagram_id"`
 }
-type DiagramResetPositionRequest struct {
-	DiagramResetLayoutRequest
-	ComponentID string `json:"component_id"`
-}
 type DiagramSetPositionRequest struct {
-	DiagramResetPositionRequest
-	X int `json:"x" jsonschema:"Diagram-local center X integer, -100000 to 100000."`
-	Y int `json:"y" jsonschema:"Diagram-local center Y integer, -100000 to 100000."`
+	DiagramAutoLayoutRequest
+	ComponentID string `json:"component_id"`
+	X           int    `json:"x" jsonschema:"Diagram-local center X integer, -100000 to 100000."`
+	Y           int    `json:"y" jsonschema:"Diagram-local center Y integer, -100000 to 100000."`
 }
 
 type DiagramReassignDetailRequest struct {
@@ -306,8 +303,7 @@ var operationPaths = map[string]string{
 	"diagram_reassign_detail":        "/api/agent/v2/diagrams/reassign-detail",
 	"diagram_positions":              "/api/agent/v2/diagrams/positions",
 	"diagram_set_position":           "/api/agent/v2/diagrams/set-position",
-	"diagram_reset_position":         "/api/agent/v2/diagrams/reset-position",
-	"diagram_reset_layout":           "/api/agent/v2/diagrams/reset-layout",
+	"diagram_auto_layout":            "/api/agent/v2/diagrams/auto-layout",
 	"diagram_create_detail":          "/api/agent/v2/diagrams/create-detail",
 	"diagram_edit_title":             "/api/agent/v2/diagrams/edit-title",
 	"diagram_show_component":         "/api/agent/v2/diagrams/show-component",

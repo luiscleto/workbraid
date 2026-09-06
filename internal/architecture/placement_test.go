@@ -51,7 +51,7 @@ func TestPlacementClosedPortableSchema(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	bad := []string{"null", "{}", "\n  - component: " + c + "\n    x: 1\n    y: 0\n    extra: 1", "\n  - component: " + uuid.NewString() + "\n    x: 1\n    y: 0"}
+	bad := []string{"null", "{}", "\n  - component: " + c + "\n    x: 1\n    y: 0\n    extra: 1"}
 	for _, coordinate := range []string{"null", "true", "'1'", "1.0", "1.5", "100001", "-100001", "999999999999999999999999999999"} {
 		bad = append(bad, "\n  - component: "+c+"\n    x: "+coordinate+"\n    y: 0")
 	}
@@ -79,34 +79,51 @@ func TestPlacementStickyVersionAndExactFiles(t *testing.T) {
 		t.Fatal("no-op changed tree")
 	}
 	composition := SetNodePosition(base, CandidateComposition{}, ids.root, ids.worker, &Position{0, -180})
-	candidate, err := m.ConstructCandidate(ctx, base, nil, composition)
+	candidate, err := m.PrepareCandidate(ctx, base, nil, &composition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"components/worker.md", "components/gateway.md", "diagrams/detail.yaml", "diagrams/empty.yaml"} {
+	for _, name := range []string{"components/worker.md", "components/gateway.md", "diagrams/empty.yaml"} {
 		if gitText(t, "--git-dir", path, "rev-parse", base.Revision()+":"+name) != gitText(t, "--git-dir", path, "rev-parse", candidate.Tree()+":"+name) {
 			t.Fatalf("unrelated blob changed: %s", name)
 		}
 	}
-	composition = SetNodePosition(base, composition, ids.root, ids.worker, nil)
-	composition.NodePositions = NormalizeNodePositions(base, candidate.Snapshot(), composition.NodePositions)
-	reset, err := m.ConstructCandidate(ctx, base, nil, composition)
+	replay, err := m.ConstructCandidate(ctx, base, nil, composition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset.Snapshot().FormatVersion() != 3 || len(composition.NodePositions) != 0 || reset.Tree() == unchanged.Tree() {
-		t.Fatal("sticky v3 lost")
+	if replay.Tree() != candidate.Tree() || replay.Snapshot().FormatVersion() != 3 {
+		t.Fatal("complete v3 facts did not replay exactly")
 	}
-	if diff := gitText(t, "--git-dir", path, "diff-tree", "--no-commit-id", "--name-only", "-r", unchanged.Tree(), reset.Tree()); diff != "architecture.yaml" {
-		t.Fatalf("format-only changed %q", diff)
+	for _, d := range candidate.Snapshot().diagrams {
+		if err := validatePositions(d, candidate.Snapshot().components); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range base.DiagramProjections() {
+		for _, a := range d.Appearances {
+			if d.ID == ids.root && a.ComponentID == ids.worker {
+				continue
+			}
+			p, _ := candidate.Snapshot().NodePosition(d.ID, a.ComponentID)
+			if !samePosition(p, a.DisplayPosition) {
+				t.Fatal("first placement moved a peer")
+			}
+		}
+		for _, b := range d.Boundaries {
+			p, _ := candidate.Snapshot().NodePosition(d.ID, b.ComponentID)
+			if !samePosition(p, b.DisplayPosition) {
+				t.Fatal("first placement moved boundary peer")
+			}
+		}
 	}
 	id, name, _ := m.NewChangeSet(nil, "Sticky target")
-	record := ChangeSet{ID: id, Name: name, Lifecycle: "active", BaseSnapshot: base, BaseRevision: base.Revision(), Composition: composition, Candidate: &reset, Generation: 2}
+	record := ChangeSet{ID: id, Name: name, Lifecycle: "active", BaseSnapshot: base, BaseRevision: base.Revision(), Composition: composition, Candidate: &candidate, Generation: 2}
 	if _, err = m.WriteActiveChangeSet(ctx, base.StoreID(), record, ""); err != nil {
 		t.Fatal(err)
 	}
 	loaded, bad, err := m.LoadChangeSets(ctx, base.StoreID())
-	if err != nil || len(bad) > 0 || len(loaded) != 1 || loaded[0].Candidate.Tree() != reset.Tree() {
+	if err != nil || len(bad) > 0 || len(loaded) != 1 || loaded[0].Candidate.Tree() != candidate.Tree() {
 		t.Fatalf("sticky reload %+v %v", bad, err)
 	}
 	raw := gitBytes(t, "--git-dir", path, "show", loaded[0].RefObject+":changes.yaml")
@@ -143,7 +160,7 @@ func TestPlacementAppearanceAwareFiveCases(t *testing.T) {
 	}{
 		{"accepted removes", "pin", "absent", "move", true, &Position{300, 300}, false},
 		{"proposed removes", "pin", "move", "absent", true, &Position{300, 300}, false},
-		{"new automatic and manual", "absent", "automatic", "move", true, &Position{300, 300}, false},
+		{"new identical", "absent", "move", "move", true, &Position{300, 300}, false},
 		{"new divergent manual", "absent", "pin", "move", true, nil, true},
 		{"final absent", "pin", "pin", "move", false, nil, false},
 	}
@@ -151,6 +168,18 @@ func TestPlacementAppearanceAwareFiveCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, base, ids, _ := placementFixture(t)
 			ctx := context.Background()
+			changes := []ComponentChange{}
+			for _, c := range base.AuthoringComponents() {
+				v, _ := base.ChangeForAcceptedComponent(c.ID)
+				v.Relationships = nil
+				v.RelationshipsChanged = true
+				changes = append(changes, v)
+			}
+			isolated, err := m.ConstructCandidate(ctx, base, changes, CandidateComposition{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base = isolated.Snapshot()
 			k := reconciliationPair{ids.root, ids.worker}
 			makeSide := func(state string) Snapshot {
 				composition := CandidateComposition{ArchitectureVersion: 3}
@@ -164,7 +193,7 @@ func TestPlacementAppearanceAwareFiveCases(t *testing.T) {
 					}
 					composition.NodePositions = []NodePositionChange{{ids.root, ids.worker, &p}}
 				}
-				candidate, err := m.ConstructCandidate(ctx, base, nil, composition)
+				candidate, err := m.prepareTestCandidate(ctx, base, nil, composition)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -215,7 +244,7 @@ func TestPlacementMixedVersionResiduals(t *testing.T) {
 			ctx := context.Background()
 			construct := func(b Snapshot, version int, pins []NodePositionChange) Candidate {
 				t.Helper()
-				candidate, err := m.ConstructCandidate(ctx, b, nil, CandidateComposition{ArchitectureVersion: version, NodePositions: pins})
+				candidate, err := m.prepareTestCandidate(ctx, b, nil, CandidateComposition{ArchitectureVersion: version, NodePositions: pins})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -277,7 +306,7 @@ func TestPlacementMixedVersionResiduals(t *testing.T) {
 			if err != nil || clearResult.Status != "ready" {
 				t.Fatalf("clear %v %v", clearResult, err)
 			}
-			if clearResult.Candidate.Snapshot().FormatVersion() != 3 || len(clearResult.Composition.NodePositions) != 0 {
+			if clearResult.Candidate.Snapshot().FormatVersion() != 3 || versions[1] == 3 && len(clearResult.Composition.NodePositions) != 0 {
 				t.Fatal("cleared target lost sticky version or A pins")
 			}
 			aTree := construct(accepted, versions[1], nil).Tree()
@@ -289,11 +318,11 @@ func TestPlacementMixedVersionResiduals(t *testing.T) {
 }
 
 func TestPlacementWholePairConflictChoices(t *testing.T) {
-	for _, choice := range []string{"accepted", "proposed", "manual", "automatic"} {
+	for _, choice := range []string{"accepted", "proposed", "manual", "invalid null"} {
 		t.Run(choice, func(t *testing.T) {
 			m, base, ids, _ := placementFixture(t)
 			ctx := context.Background()
-			b, err := m.ConstructCandidate(ctx, base, nil, SetNodePosition(base, CandidateComposition{}, ids.root, ids.worker, &Position{10, 20}))
+			b, err := m.prepareTestCandidate(ctx, base, nil, SetNodePosition(base, CandidateComposition{}, ids.root, ids.worker, &Position{10, 20}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +331,7 @@ func TestPlacementWholePairConflictChoices(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ac, _ := m.ConstructCandidate(ctx, base, nil, SetNodePosition(base, CandidateComposition{}, ids.root, ids.worker, nil))
+			ac, _ := m.ConstructCandidate(ctx, base, nil, SetNodePosition(base, CandidateComposition{}, ids.root, ids.worker, &Position{80, 90}))
 			ar, _ := m.CreateSuccessor(ctx, base, ac)
 			a, err := m.LoadRevision(ctx, base, ar)
 			if err != nil {
@@ -314,11 +343,11 @@ func TestPlacementWholePairConflictChoices(t *testing.T) {
 				t.Fatalf("%+v %v", preview, err)
 			}
 			conflict := preview.Conflicts[0]
-			if conflict.Original.State != "manual" || conflict.Accepted.State != "automatic" || conflict.Proposed.State != "manual" {
-				t.Fatal("reset is not Automatic distinct from zero")
+			if conflict.Original.State != "stored" || conflict.Accepted.State != "stored" || conflict.Proposed.State != "stored" {
+				t.Fatal("stored position context lost")
 			}
 			resolution := ReconciliationResolution{Locator: conflict.Locator, Choice: choice}
-			var want *Position
+			want := &Position{80, 90}
 			if choice == "proposed" {
 				want = &Position{}
 			}
@@ -326,11 +355,17 @@ func TestPlacementWholePairConflictChoices(t *testing.T) {
 				want = &Position{-180, 420}
 				resolution.Value = &ReconciliationValue{Position: want}
 			}
-			if choice == "automatic" {
+			if choice == "invalid null" {
 				resolution.Choice = "manual"
 				resolution.Value = &ReconciliationValue{}
 			}
 			result, err := m.Reconcile(ctx, base, a, p, []ReconciliationResolution{resolution})
+			if choice == "invalid null" {
+				if err == nil {
+					t.Fatal("manual null accepted")
+				}
+				return
+			}
 			if err != nil || result.Status != "ready" {
 				t.Fatalf("%+v %v", result, err)
 			}

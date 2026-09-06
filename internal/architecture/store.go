@@ -145,7 +145,9 @@ type DiagramBreadcrumb struct {
 }
 
 type DiagramAppearance struct {
-	Position *Position
+	Position        *Position
+	DisplayPosition *Position
+	PositionSource  string
 
 	ComponentID        string
 	Role               string
@@ -154,6 +156,9 @@ type DiagramAppearance struct {
 }
 
 type DiagramBoundary struct {
+	Position         *Position
+	DisplayPosition  *Position
+	PositionSource   string
 	Key              string
 	ComponentID      string
 	Title            string
@@ -221,6 +226,12 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 
 	projections := make([]DiagramProjection, 0, len(ordered))
 	for _, current := range ordered {
+		display := current
+		source := "stored"
+		if snapshot.formatVersion == 2 {
+			display.positions, _ = allocatePositions(visibleComponents(current, snapshot.components), nil)
+			source = "derived"
+		}
 		projection := DiagramProjection{ID: current.id.String(), Title: current.title, Filename: filepath.Base(current.path)}
 		if parent, exists := parentByDiagram[current.id]; exists {
 			projection.ParentDiagramID = parent.diagram.String()
@@ -231,7 +242,7 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 
 		present := make(map[uuid.UUID]string, len(current.appearances))
 		for _, appearance := range current.appearances {
-			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role, Position: diagramManualPosition(current, appearance.component)}
+			value := DiagramAppearance{ComponentID: appearance.component.String(), Role: appearance.role, Position: diagramPositionFor(current, appearance.component), DisplayPosition: diagramPositionFor(display, appearance.component), PositionSource: source}
 			present[appearance.component] = appearance.component.String()
 			if appearance.hasDetailLink {
 				value.DetailDiagramID = appearance.detailDiagram.String()
@@ -261,6 +272,11 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 					SourceComponentID: source.id.String(), TargetComponentID: relationship.target.String(), Label: relationship.label,
 				})
 			}
+		}
+		for i := range projection.Boundaries {
+			b := &projection.Boundaries[i]
+			id := uuid.MustParse(b.ComponentID)
+			b.Position, b.DisplayPosition, b.PositionSource = diagramPositionFor(current, id), diagramPositionFor(display, id), source
 		}
 		projections = append(projections, projection)
 	}
@@ -1172,6 +1188,11 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 	homeCounts := make(map[uuid.UUID]int, len(components))
 	parentCounts := make(map[uuid.UUID]int, len(diagrams))
 	for _, current := range diagrams {
+		if version == 3 {
+			if err := validatePositions(current, components); err != nil {
+				return nil, uuid.Nil, err
+			}
+		}
 		seen := make(map[uuid.UUID]struct{}, len(current.appearances))
 		for _, appearance := range current.appearances {
 			if _, exists := componentIDs[appearance.component]; !exists {
@@ -1281,6 +1302,23 @@ func componentFilenameSlug(title string) string {
 // blobs, and validates the complete resulting tree through the same loader used
 // for accepted Architecture.
 func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition CandidateComposition) (Candidate, error) {
+	return manager.constructCandidate(ctx, base, changes, composition, nil)
+}
+
+// PrepareCandidate materializes initial coordinates during an ordinary mutation.
+// Reconstruction uses ConstructCandidate and never runs the allocator.
+func (manager *Manager) PrepareCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition *CandidateComposition) (Candidate, error) {
+	var prepared CandidateComposition
+	input := *composition
+	input.NodePositions = append([]NodePositionChange(nil), composition.NodePositions...)
+	candidate, err := manager.constructCandidate(ctx, base, changes, input, &prepared)
+	if err == nil {
+		*composition = prepared
+	}
+	return candidate, err
+}
+
+func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition CandidateComposition, prepared *CandidateComposition) (Candidate, error) {
 	storePath, err := manager.StorePath(base.storeID.String())
 	if err != nil {
 		return Candidate{}, err
@@ -1331,9 +1369,11 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 		}
 	}
 	baseByID := make(map[string]component, len(base.components))
+	finalComponents := make(map[string]component, len(base.components)+len(changes))
 	candidateIDs := make(map[string]struct{}, len(base.components)+len(changes))
 	for _, component := range base.components {
 		baseByID[component.id.String()] = component
+		finalComponents[component.id.String()] = component
 		candidateIDs[component.id.String()] = struct{}{}
 	}
 	for _, change := range changes {
@@ -1411,6 +1451,11 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 				continue
 			}
 		}
+		parsed, err := parseComponent(change.Path, source)
+		if err != nil {
+			return Candidate{}, err
+		}
+		finalComponents[change.ID] = parsed
 		blob, err := manager.git.writeBlob(ctx, storePath, source)
 		if err != nil {
 			return Candidate{}, fmt.Errorf("write candidate component: %w", err)
@@ -1627,8 +1672,15 @@ func (manager *Manager) ConstructCandidate(ctx context.Context, base Snapshot, c
 				}
 			}
 		}
-		if err := applyNodePositions(base, composition, diagrams, changedDiagrams, candidateIDs); err != nil {
+		components := make([]component, 0, len(finalComponents))
+		for _, c := range finalComponents {
+			components = append(components, c)
+		}
+		if err := applyNodePositions(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
 			return Candidate{}, err
+		}
+		if prepared != nil {
+			*prepared = composition
 		}
 		for id := range changedDiagrams {
 			current := diagrams[id]
@@ -2558,15 +2610,6 @@ func parseDiagram(path string, contents []byte, versions ...int) (diagram, error
 			return diagram{}, errors.New("invalid or duplicate positioned Component")
 		}
 		seen[id] = true
-		present := false
-		for _, a := range result.appearances {
-			if a.component == id {
-				present = true
-			}
-		}
-		if !present {
-			return diagram{}, errors.New("position must address a canonical appearance")
-		}
 		result.positions = append(result.positions, diagramPosition{component: id, position: Position{p.X, p.Y}})
 	}
 	return result, nil

@@ -552,7 +552,7 @@ func TestAgentV2AcceptanceCASRaceIsAnAcceptedConflict(t *testing.T) {
 	base := *state.loadedSnapshot
 	state.stateMutex.Unlock()
 	externalChange := state.architecture.NewComponentChange(base, nil, "External", "")
-	externalCandidate, err := state.architecture.ConstructCandidate(context.Background(), base, []architecture.ComponentChange{externalChange}, architecture.CandidateComposition{
+	externalCandidate, err := prepareTestCandidate(state.architecture, context.Background(), base, []architecture.ComponentChange{externalChange}, architecture.CandidateComposition{
 		NewComponentHomes: []architecture.NewComponentHome{{ComponentID: externalChange.ID, DiagramID: base.RootDiagramID()}},
 	})
 	if err != nil {

@@ -15,7 +15,7 @@ func TestReconciliationOrdinaryResidualCombinesAndReconstructs(t *testing.T) {
 	}
 	one := manager.NewComponentChange(empty, nil, "Gateway", "Original\n")
 	two := manager.NewComponentChange(empty, []ComponentChange{one}, "Worker", "")
-	initial, err := manager.ConstructCandidate(ctx, empty, []ComponentChange{one, two}, rootHomes(empty, one, two))
+	initial, err := manager.prepareTestCandidate(ctx, empty, []ComponentChange{one, two}, rootHomes(empty, one, two))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestReconciliationOrdinaryResidualCombinesAndReconstructs(t *testing.T) {
 	a, _ := base.ChangeForAcceptedComponent(one.ID)
 	a.Title = "Accepted Gateway"
 	a.TitleChanged = true
-	acceptedCandidate, err := manager.ConstructCandidate(ctx, base, []ComponentChange{a}, CandidateComposition{})
+	acceptedCandidate, err := manager.prepareTestCandidate(ctx, base, []ComponentChange{a}, CandidateComposition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestReconciliationOrdinaryResidualCombinesAndReconstructs(t *testing.T) {
 	p.DescriptionChanged = true
 	p.Relationships = []AuthoringRelationship{{TargetID: two.ID, Label: "calls\nλ"}, {TargetID: two.ID, Label: "calls\nλ"}}
 	p.RelationshipsChanged = true
-	proposed, err := manager.ConstructCandidate(ctx, base, []ComponentChange{p}, CandidateComposition{})
+	proposed, err := manager.prepareTestCandidate(ctx, base, []ComponentChange{p}, CandidateComposition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestReconciliationCompetingChildrenRequireBothFinalAnchors(t *testing.T) {
 	}
 	one := manager.NewComponentChange(empty, nil, "Gateway", "")
 	two := manager.NewComponentChange(empty, []ComponentChange{one}, "Worker", "")
-	initial, err := manager.ConstructCandidate(ctx, empty, []ComponentChange{one, two}, rootHomes(empty, one, two))
+	initial, err := manager.prepareTestCandidate(ctx, empty, []ComponentChange{one, two}, rootHomes(empty, one, two))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestReconciliationCompetingChildrenRequireBothFinalAnchors(t *testing.T) {
 	}
 	left := base.NewDetailDiagramChange(nil, "Operations", one.ID)
 	right := base.NewDetailDiagramChange(nil, "Runtime", one.ID)
-	ac, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{DetailDiagrams: []DetailDiagramChange{left}})
+	ac, err := manager.prepareTestCandidate(ctx, base, nil, CandidateComposition{DetailDiagrams: []DetailDiagramChange{left}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestReconciliationCompetingChildrenRequireBothFinalAnchors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposed, err := manager.ConstructCandidate(ctx, base, nil, CandidateComposition{DetailDiagrams: []DetailDiagramChange{right}})
+	proposed, err := manager.prepareTestCandidate(ctx, base, nil, CandidateComposition{DetailDiagrams: []DetailDiagramChange{right}})
 	if err != nil {
 		t.Fatal(err)
 	}

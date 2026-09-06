@@ -30,7 +30,7 @@ func decodePosition(x, y *yaml.Node) (Position, error) {
 	}
 	return p, nil
 }
-func diagramManualPosition(d diagram, id uuid.UUID) *Position {
+func diagramPositionFor(d diagram, id uuid.UUID) *Position {
 	for _, v := range d.positions {
 		if v.component == id {
 			p := v.position
@@ -45,22 +45,126 @@ func samePosition(a, b *Position) bool {
 func (s Snapshot) NodePosition(diagramID, componentID string) (*Position, bool) {
 	for _, d := range s.diagrams {
 		if d.id.String() == diagramID {
-			for _, a := range d.appearances {
-				if a.component.String() == componentID {
-					return diagramManualPosition(d, a.component), true
-				}
+			cid, err := uuid.Parse(componentID)
+			if err == nil && visibleComponents(d, s.components)[cid] {
+				return diagramPositionFor(d, cid), true
 			}
 		}
 	}
 	return nil, false
 }
-func applyNodePositions(base Snapshot, composition CandidateComposition, diagrams map[uuid.UUID]diagram, changed map[uuid.UUID]struct{}, components map[string]struct{}) error {
+
+// visibleComponents is the canonical projection rule, including coalesced
+// crossing endpoints, without recursively expanding boundary nodes.
+func visibleComponents(d diagram, components []component) map[uuid.UUID]bool {
+	canonical, visible := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
+	for _, a := range d.appearances {
+		canonical[a.component], visible[a.component] = true, true
+	}
+	for _, c := range components {
+		for _, r := range c.relationships {
+			if canonical[c.id] != canonical[r.target] {
+				visible[c.id], visible[r.target] = true, true
+			}
+		}
+	}
+	return visible
+}
+
+func validatePositions(d diagram, components []component) error {
+	visible := visibleComponents(d, components)
+	for _, p := range d.positions {
+		if !visible[p.component] || !ValidPosition(p.position) {
+			return fmt.Errorf("%w: invalid visible position in Diagram %s", ErrInvalid, d.id)
+		}
+		delete(visible, p.component)
+	}
+	if len(visible) != 0 {
+		return fmt.Errorf("%w: missing visible positions in Diagram %s", ErrInvalid, d.id)
+	}
+	return nil
+}
+
+// allocatePositions runs only while authoring or deriving a v2 display. Stored
+// candidates replay its concrete results, never this algorithm.
+func allocatePositions(visible map[uuid.UUID]bool, existing []diagramPosition) ([]diagramPosition, error) {
+	result := append([]diagramPosition(nil), existing...)
+	present := map[uuid.UUID]bool{}
+	for _, p := range existing {
+		present[p.component] = true
+	}
+	ids := []string{}
+	for id := range visible {
+		if !present[id] {
+			ids = append(ids, id.String())
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		found := false
+		for radius := 0; radius <= PositionLimit/320 && !found; radius++ {
+			for y := -radius; y <= radius && !found; y++ {
+				for x := -radius; x <= radius; x++ {
+					if radius > 0 && x != -radius && x != radius && y != -radius && y != radius {
+						continue
+					}
+					p := Position{x * 320, y * 200}
+					free := true
+					for _, occupied := range result {
+						dx, dy := p.X-occupied.position.X, p.Y-occupied.position.Y
+						if dx > -300 && dx < 300 && dy > -180 && dy < 180 {
+							free = false
+							break
+						}
+					}
+					if free {
+						result = append(result, diagramPosition{uuid.MustParse(id), p})
+						found = true
+						break
+					}
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: no initial position available", ErrInvalid)
+		}
+	}
+	return result, nil
+}
+
+func (s Snapshot) AutoLayout(diagramID string) ([]NodePositionChange, error) {
+	for _, d := range s.diagrams {
+		if d.id.String() != diagramID {
+			continue
+		}
+		positions, err := allocatePositions(visibleComponents(d, s.components), nil)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]NodePositionChange, 0, len(positions))
+		for _, p := range positions {
+			value := p.position
+			result = append(result, NodePositionChange{diagramID, p.component.String(), &value})
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("%w: unknown Diagram", ErrInvalid)
+}
+
+func applyNodePositions(base Snapshot, composition *CandidateComposition, diagrams map[uuid.UUID]diagram, changed map[uuid.UUID]struct{}, components []component, version int, initialize bool) error {
+	if version == 2 {
+		return nil
+	}
+	knownComponents := map[string]bool{}
+	for _, c := range components {
+		knownComponents[c.id.String()] = true
+	}
 	overrides := map[uuid.UUID]map[uuid.UUID]*Position{}
 	for _, v := range composition.NodePositions {
 		did, de := uuid.Parse(v.DiagramID)
 		cid, ce := uuid.Parse(v.ComponentID)
 		d, ok := diagrams[did]
-		_, known := components[v.ComponentID]
+		known := knownComponents[v.ComponentID]
 		if de != nil || ce != nil || !ok || !known {
 			return fmt.Errorf("%w: unknown placement target", ErrInvalid)
 		}
@@ -70,22 +174,22 @@ func applyNodePositions(base Snapshot, composition CandidateComposition, diagram
 		if _, dup := overrides[did][cid]; dup {
 			return fmt.Errorf("%w: duplicate placement", ErrInvalid)
 		}
-		present := false
-		for _, a := range d.appearances {
-			if a.component == cid {
-				present = true
-			}
-		}
-		_, basePresent := base.NodePosition(v.DiagramID, v.ComponentID)
-		if v.Position != nil && (!present || !ValidPosition(*v.Position)) || v.Position == nil && !present && !basePresent {
+		present := visibleComponents(d, components)[cid]
+		if v.Position != nil && (!ValidPosition(*v.Position) || !present && !initialize) || v.Position == nil && present && !initialize {
 			return fmt.Errorf("%w: ineligible placement target", ErrInvalid)
 		}
 		overrides[did][cid] = v.Position
 	}
 	for id, d := range diagrams {
-		present := map[uuid.UUID]bool{}
-		for _, a := range d.appearances {
-			present[a.component] = true
+		present := visibleComponents(d, components)
+		original := d.positions
+		// On first v2 placement, use exactly the layout shown by the v2 projection.
+		if initialize && base.formatVersion == 2 {
+			var err error
+			d.positions, err = allocatePositions(present, nil)
+			if err != nil {
+				return err
+			}
 		}
 		positions := []diagramPosition{}
 		seen := map[uuid.UUID]bool{}
@@ -101,7 +205,7 @@ func applyNodePositions(base Snapshot, composition CandidateComposition, diagram
 		}
 		additions := []string{}
 		for cid, p := range overrides[id] {
-			if p != nil && !seen[cid] {
+			if p != nil && present[cid] && !seen[cid] {
 				additions = append(additions, cid.String())
 			}
 		}
@@ -110,10 +214,55 @@ func applyNodePositions(base Snapshot, composition CandidateComposition, diagram
 			key := uuid.MustParse(cid)
 			positions = append(positions, diagramPosition{key, *overrides[id][key]})
 		}
-		equal := len(positions) == len(d.positions)
+		if initialize {
+			var err error
+			positions, err = allocatePositions(present, positions)
+			if err != nil {
+				return err
+			}
+			// Match strict replay: retain base sequence order, then append all
+			// newly positioned pairs in stable ID order, regardless of which
+			// authoring mutation first introduced each pair.
+			order := map[uuid.UUID]int{}
+			for i, p := range original {
+				order[p.component] = i + 1
+			}
+			sort.SliceStable(positions, func(i, j int) bool {
+				a, b := order[positions[i].component], order[positions[j].component]
+				if a != 0 && b != 0 {
+					return a < b
+				}
+				if a != 0 {
+					return true
+				}
+				if b != 0 {
+					return false
+				}
+				return positions[i].component.String() < positions[j].component.String()
+			})
+			for _, p := range positions {
+				bp, _ := base.NodePosition(id.String(), p.component.String())
+				override, overridden := overrides[id][p.component]
+				if !samePosition(bp, &p.position) || overridden && override == nil {
+					value := p.position
+					composition.NodePositions = setPositionOverride(composition.NodePositions, id.String(), p.component.String(), &value)
+				}
+			}
+			for i, v := range composition.NodePositions {
+				if v.DiagramID == id.String() && !present[uuid.MustParse(v.ComponentID)] {
+					composition.NodePositions[i].Position = nil
+				}
+			}
+			for _, p := range original {
+				if !present[p.component] {
+					composition.NodePositions = setPositionOverride(composition.NodePositions, id.String(), p.component.String(), nil)
+				}
+			}
+		}
+		equal := len(positions) == len(original)
 		if equal {
 			for i := range positions {
-				if positions[i] != d.positions[i] {
+				if positions[i] != original[i] {
 					equal = false
 					break
 				}
@@ -124,6 +273,19 @@ func applyNodePositions(base Snapshot, composition CandidateComposition, diagram
 			diagrams[id] = d
 			changed[id] = struct{}{}
 		}
+		if err := validatePositions(diagrams[id], components); err != nil {
+			return err
+		}
+	}
+	if initialize {
+		composition.ArchitectureVersion = version
+		sort.Slice(composition.NodePositions, func(i, j int) bool {
+			a, b := composition.NodePositions[i], composition.NodePositions[j]
+			if a.DiagramID != b.DiagramID {
+				return a.DiagramID < b.DiagramID
+			}
+			return a.ComponentID < b.ComponentID
+		})
 	}
 	return nil
 }

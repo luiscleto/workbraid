@@ -140,8 +140,7 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/diagrams/parent-options", handler.browserDetailParentOptions)
 	mux.HandleFunc("POST /api/architecture/diagrams/reassign-detail", handler.browserReassignDetail)
 	mux.HandleFunc("POST /api/architecture/diagrams/set-position", handler.browserPlacement)
-	mux.HandleFunc("POST /api/architecture/diagrams/reset-position", handler.browserPlacement)
-	mux.HandleFunc("POST /api/architecture/diagrams/reset-layout", handler.browserPlacement)
+	mux.HandleFunc("POST /api/architecture/diagrams/auto-layout", handler.browserPlacement)
 	mux.HandleFunc("POST /api/architecture/diagrams/title", handler.editDiagramTitle)
 	mux.HandleFunc("POST /api/architecture/components/move-home", handler.moveComponentHome)
 	mux.HandleFunc("POST /api/architecture/diagrams/show-component", handler.showComponentHere)
@@ -1535,13 +1534,13 @@ func (h *Handler) keepComponentChangeLocked(ctx context.Context, snapshot archit
 	return pending
 }
 
-func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) (architecture.Candidate, error) {
+func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet, initialize bool) (architecture.Candidate, error) {
 	if h.candidateConstructionFailure != nil {
 		if err := h.candidateConstructionFailure(); err != nil {
 			return architecture.Candidate{}, err
 		}
 	}
-	return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, architecture.CandidateComposition{
+	composition := architecture.CandidateComposition{
 		ArchitectureVersion: pending.architectureVersion,
 		NodePositions:       pending.nodePositions,
 		DetailReassignments: pending.detailReassignments,
@@ -1550,7 +1549,15 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 		DiagramTitles:       pending.diagramTitles,
 		HomeMoves:           pending.homeMoves,
 		References:          pending.references,
-	})
+	}
+	if !initialize {
+		return h.architecture.ConstructCandidate(ctx, snapshot, pending.changes, composition)
+	}
+	candidate, err := h.architecture.PrepareCandidate(ctx, snapshot, pending.changes, &composition)
+	if err == nil {
+		pending.architectureVersion, pending.nodePositions = composition.ArchitectureVersion, composition.NodePositions
+	}
+	return candidate, err
 }
 
 type diagramMutationRequest struct {
@@ -1651,7 +1658,7 @@ func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architectur
 	pending.validationRelationshipField = ""
 	pending.validationDiagram = ""
 	pending.validationDiagramField = ""
-	candidate, err := h.constructCandidate(ctx, snapshot, pending)
+	candidate, err := h.constructCandidate(ctx, snapshot, pending, true)
 	if err != nil {
 		h.recordCandidateValidation(pending, err)
 		return
@@ -1781,7 +1788,6 @@ func (h *Handler) moveComponentHomeLocked(ctx context.Context, snapshot architec
 		proposedPointer = h.ensurePendingLocked(snapshot, nil)
 	}
 	proposed := *proposedPointer
-	clearPendingPosition(snapshot, &proposed, currentHome, componentID)
 	proposed.references = referenceChangesWithoutPair(proposed.references, diagramID, componentID)
 	setReferenceChange(&proposed, currentHome, componentID, false)
 	proposed.homeMoves = homeMovesWithoutComponent(proposed.homeMoves, componentID)
@@ -1825,9 +1831,6 @@ func (h *Handler) changeReferenceLocked(ctx context.Context, snapshot architectu
 	}
 	pending = h.ensurePendingLocked(snapshot, pending)
 	setReferenceChange(pending, diagramID, componentID, present)
-	if !present {
-		clearPendingPosition(snapshot, pending, diagramID, componentID)
-	}
 	h.rebuildPendingLocked(ctx, snapshot, pending)
 	if pendingOperationFailed(pending) {
 		return pending, changeOperationFailed
@@ -2083,7 +2086,7 @@ func (h *Handler) reviewChangesLocked(ctx context.Context, payload architectureA
 	}
 	proposed := clonePending(current)
 	base := proposed.baseSnapshot
-	candidate, err := h.constructCandidate(ctx, base, proposed)
+	candidate, err := h.constructCandidate(ctx, base, proposed, false)
 	proposed.review = nil
 	proposed.reviewBlocker = ""
 	if err != nil {

@@ -109,7 +109,7 @@ func TestChangeSetAcceptanceUsesOneThreeRefTransactionAndLeavesOtherActive(t *te
 		change := manager.NewComponentChange(base, nil, name, name+" body\n")
 		change.RelationshipsChanged = true
 		composition := CandidateComposition{NewComponentHomes: []NewComponentHome{{ComponentID: change.ID, DiagramID: base.RootDiagramID()}}}
-		candidate, candidateErr := manager.ConstructCandidate(ctx, base, []ComponentChange{change}, composition)
+		candidate, candidateErr := manager.PrepareCandidate(ctx, base, []ComponentChange{change}, &composition)
 		if candidateErr != nil {
 			t.Fatal(candidateErr)
 		}
@@ -587,7 +587,7 @@ func changeSetFixture(t *testing.T, manager *Manager, ctx context.Context, name 
 	component := manager.NewComponentChange(base, nil, "Worker", "Body\n")
 	component.RelationshipsChanged = true
 	composition := CandidateComposition{NewComponentHomes: []NewComponentHome{{ComponentID: component.ID, DiagramID: base.RootDiagramID()}}}
-	candidate, err := manager.ConstructCandidate(ctx, base, []ComponentChange{component}, composition)
+	candidate, err := manager.PrepareCandidate(ctx, base, []ComponentChange{component}, &composition)
 	if err != nil {
 		t.Fatal(err)
 	}

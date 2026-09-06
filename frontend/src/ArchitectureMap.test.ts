@@ -1,24 +1,24 @@
 import { expect, it } from 'vitest'
-import { deterministicPositions, partialPositions, projectionElements, roundPosition } from './ArchitectureMap'
+import { deterministicPositions, displayPositions, projectionElements, roundPosition } from './ArchitectureMap'
 
 it.each([[0.5, 1], [-0.5, -1], [-180.49, -180], [-180.5, -181], [100000, 100000]])('rounds model coordinate %s to %s', (value, expected) => {
   expect(roundPosition(value)).toBe(expected)
 })
 
-it('keeps deliberate overlapping pins exact while automatic nodes and boundary labels find space', () => {
+it('keeps every provided coordinate exact through overlap, boundary roles and label edits', () => {
   const components = [
     {id:'a',title:'A',relationships:[],position:{x:0,y:0}},
     {id:'b',title:'B',relationships:[],position:{x:0,y:0}},
-    {id:'c',title:'C',relationships:[]},
-    {id:'boundary',title:'Elsewhere',node_kind:'boundary' as const,boundary_home_title:'A long nested Diagram title',relationships:[]},
+    {id:'c',title:'C',relationships:[],position:{x:100,y:20}},
+    {id:'boundary',title:'Elsewhere',node_kind:'boundary' as const,boundary_home_title:'A long nested Diagram title',relationships:[],position:{x:10,y:15}},
   ]
-  const positions = partialPositions(components)
+  const positions = displayPositions(components)
   expect(positions.a).toEqual({x:0,y:0})
   expect(positions.b).toEqual(positions.a)
-  expect(partialPositions([...components].reverse())).toEqual(positions)
-  expect(Math.abs(positions.c.x) >= 182 || Math.abs(positions.c.y) >= 118).toBe(true)
-  expect(Math.abs(positions.boundary.x) >= 200 || Math.abs(positions.boundary.y) >= 135).toBe(true)
-  expect(components[2].position).toBeUndefined()
+  expect(displayPositions([...components].reverse())).toEqual(positions)
+  expect(positions.c).toEqual({x:100,y:20})
+  expect(positions.boundary).toEqual({x:10,y:15})
+  expect(displayPositions(components.map(c=>({...c,title:'A much longer title',node_kind:'reference'})))).toEqual(positions)
 })
 
 it('projects disconnected, cyclic, and parallel accepted relationships with local edge keys', () => {

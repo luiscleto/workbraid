@@ -33,7 +33,7 @@ func reconciliationFixture(t *testing.T) (*Manager, Snapshot, diagramFixtureIDs)
 func reconciliationAccepted(t *testing.T, m *Manager, b Snapshot, changes []ComponentChange, composition CandidateComposition) Snapshot {
 	t.Helper()
 	ctx := t.Context()
-	candidate, err := m.ConstructCandidate(ctx, b, changes, composition)
+	candidate, err := m.prepareTestCandidate(ctx, b, changes, composition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func reconciliationAccepted(t *testing.T, m *Manager, b Snapshot, changes []Comp
 }
 func reconciliationProposed(t *testing.T, m *Manager, b Snapshot, changes []ComponentChange, composition CandidateComposition) Candidate {
 	t.Helper()
-	p, err := m.ConstructCandidate(t.Context(), b, changes, composition)
+	p, err := m.prepareTestCandidate(t.Context(), b, changes, composition)
 	if err != nil {
 		t.Fatal(err)
 	}

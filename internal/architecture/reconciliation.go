@@ -78,11 +78,21 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 	if err != nil {
 		return c.result, err
 	}
-	candidate, err := manager.ConstructCandidate(ctx, accepted, changes, composition)
+	candidate, err := manager.PrepareCandidate(ctx, accepted, changes, &composition)
 	if err != nil {
 		return c.result, fmt.Errorf("reconciliation constructor: %w", err)
 	}
-	if !sameReconciliationSemantics(c.final, snapshotReconciliationFacts(candidate.Snapshot())) || !reflect.DeepEqual(c.final.positions, snapshotReconciliationFacts(candidate.Snapshot()).positions) || candidate.Snapshot().FormatVersion() != c.final.version {
+	reproduced := snapshotReconciliationFacts(candidate.Snapshot())
+	for k, p := range c.final.positions {
+		if actual, exists := reproduced.positions[k]; !exists || actual != p {
+			return c.result, fmt.Errorf("resolved coordinate changed during initialization")
+		}
+	}
+	replay, err := manager.ConstructCandidate(ctx, accepted, changes, composition)
+	if err != nil || replay.Tree() != candidate.Tree() {
+		return c.result, fmt.Errorf("reconciliation final facts do not reconstruct exact candidate: %v", err)
+	}
+	if !sameReconciliationSemantics(c.final, reproduced) || candidate.Snapshot().FormatVersion() != c.final.version {
 		return c.result, fmt.Errorf("resolved Architecture is not reproduced by ordinary typed authoring facts")
 	}
 	c.result.Changes, c.result.Composition, c.result.Candidate = changes, composition, &candidate

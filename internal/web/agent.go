@@ -115,8 +115,7 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/diagrams/reassign-detail", h.agentReassignDetail)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/positions", h.agentPositions)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/set-position", h.agentSetPosition)
-	mux.HandleFunc("POST /api/agent/v2/diagrams/reset-position", h.agentResetPosition)
-	mux.HandleFunc("POST /api/agent/v2/diagrams/reset-layout", h.agentResetLayout)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/auto-layout", h.agentAutoLayout)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-preview", h.agentReconciliationPreview)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-apply", h.agentReconciliationApply)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/edit-title", h.agentDiagramEditTitle)
@@ -157,7 +156,7 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the request fields and try again.", nil)
 		return zero, false
 	}
-	if strings.HasSuffix(request.URL.Path, "/set-position") || strings.HasSuffix(request.URL.Path, "/reset-position") || strings.HasSuffix(request.URL.Path, "/reset-layout") {
+	if strings.HasSuffix(request.URL.Path, "/set-position") || strings.HasSuffix(request.URL.Path, "/auto-layout") {
 		if !validPlacementFields(contents, request.URL.Path, false) {
 			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the position request fields and try again.", nil)
 			return zero, false

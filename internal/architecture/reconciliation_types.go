@@ -189,7 +189,7 @@ func (r *ReconciliationResolution) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("manual scalar requires one value")
 		}
 		for key, rawValue := range fields {
-			if !allowed[key] || (bytes.Equal(rawValue, []byte("null")) && value.Locator.Kind != "node_position") {
+			if !allowed[key] || bytes.Equal(rawValue, []byte("null")) {
 				return fmt.Errorf("irrelevant/null resolution value %s", key)
 			}
 			if value.Locator.Kind == "node_position" && !bytes.Equal(rawValue, []byte("null")) {

@@ -48,7 +48,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 			if unit.value == "position" {
 				minimum, maximum := float64(-100000), float64(100000)
 				coordinate := &jsonschema.Schema{Type: "integer", Minimum: &minimum, Maximum: &maximum}
-				value = &jsonschema.Schema{OneOf: []*jsonschema.Schema{{Type: "null"}, closed(map[string]*jsonschema.Schema{"x": coordinate, "y": coordinate}, "x", "y")}}
+				value = closed(map[string]*jsonschema.Schema{"x": coordinate, "y": coordinate}, "x", "y")
 			}
 			variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": locator, "choice": constant("manual"), "value": closed(map[string]*jsonschema.Schema{unit.value: value}, unit.value)}, "locator", "choice", "value"))
 		}

@@ -12,7 +12,7 @@ import (
 	"workbraid/internal/architecture"
 )
 
-func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
+func TestPlacementSharedAuthorityAbsenceCompositionAndRestart(t *testing.T) {
 	f := newNativeRefreshFixture(t, false)
 	state := changeSetState(t, createAgentChangeSet(t, f.handler, f.base.StoreID, f.base.Revision, "Seed pins"))
 	call := func(path string, v any) map[string]any {
@@ -32,7 +32,7 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 	call("diagrams/show-component", agentapi.DiagramComponentRequest{StatePreconditions: state, DiagramID: root, ComponentID: worker})
 	set := func(d, c string, x, y int) {
 		t.Helper()
-		call("diagrams/set-position", agentapi.DiagramSetPositionRequest{DiagramResetPositionRequest: agentapi.DiagramResetPositionRequest{DiagramResetLayoutRequest: agentapi.DiagramResetLayoutRequest{StatePreconditions: state, DiagramID: d}, ComponentID: c}, X: x, Y: y})
+		call("diagrams/set-position", agentapi.DiagramSetPositionRequest{DiagramAutoLayoutRequest: agentapi.DiagramAutoLayoutRequest{StatePreconditions: state, DiagramID: d}, ComponentID: c, X: x, Y: y})
 	}
 	set(root, worker, 100, 100)
 	set(root, f.component, -200, 0)
@@ -46,7 +46,7 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 	accepted := f.state.loadedSnapshot.Revision()
 	state = changeSetState(t, createAgentChangeSet(t, f.handler, state.StoreID, accepted, "Reset semantics"))
 	call("diagrams/stop-showing-component", agentapi.DiagramComponentRequest{StatePreconditions: state, DiagramID: root, ComponentID: worker})
-	call("diagrams/reset-layout", agentapi.DiagramResetLayoutRequest{StatePreconditions: state, DiagramID: root})
+	call("diagrams/auto-layout", agentapi.DiagramAutoLayoutRequest{StatePreconditions: state, DiagramID: root})
 	pending := f.state.changeSets[state.ChangeSetID]
 	nulls := 0
 	for _, v := range pending.nodePositions {
@@ -54,11 +54,11 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 			nulls++
 		}
 	}
-	if nulls != 2 {
+	if nulls != 1 {
 		t.Fatalf("reset erased required null: %+v", pending.nodePositions)
 	}
 	call("diagrams/show-component", agentapi.DiagramComponentRequest{StatePreconditions: state, DiagramID: root, ComponentID: worker})
-	if p, ok := f.state.changeSets[state.ChangeSetID].candidate.Snapshot().NodePosition(root, worker); !ok || p != nil {
+	if p, ok := f.state.changeSets[state.ChangeSetID].candidate.Snapshot().NodePosition(root, worker); !ok || p == nil || *p == (architecture.Position{X: 100, Y: 100}) {
 		t.Fatal("removed pin resurrected")
 	}
 	set(root, worker, 0, 0)
@@ -68,7 +68,7 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 		t.Fatal("reference to home lost destination zero pin")
 	}
 	call("components/move-home", agentapi.ComponentMoveHomeRequest{StatePreconditions: state, ComponentID: worker, DiagramID: detail})
-	if p, ok := f.state.changeSets[state.ChangeSetID].candidate.Snapshot().NodePosition(detail, worker); !ok || p != nil {
+	if p, ok := f.state.changeSets[state.ChangeSetID].candidate.Snapshot().NodePosition(detail, worker); !ok || p == nil || *p == (architecture.Position{X: 33, Y: 44}) {
 		t.Fatal("home round trip resurrected source pin")
 	}
 	set(detail, worker, 70, -90)
@@ -81,7 +81,7 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 	}
 	stale := state
 	stale.Generation--
-	requireAgentErrorCode(t, postAgent(t, f.handler, "/api/agent/v2/diagrams/reset-layout", agentapi.DiagramResetLayoutRequest{StatePreconditions: stale, DiagramID: detail}), "change_set_generation_mismatch")
+	requireAgentErrorCode(t, postAgent(t, f.handler, "/api/agent/v2/diagrams/auto-layout", agentapi.DiagramAutoLayoutRequest{StatePreconditions: stale, DiagramID: detail}), "change_set_generation_mismatch")
 	data := filepath.Dir(filepath.Dir(f.storePath))
 	restarted, handler := newHandler(testOrigin, t.TempDir(), data)
 	postJSONRequest(t, handler, "/api/projects/open", map[string]any{"project_slug": f.base.ProjectSlug})
@@ -98,9 +98,11 @@ func TestPlacementSharedAuthorityResetNullCompositionAndRestart(t *testing.T) {
 func TestPlacementAcceptedPreconditionsAndClosedRequests(t *testing.T) {
 	f := newNativeRefreshFixture(t, false)
 	base := diagramMutationRequest{ProjectSlug: f.base.ProjectSlug, StoreID: f.base.StoreID, ExpectedRevision: f.base.Revision, PendingGenerationObserved: true, DiagramID: f.base.RootDiagramID, ComponentID: f.component}
-	// A v3 Automatic reset creates no implicit proposal either.
-	if response := postJSONRequest(t, f.handler, "/api/architecture/diagrams/reset-position", base); response.Code != 200 || len(f.state.changeSets) != 0 {
-		t.Fatalf("reset: %s", response.Body.String())
+	// An already arranged native singleton creates no implicit proposal.
+	layout := base
+	layout.ComponentID = ""
+	if response := postJSONRequest(t, f.handler, "/api/architecture/diagrams/auto-layout", layout); response.Code != 200 || len(f.state.changeSets) != 0 {
+		t.Fatalf("auto-layout: %s", response.Body.String())
 	}
 	x, y := 1, -2
 	base.X, base.Y = &x, &y

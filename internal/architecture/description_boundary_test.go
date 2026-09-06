@@ -66,7 +66,7 @@ func TestDescriptionResidualRoundTripAgainstUnterminatedAcceptedH1(t *testing.T)
 		t.Fatal(err)
 	}
 	created := manager.NewComponentChange(bootstrap, nil, "API", "")
-	initial, err := manager.ConstructCandidate(ctx, bootstrap, []ComponentChange{created}, rootHomes(bootstrap, created))
+	initial, err := manager.prepareTestCandidate(ctx, bootstrap, []ComponentChange{created}, rootHomes(bootstrap, created))
 	if err != nil {
 		t.Fatal(err)
 	}

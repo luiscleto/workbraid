@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 37 {
+	if err != nil || len(tools.Tools) != 36 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -536,15 +536,16 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	args["generation"] = 1
 	delete(args, "x")
 	delete(args, "y")
-	runRealMCP(t, ctx, session, "diagram_reset_position", args)
+	delete(args, "component_id")
+	runRealMCP(t, ctx, session, "diagram_auto_layout", args)
 	runRealCLI(t, binary, origin, "diagram", "set-position", "--store-id", storeID, "--change-set-id", placementID, "--generation", "2", "--diagram-id", rootID, "--component-id", gatewayID, "--x=-100000", "--y=100000")
 	args["generation"] = 3
 	delete(args, "component_id")
-	runRealMCP(t, ctx, session, "diagram_reset_layout", args)
+	runRealMCP(t, ctx, session, "diagram_auto_layout", args)
 	readBack := runRealMCP(t, ctx, session, "diagram_positions", map[string]any{"store_id": storeID, "change_set_id": placementID, "diagram_id": rootID})
 	for _, appearance := range readBack.Result.(map[string]any)["appearances"].([]any) {
-		if appearance.(map[string]any)["position"] != nil {
-			t.Fatal("reset all did not clear pin")
+		if appearance.(map[string]any)["position"] == nil || appearance.(map[string]any)["position_source"] != "stored" {
+			t.Fatal("auto-layout did not retain stored coordinates")
 		}
 	}
 	invalidPosition := runRealCLIError(t, binary, origin, "diagram", "set-position", "--store-id", storeID, "--change-set-id", placementID, "--generation", "4", "--diagram-id", rootID, "--component-id", gatewayID, "--x=100001", "--y=0")
@@ -563,7 +564,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	if placementPreview["status"] != "needs_resolution" || len(conflicts) != 1 || conflicts[0].(map[string]any)["locator"].(map[string]any)["kind"] != "node_position" {
 		t.Fatalf("typed placement conflict: %+v", placementPreview)
 	}
-	placementInputs["resolutions"] = []any{map[string]any{"locator": conflicts[0].(map[string]any)["locator"], "choice": "manual", "value": map[string]any{"position": nil}}}
+	placementInputs["resolutions"] = []any{map[string]any{"locator": conflicts[0].(map[string]any)["locator"], "choice": "manual", "value": map[string]any{"position": map[string]any{"x": 320, "y": -180}}}}
 	resolvedPlacement := runRealMCP(t, ctx, session, "change_set_reconcile_apply", placementInputs).Result.(map[string]any)
 	if resolvedPlacement["generation"] != float64(6) || resolvedPlacement["review"] != nil {
 		t.Fatalf("placement residual: %+v", resolvedPlacement)
@@ -648,7 +649,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 	}
 	wantNames := []string{
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_reconcile_apply", "change_set_reconcile_preview", "change_set_rename", "change_set_review", "change_sets_list",
-		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_reset_position", "diagram_reset_layout", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
+		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",
 	}
 	gotNames := make([]string, len(listed.Tools))

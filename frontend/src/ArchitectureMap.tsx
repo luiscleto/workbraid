@@ -160,7 +160,7 @@ export function ArchitectureMap({
       })
 	  if(viewport.current&&viewport.current.key===viewKey){instance.viewport({zoom:viewport.current.zoom,pan:viewport.current.pan})}
 	  instance.nodes().ungrabify()
-	  if(placementHandler.current&&!placementPending.current)instance.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+	  if(placementHandler.current&&!placementPending.current)instance.nodes('[!uiAnnotation]').grabify()
 	  let grabbed: {id:string;start:{x:number;y:number};submit:NonNullable<typeof onPlace>;cancelled:boolean}|null=null
 	  let suppressClickUntil=0
 	  const cancel=()=>{if(!grabbed||!instance)return;grabbed.cancelled=true;instance.getElementById(grabbed.id).position(grabbed.start)}
@@ -169,7 +169,7 @@ export function ArchitectureMap({
 	  window.addEventListener('pointercancel',cancel)
 	  window.addEventListener('blur',cancel)
 	  instance.on('grab','node',(event)=>{
-	    if(!placementHandler.current||placementPending.current||event.target.data('nodeKind')==='boundary'||event.target.data('uiAnnotation'))return
+	    if(!placementHandler.current||placementPending.current||event.target.data('uiAnnotation'))return
 	    grabbed={id:event.target.id(),start:{...event.target.position()},submit:placementHandler.current,cancelled:false}
 	    event.target.addClass('placement-grabbed')
 	  })
@@ -183,11 +183,11 @@ export function ArchitectureMap({
 	    suppressClickUntil=Date.now()+250
 	    placementPending.current=true;instance.nodes().ungrabify()
 	    try {
-	      const kept=await gesture.submit(gesture.id,{x:roundPosition(point.x),y:roundPosition(point.y)})
+	      const kept=await gesture.submit(event.target.data('componentID') ?? gesture.id,{x:roundPosition(point.x),y:roundPosition(point.y)})
 	      if(!kept&&!instance.destroyed())event.target.position(gesture.start)
 	    } finally {
 	      placementPending.current=false
-	      if(graph.current&&!graph.current.destroyed()&&placementHandler.current)graph.current.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+	      if(graph.current&&!graph.current.destroyed()&&placementHandler.current)graph.current.nodes('[!uiAnnotation]').grabify()
 	    }
 	  })
       instance.on('tap', 'node', (event) => {
@@ -328,7 +328,7 @@ export function ArchitectureMap({
   useEffect(()=>{
 	const instance=graph.current;if(!instance)return
 	instance.nodes().ungrabify()
-	if(onPlace&&!placementPending.current)instance.nodes('[nodeKind != "boundary"][!uiAnnotation]').grabify()
+	if(onPlace&&!placementPending.current)instance.nodes('[!uiAnnotation]').grabify()
   },[Boolean(onPlace),elements])
 
   useEffect(() => {
@@ -534,7 +534,7 @@ function reviewRelationshipVisible(change: ReviewMapRelationshipChange, side: 'w
 }
 
 export function projectionElements(components: MapComponent[], options: ProjectionOptions = {}): ElementDefinition[] {
-  const positions = partialPositions(components,options.layoutComponentIDs)
+  const positions = displayPositions(components,options.layoutComponentIDs)
   const componentStatus = new Map(options.reviewComponents?.map((change) => [change.component_id, change.status]))
   const relationshipStatus = new Map<string, { change: ReviewMapRelationshipChange; projection?: ReviewDiagramRelationshipProjection }>()
   for (const change of options.reviewRelationships ?? []) {
@@ -553,12 +553,13 @@ export function projectionElements(components: MapComponent[], options: Projecti
     return {
       data: {
         id: component.id,
+        componentID: component.component_id ?? component.id,
         label: component.title,
         displayLabel: component.title,
         nodeKind: component.node_kind ?? '',
         boundaryHomeTitle: component.boundary_home_title,
         reviewStatus: status,
-        positionChanged: options.reviewPositionIDs?.includes(component.id) ? 'yes' : '',
+        positionChanged: options.reviewPositionIDs?.includes(component.component_id ?? component.id) ? 'yes' : '',
         annotationCount,
       },
       position: positions[component.id],
@@ -683,37 +684,11 @@ export function roundPosition(value: number): number {
   return Math.sign(value) * Math.floor(Math.abs(value) + 0.5)
 }
 
-export function partialPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
+export function displayPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
   const seeds = deterministicPositions(layoutIDs ?? components.map(c => c.component_id ?? c.id))
   const result: Record<string, { x: number; y: number }> = {}
-  const occupied: { x: number; y: number; halfWidth: number; halfHeight: number }[] = []
-  const bounds = (c: MapComponent) => ({
-    halfWidth: c.node_kind === 'boundary' ? Math.max(80, Math.min(220, (`Lives in ${c.boundary_home_title ?? ''}`).length * 3.5)) : 82,
-    halfHeight: c.node_kind === 'boundary' ? 67 : 50,
-  })
   for (const c of components) {
-    if (c.position && c.node_kind !== 'boundary') {
-      result[c.id] = { ...c.position }
-      occupied.push({ ...c.position, ...bounds(c) })
-    }
-  }
-  for (const c of [...components].sort((a, b) => a.id.localeCompare(b.id))) {
-    if (result[c.id]) continue
-    const seed = seeds[c.component_id ?? c.id] ?? { x: 0, y: 0 }
-    const size = bounds(c)
-    let point = { ...seed }
-    // An expanding square perimeter always finds space for a finite Diagram.
-    search: for (let ring = 0; ; ring++) {
-      for (let x = -ring; x <= ring; x++) {
-        for (let y = -ring; y <= ring; y++) {
-          if (ring && Math.abs(x) !== ring && Math.abs(y) !== ring) continue
-          point = { x: seed.x + x * 190, y: seed.y + y * 145 }
-          if (occupied.every(p => Math.abs(p.x - point.x) >= p.halfWidth + size.halfWidth + 18 || Math.abs(p.y - point.y) >= p.halfHeight + size.halfHeight + 18)) break search
-        }
-      }
-    }
-    result[c.id] = point
-    occupied.push({ ...point, ...size })
+    result[c.id] = { ...(c.position ?? seeds[c.component_id ?? c.id] ?? {x:0,y:0}) }
   }
   return result
 }

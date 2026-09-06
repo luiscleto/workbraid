@@ -32,7 +32,7 @@ func validPlacementFields(contents []byte, path string, browser bool) bool {
 		if browser && (key == "title" || key == "anchor_component_id") {
 			return false
 		}
-		if strings.HasSuffix(path, "/reset-layout") && key == "component_id" {
+		if strings.HasSuffix(path, "/auto-layout") && key == "component_id" {
 			return false
 		}
 		var raw json.RawMessage
@@ -55,20 +55,7 @@ func validPlacementFields(contents []byte, path string, browser bool) bool {
 	return !strings.HasSuffix(path, "/set-position") || seen["x"] && seen["y"]
 }
 
-func clearPendingPosition(base architecture.Snapshot, pending *pendingChangeSet, d, c string) {
-	values := pending.nodePositions[:0:0]
-	for _, v := range pending.nodePositions {
-		if v.DiagramID != d || v.ComponentID != c {
-			values = append(values, v)
-		}
-	}
-	if p, _ := base.NodePosition(d, c); p != nil {
-		values = append(values, architecture.NodePositionChange{DiagramID: d, ComponentID: c})
-	}
-	pending.nodePositions = values
-}
-
-func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapshot, pending *pendingChangeSet, d, c string, p *architecture.Position, resetAll bool) (*pendingChangeSet, bool, string) {
+func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapshot, pending *pendingChangeSet, d, c string, p *architecture.Position, autoLayout bool) (*pendingChangeSet, bool, string) {
 	current := base
 	if pending != nil {
 		if pending.candidate == nil {
@@ -89,38 +76,39 @@ func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapsho
 	if p != nil && !architecture.ValidPosition(*p) {
 		return pending, false, "invalid_request"
 	}
-	targets := []string{}
-	if resetAll {
-		for _, diagram := range current.DiagramProjections() {
-			if diagram.ID == d {
-				for _, a := range diagram.Appearances {
-					if a.Position != nil {
-						targets = append(targets, a.ComponentID)
-					}
-				}
+	targets := []architecture.NodePositionChange{}
+	if autoLayout {
+		layout, err := current.AutoLayout(d)
+		if err != nil {
+			return pending, false, changeOperationFailed
+		}
+		for _, v := range layout {
+			before, _ := current.NodePosition(d, v.ComponentID)
+			if before == nil || *before != *v.Position {
+				targets = append(targets, v)
 			}
 		}
 	} else {
+		if p == nil {
+			return pending, false, "invalid_request"
+		}
 		before, exists := current.NodePosition(d, c)
 		if !exists {
 			return pending, false, changeTargetIneligible
 		}
 		if !(before == nil && p == nil || before != nil && p != nil && *before == *p) {
-			targets = append(targets, c)
+			targets = append(targets, architecture.NodePositionChange{DiagramID: d, ComponentID: c, Position: p})
 		}
 	}
-	if len(targets) == 0 {
+	if len(targets) == 0 && current.FormatVersion() == 3 {
 		return pending, true, ""
 	}
 	proposed := h.ensurePendingLocked(base, clonePending(pending))
-	for _, id := range targets {
-		if p == nil {
-			clearPendingPosition(base, proposed, d, id)
-		} else {
-			composition := architecture.SetNodePosition(base, h.durableChangeSet(proposed).Composition, d, id, p)
-			proposed.nodePositions = composition.NodePositions
-			proposed.architectureVersion = composition.ArchitectureVersion
-		}
+	proposed.architectureVersion = 3
+	for _, v := range targets {
+		composition := architecture.SetNodePosition(base, h.durableChangeSet(proposed).Composition, d, v.ComponentID, v.Position)
+		proposed.nodePositions = composition.NodePositions
+		proposed.architectureVersion = composition.ArchitectureVersion
 	}
 	h.rebuildPendingLocked(ctx, base, proposed)
 	if pendingOperationFailed(proposed) {
@@ -130,7 +118,7 @@ func (h *Handler) placementLocked(ctx context.Context, base architecture.Snapsho
 		return pending, false, changeValidationBlocked
 	}
 	proposed.nodePositions = architecture.NormalizeNodePositions(base, proposed.candidate.Snapshot(), proposed.nodePositions)
-	candidate, err := h.constructCandidate(ctx, base, proposed)
+	candidate, err := h.constructCandidate(ctx, base, proposed, false)
 	if err != nil {
 		return pending, false, changeOperationFailed
 	}
@@ -166,7 +154,7 @@ func (h *Handler) browserPlacement(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Code: "invalid_request"})
 		return
 	}
-	proposed, unchanged, code := h.placementLocked(r.Context(), base, pending, payload.DiagramID, payload.ComponentID, p, strings.HasSuffix(r.URL.Path, "/reset-layout"))
+	proposed, unchanged, code := h.placementLocked(r.Context(), base, pending, payload.DiagramID, payload.ComponentID, p, strings.HasSuffix(r.URL.Path, "/auto-layout"))
 	if code != "" {
 		writeJSON(w, http.StatusConflict, errorResponse{Code: code})
 		return
@@ -208,15 +196,8 @@ func (h *Handler) agentSetPosition(w http.ResponseWriter, r *http.Request) {
 	}
 	h.agentPlacement(w, r, v.StatePreconditions, v.DiagramID, v.ComponentID, &architecture.Position{X: v.X, Y: v.Y}, false)
 }
-func (h *Handler) agentResetPosition(w http.ResponseWriter, r *http.Request) {
-	v, ok := decodeAgentRequest[agentapi.DiagramResetPositionRequest](h, w, r)
-	if !ok {
-		return
-	}
-	h.agentPlacement(w, r, v.StatePreconditions, v.DiagramID, v.ComponentID, nil, false)
-}
-func (h *Handler) agentResetLayout(w http.ResponseWriter, r *http.Request) {
-	v, ok := decodeAgentRequest[agentapi.DiagramResetLayoutRequest](h, w, r)
+func (h *Handler) agentAutoLayout(w http.ResponseWriter, r *http.Request) {
+	v, ok := decodeAgentRequest[agentapi.DiagramAutoLayoutRequest](h, w, r)
 	if !ok {
 		return
 	}
@@ -266,8 +247,13 @@ func (h *Handler) agentPositions(w http.ResponseWriter, r *http.Request) {
 			}
 			appearances := []map[string]any{}
 			for _, a := range diagram.Appearances {
-				appearances = append(appearances, map[string]any{"component_id": a.ComponentID, "title": titles[a.ComponentID], "role": a.Role, "position": a.Position})
+				appearances = append(appearances, map[string]any{"component_id": a.ComponentID, "title": titles[a.ComponentID], "role": a.Role, "position": a.Position, "display_position": a.DisplayPosition, "position_source": a.PositionSource})
 			}
+			boundaries := []map[string]any{}
+			for _, b := range diagram.Boundaries {
+				boundaries = append(boundaries, map[string]any{"component_id": b.ComponentID, "title": b.Title, "role": "boundary", "home_diagram_id": b.HomeDiagramID, "home_diagram_title": b.HomeDiagramTitle, "position": b.Position, "display_position": b.DisplayPosition, "position_source": b.PositionSource})
+			}
+			result["boundaries"] = boundaries
 			result["diagram_id"] = diagram.ID
 			result["architecture_version"] = snapshot.FormatVersion()
 			result["appearances"] = appearances

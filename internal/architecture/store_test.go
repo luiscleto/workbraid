@@ -559,7 +559,7 @@ func TestConstructCandidateResolvesRelationshipToPendingNewComponent(t *testing.
 	change, _ := base.ChangeForAcceptedComponent(sourceID)
 	change.Relationships = []AuthoringRelationship{{TargetID: created.ID, Label: "calls"}}
 	change.RelationshipsChanged = true
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{created, change}, rootHomes(base, created))
+	candidate, err := manager.prepareTestCandidate(context.Background(), base, []ComponentChange{created, change}, rootHomes(base, created))
 	if err != nil {
 		t.Fatalf("complete candidate did not resolve pending target: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestConstructCandidateAddsMultipleComponentsWithStableCreationPaths(t *test
 	if first.Path != "components/api-gateway.md" || second.Path != "components/api-gateway-2.md" || first.ID == second.ID {
 		t.Fatalf("creation identity/paths = (%q, %q) / (%q, %q)", first.ID, first.Path, second.ID, second.Path)
 	}
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{first, second}, rootHomes(base, first, second))
+	candidate, err := manager.prepareTestCandidate(context.Background(), base, []ComponentChange{first, second}, rootHomes(base, first, second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 	composition := rootHomes(base, anchor, worker, otherAnchor)
 	composition.DetailDiagrams = []DetailDiagramChange{first, other}
 	composition.HomeMoves = []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: first.ID}}
-	candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{anchor, worker, otherAnchor}, composition)
+	candidate, err := manager.prepareTestCandidate(context.Background(), base, []ComponentChange{anchor, worker, otherAnchor}, composition)
 	if err != nil {
 		t.Fatalf("construct first detail: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 
 	second := firstSnapshot.NewDetailDiagramChange(nil, "Worker internals", worker.ID)
 	secondComposition := CandidateComposition{DetailDiagrams: []DetailDiagramChange{second}}
-	nested, err := manager.ConstructCandidate(context.Background(), firstSnapshot, nil, secondComposition)
+	nested, err := manager.prepareTestCandidate(context.Background(), firstSnapshot, nil, secondComposition)
 	if err != nil {
 		t.Fatalf("construct nested detail: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 		t.Fatalf("unrelated Diagram was removed from move destinations: %v", destinations)
 	}
 	rootID := nested.Snapshot().RootDiagramID()
-	if _, err := manager.ConstructCandidate(context.Background(), nested.Snapshot(), nil, CandidateComposition{HomeMoves: []ComponentHomeMove{
+	if _, err := manager.prepareTestCandidate(context.Background(), nested.Snapshot(), nil, CandidateComposition{HomeMoves: []ComponentHomeMove{
 		{ComponentID: anchor.ID, DiagramID: second.ID},
 		{ComponentID: worker.ID, DiagramID: rootID},
 	}}); err != nil {
@@ -664,7 +664,7 @@ func TestConstructCandidateComposesNestedDiagramsAndMovesAnchoredHome(t *testing
 		DetailDiagrams: []DetailDiagramChange{second},
 		HomeMoves:      []ComponentHomeMove{{ComponentID: worker.ID, DiagramID: rootID}},
 	}
-	moved, err := manager.ConstructCandidate(context.Background(), firstSnapshot, nil, movedComposition)
+	moved, err := manager.prepareTestCandidate(context.Background(), firstSnapshot, nil, movedComposition)
 	if err != nil {
 		var diagramErr *DiagramValidationError
 		errors.As(err, &diagramErr)
@@ -735,7 +735,7 @@ func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T)
 	} {
 		t.Run(title, func(t *testing.T) {
 			created := manager.NewComponentChange(base, nil, title, "New body\n")
-			candidate, err := manager.ConstructCandidate(context.Background(), base, []ComponentChange{
+			candidate, err := manager.prepareTestCandidate(context.Background(), base, []ComponentChange{
 				{ID: atxID, Path: "components/atx.md", Title: title, Description: "ATX body\n", TitleChanged: true},
 				{ID: setextID, Path: "components/setext.md", Title: title, Description: "Setext body\n", TitleChanged: true},
 				created,
@@ -763,12 +763,20 @@ func v2HomeDiagramTree(t *testing.T, storePath string, manifestBytes []byte, sou
 		t.Fatalf("parse v2 fixture manifest: %+v err=%v", parsed, err)
 	}
 	root := diagram{id: uuid.MustParse(parsed.RootDiagram), path: "diagrams/root.yaml", title: "Root"}
+	components := []component{}
 	for index, source := range sources {
 		component, err := parseComponent(fmt.Sprintf("components/%d.md", index), source)
 		if err != nil {
 			t.Fatalf("parse component fixture %d: %v", index, err)
 		}
 		root.appearances = append(root.appearances, diagramAppearance{component: component.id, role: "home"})
+		components = append(components, component)
+	}
+	if parsed.Version == 3 {
+		root.positions, err = allocatePositions(visibleComponents(root, components), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	contents, err := marshalDiagram(root)
 	if err != nil {
@@ -784,6 +792,23 @@ func rootHomes(base Snapshot, changes ...ComponentChange) CandidateComposition {
 		composition.NewComponentHomes[index] = NewComponentHome{ComponentID: change.ID, DiagramID: base.RootDiagramID()}
 	}
 	return composition
+}
+
+// Authoring fixtures use the production preparation path, then independently
+// replay only its materialized facts through the strict constructor.
+func (manager *Manager) prepareTestCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition CandidateComposition) (Candidate, error) {
+	candidate, err := manager.PrepareCandidate(ctx, base, changes, &composition)
+	if err != nil {
+		return Candidate{}, err
+	}
+	replay, err := manager.ConstructCandidate(ctx, base, changes, composition)
+	if err != nil {
+		return Candidate{}, err
+	}
+	if candidate.Tree() != replay.Tree() {
+		return Candidate{}, fmt.Errorf("authoring facts do not replay exactly")
+	}
+	return candidate, nil
 }
 
 type retainedComponent struct {

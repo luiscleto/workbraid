@@ -32,11 +32,13 @@ CLI global flags precede the command. `--help` and the embedded `--skill` descri
 
 ## Current work and contracts
 
+The human delegated planning, approval and implementation of Phase 3.3 routing, bounded Phase 3.4 shapes/notes, and the printable proposal page to root. After fresh independent review, root may approve exact proposal generations and their contract decisions, then orchestrate workers in separate workspaces (not extra panes). This supersedes earlier stop clauses and interim human gates within this scope. A final combined human visual gate is required before Phase 4; no Phase 4 work is authorized. See [current proposal discovery](docs/roadmap.md).
+
 Future plans live as proposal Markdown in the running WorkBraid self-project, not repository plan files. Use the public CLI/UI/MCP to inspect the catalog and proposal list before editing. Store: `7329b076-50c4-4ac2-b63d-cb5cdb2a87fa`. [Phase 3.2 — Readable node presentation](http://127.0.0.1:8080/projects/workbraid/proposals/bbc915b9-4e06-47c0-ad96-db5f8f166435) is proposal `bbc915b9-4e06-47c0-ad96-db5f8f166435`, generation 3, reviewed state `f5a44f18557d4070de57dad9fb7e185f2126ce61`. The human explicitly authorized execution after [approval review `883fe237-a0c2-43c2-9990-a1f46f63d0af`](http://127.0.0.1:8080/projects/workbraid/proposals/bbc915b9-4e06-47c0-ad96-db5f8f166435/reviews/883fe237-a0c2-43c2-9990-a1f46f63d0af). The Markdown-only plan remains active, not Applied.
 
-Phase 3.2 is **complete** at implementation `94161f19fe03a1f8fd30807c97636f7680352b55`: independent technical/canonical/history/restart checks passed, the human gave explicit visual PASS, and the authorized combined Position and size disclosure follow-up passed bounded review and built-browser smoke. The final owned-runtime restart preserved exact Accepted, proposals and feedback, including the human’s generation-11 sizing draft. No new gate or plan acceptance was required; Phase 3.3 has not started.
+Phase 3.2 is **complete** at implementation `94161f19fe03a1f8fd30807c97636f7680352b55`: independent technical/canonical/history/restart checks passed, the human gave explicit visual PASS, and the authorized combined Position and size disclosure follow-up passed bounded review and built-browser smoke. The final owned-runtime restart preserved exact Accepted, proposals and feedback, including the human’s generation-11 sizing draft. No new gate or plan acceptance was required.
 
-Human plan approval explicitly identifies the proposal UUID and generation/text in orchestration. It is distinct from Architecture Update and informational submitted review verdicts. Markdown-only planning does not require an invented Architecture diff or an acceptance action.
+Human or explicitly delegated root plan approval identifies the proposal UUID and generation/text in orchestration. It is distinct from Architecture Update and informational submitted review verdicts. Markdown-only planning does not require an invented Architecture diff or an acceptance action.
 
 Phase 3.1 stable placement is **complete**, with explicit human visual PASS on implementation `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. The human accepted WorkBraid’s self-Architecture at `06110ef95cec9e385d38c17831c38c5c51c6cfc3`; its seven Components, two Diagrams, complete visible coordinates and applied receipt reconstructed exactly after a full process restart. The built Accepted route passed without console errors. [Open WorkBraid locally](http://127.0.0.1:8080/projects/workbraid).
 
@@ -45,7 +47,7 @@ Phase 3.1 stable placement is **complete**, with explicit human visual PASS on i
 | [Architecture](docs/architecture-v0.md) | Domain, identity, portable v2 base, catalog, source fidelity and runtime authority |
 | [Proposals and Reviews](docs/architecture-proposals-v0.md) | Durable state, operational versions, exact Review/Update, immutable feedback and anchors |
 | [Reconciliation](docs/architecture-reconciliation-v0.md) | Detail reassignment, semantic choices, S/B/A/P, residual construction and exact Apply |
-| [Placement](docs/architecture-placement-amendment-v0.md) | Approved complete v3 positions, stable visible nodes, v2 transition and placement reconciliation |
+| [Placement](docs/architecture-placement-amendment-v0.md) | Stable visible-node positions and sizes, legacy transitions and geometry reconciliation |
 | [UI](docs/ui-v0.md) | Language, drafting-table direction, navigation and review interaction |
 | [Agent Access](docs/architecture-agent-access-v0.md) | Local CLI/MCP protocol, preconditions, discovery and recovery |
 | [Roadmap](docs/roadmap.md) | Proposal planning discovery and future boundaries; implementation requires approval |

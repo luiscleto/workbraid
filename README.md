@@ -32,7 +32,11 @@ CLI global flags precede the command. `--help` and the embedded `--skill` descri
 
 ## Current work and contracts
 
-Phase 3.1 stable placement is **complete**, with explicit human visual PASS on implementation `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. The human accepted WorkBraid’s self-Architecture at `06110ef95cec9e385d38c17831c38c5c51c6cfc3`; its seven Components, two Diagrams, complete visible coordinates and applied receipt reconstructed exactly after a full process restart. The built Accepted route passed without console errors. [Open WorkBraid locally](http://127.0.0.1:8080/projects/workbraid). Later scope is not started.
+Future plans live as proposal Markdown in the running WorkBraid self-project, not repository plan files. Use the public CLI/UI/MCP to inspect the catalog and proposal list before editing. Store: `7329b076-50c4-4ac2-b63d-cb5cdb2a87fa`. [Phase 3.2 — Readable node presentation](http://127.0.0.1:8080/projects/workbraid/proposals/bbc915b9-4e06-47c0-ad96-db5f8f166435) is proposal `bbc915b9-4e06-47c0-ad96-db5f8f166435`, draft generation 2; design/planning is authorized, implementation is not. Read the live proposal for alternatives and decisions rather than a duplicate repository plan.
+
+Human plan approval explicitly identifies the proposal UUID and generation/text in orchestration. It is distinct from Architecture Update and informational submitted review verdicts. Markdown-only planning does not require an invented Architecture diff or an acceptance action.
+
+Phase 3.1 stable placement is **complete**, with explicit human visual PASS on implementation `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. The human accepted WorkBraid’s self-Architecture at `06110ef95cec9e385d38c17831c38c5c51c6cfc3`; its seven Components, two Diagrams, complete visible coordinates and applied receipt reconstructed exactly after a full process restart. The built Accepted route passed without console errors. [Open WorkBraid locally](http://127.0.0.1:8080/projects/workbraid). Phase 3.2 is in design/planning only.
 
 | Document | Owns |
 | --- | --- |
@@ -42,6 +46,6 @@ Phase 3.1 stable placement is **complete**, with explicit human visual PASS on i
 | [Placement](docs/architecture-placement-amendment-v0.md) | Approved complete v3 positions, stable visible nodes, v2 transition and placement reconciliation |
 | [UI](docs/ui-v0.md) | Language, drafting-table direction, navigation and review interaction |
 | [Agent Access](docs/architecture-agent-access-v0.md) | Local CLI/MCP protocol, preconditions, discovery and recovery |
-| [Roadmap](docs/roadmap.md) | Future boundaries; no next increment is authorized |
+| [Roadmap](docs/roadmap.md) | Proposal planning discovery and future boundaries; implementation requires approval |
 
 [AGENTS.md](AGENTS.md) describes development coordination. Completed plans and superseded designs live in Git history, not a second documentation archive. Runtime evidence and historical test fixtures remain separate from this cleanup.

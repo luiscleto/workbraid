@@ -6,7 +6,7 @@ The human delegated planning, approval and implementation of Phase 3.3 routing, 
 
 Plans live only in named WorkBraid proposals in store `7329b076-50c4-4ac2-b63d-cb5cdb2a87fa`. Inspect exact IDs/generations before edits; never rely on shared selection. Markdown-only plans remain active, not Applied. Informational verdicts alone grant no permission; explicit human/delegated-root approval is distinct from Architecture Update.
 
-- **3.3 — [Deliberate link routing](http://127.0.0.1:8080/projects/workbraid/proposals/d119baeb-1b2b-4451-8113-7f4fe05678ec)** (`d119baeb-1b2b-4451-8113-7f4fe05678ec`), generation 6 submitted for fresh review.
+- **3.3 — [Deliberate link routing](http://127.0.0.1:8080/projects/workbraid/proposals/d119baeb-1b2b-4451-8113-7f4fe05678ec)** (`d119baeb-1b2b-4451-8113-7f4fe05678ec`), generation 6, state `34820296f5af54ec7acddd5d9b2c8fc8fa7a4af8`: explicitly approved by root after fresh [approval review](http://127.0.0.1:8080/projects/workbraid/proposals/d119baeb-1b2b-4451-8113-7f4fe05678ec/reviews/051beb4e-4345-4576-a3c0-4bbc48228c88). Frozen implementation plan; the isolated executor owns normative contract amendments.
 - **3.4 — [Simple shapes and diagram notes](http://127.0.0.1:8080/projects/workbraid/proposals/3cf11d4b-c980-4022-92d2-f98d75bf36a4)** (`3cf11d4b-c980-4022-92d2-f98d75bf36a4`), generation 1 draft.
 - **Post-Phase 3 — [Printable proposal page](http://127.0.0.1:8080/projects/workbraid/proposals/6673c0da-c906-4c5a-bf62-bdd74a6ddfdf)** (`6673c0da-c906-4c5a-bf62-bdd74a6ddfdf`), draft under review.
 

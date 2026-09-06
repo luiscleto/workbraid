@@ -166,6 +166,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 	}
 	for _, l := range initial {
 		contestedAnchors := append([]string{}, l.ComponentIDs...)
+		involvedDiagrams := append([]string{}, l.DiagramIDs...)
 		// A submitted destination may expand the group to a previously occupied
 		// child. The expanded locator must be supplied explicitly on Check.
 		selected, found := c.resolutions[locatorKey(l)]
@@ -174,7 +175,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 				if r.Locator.Kind != "composition" || r.Locator.Reason != l.Reason || r.Value == nil {
 					continue
 				}
-				expanded := c.expandComposition(l, *r.Value)
+				expanded := c.expandComposition(l, c.compositionAssignments(l, r))
 				if locatorKey(expanded) == locatorKey(r.Locator) {
 					selected, found = r, true
 					l = expanded
@@ -190,7 +191,8 @@ func (c *reconciliationCalculation) resolveComposition() {
 			c.invalid("composition requires explicit assignments")
 			return
 		}
-		expanded := c.expandComposition(l, *selected.Value)
+		value := c.compositionAssignments(l, selected)
+		expanded := c.expandComposition(l, value)
 		if locatorKey(expanded) != locatorKey(l) {
 			c.result.Conflicts = append(c.result.Conflicts, c.compositionConflict(expanded, false))
 			continue
@@ -217,7 +219,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 			return true
 		}
 		seen := map[string]bool{}
-		for _, home := range selected.Value.Homes {
+		for _, home := range value.Homes {
 			key := "home:" + home.ComponentID
 			if seen[key] || !hasID(l.ComponentIDs, home.ComponentID) || !canonicalUUID(home.DiagramID) {
 				c.invalid("unrelated or duplicate home assignment")
@@ -228,7 +230,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 				c.final.homes[home.ComponentID] = home.DiagramID
 			}
 		}
-		for _, anchor := range selected.Value.DetailAnchors {
+		for _, anchor := range value.DetailAnchors {
 			key := "anchor:" + anchor.DiagramID
 			if seen[key] || !hasID(l.DiagramIDs, anchor.DiagramID) || !canonicalUUID(anchor.AnchorComponentID) {
 				c.invalid("unrelated or duplicate child assignment")
@@ -247,7 +249,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 				c.final.anchors[anchor.DiagramID] = anchor.AnchorComponentID
 			}
 		}
-		for _, ref := range selected.Value.References {
+		for _, ref := range value.References {
 			locator := ReconciliationLocator{Kind: "reference", DiagramID: ref.DiagramID, ComponentID: ref.ComponentID}
 			key := locatorKey(locator)
 			if seen[key] || !hasID(l.ComponentIDs, ref.ComponentID) || !hasID(l.DiagramIDs, ref.DiagramID) {
@@ -271,7 +273,7 @@ func (c *reconciliationCalculation) resolveComposition() {
 				}
 			}
 		}
-		for _, rel := range selected.Value.RelationshipCounts {
+		for _, rel := range value.RelationshipCounts {
 			locator := ReconciliationLocator{Kind: "relationship_count", SourceID: rel.SourceID, TargetID: rel.TargetID, Label: rel.Label}
 			key := locatorKey(locator)
 			fact := reconciliationRelationship{rel.SourceID, rel.TargetID, rel.Label}
@@ -295,6 +297,41 @@ func (c *reconciliationCalculation) resolveComposition() {
 					complete = false
 				}
 			}
+		} else if selected.Choice != "manual" {
+			// Facts without an applicable value on the chosen side must be
+			// completed explicitly, even if other assignments broke the cycle.
+			for _, id := range l.ComponentIDs {
+				if c.final.homes[id] != "" && !seen["home:"+id] {
+					complete = false
+				}
+			}
+			for _, id := range l.DiagramIDs {
+				if c.final.anchors[id] != "" && !seen["anchor:"+id] {
+					complete = false
+				}
+			}
+			for ref := range c.final.references {
+				if hasID(l.ComponentIDs, ref.component) && hasID(l.DiagramIDs, ref.diagram) && !seen[locatorKey(ReconciliationLocator{Kind: "reference", DiagramID: ref.diagram, ComponentID: ref.component})] {
+					complete = false
+				}
+			}
+			for rel := range c.final.relationships {
+				if hasID(l.ComponentIDs, rel.source) && hasID(l.ComponentIDs, rel.target) && !seen[locatorKey(ReconciliationLocator{Kind: "relationship_count", SourceID: rel.source, TargetID: rel.target, Label: rel.label})] {
+					complete = false
+				}
+			}
+		}
+		for _, child := range l.DiagramIDs {
+			if hasID(involvedDiagrams, child) {
+				continue
+			}
+			explicit := false
+			for _, anchor := range selected.Value.DetailAnchors {
+				explicit = explicit || anchor.DiagramID == child
+			}
+			if !explicit {
+				complete = false
+			}
 		}
 		c.result.Conflicts = append(c.result.Conflicts, c.compositionConflict(l, complete && c.err == nil))
 	}
@@ -311,6 +348,79 @@ func (c *reconciliationCalculation) resolveComposition() {
 			c.result.Conflicts = append(c.result.Conflicts, c.compositionConflict(l, false))
 		}
 	}
+}
+
+// A structural side choice retains all applicable facts in this group, even
+// when its explicit value only completes a subset. Missing identities still
+// need explicit dependent assignments; they are not a request to drop facts.
+// Competing children have their separate complete, explicit assignment rule.
+func (c *reconciliationCalculation) compositionAssignments(l ReconciliationLocator, r ReconciliationResolution) ReconciliationValue {
+	if l.Reason == "competing_children" || (r.Choice != "accepted" && r.Choice != "proposed") {
+		return *r.Value
+	}
+	side := c.a
+	if r.Choice == "proposed" {
+		side = c.p
+	}
+	applicable := side.compositionSide(l).ReconciliationValue
+	// A known tuple with two present endpoints also has an applicable zero
+	// count on a side without that Relationship. An absent endpoint instead
+	// requires an explicit dependent choice, preserving lifecycle semantics.
+	relationships := map[reconciliationRelationship]bool{}
+	for _, facts := range []reconciliationFacts{c.b, c.a, c.p} {
+		for rel := range facts.relationships {
+			_, sourceOK := side.components[rel.source]
+			_, targetOK := side.components[rel.target]
+			if sourceOK && targetOK && hasID(l.ComponentIDs, rel.source) && hasID(l.ComponentIDs, rel.target) {
+				relationships[rel] = true
+			}
+		}
+	}
+	applicable.RelationshipCounts = nil
+	for _, rel := range sortedRelationships(relationships) {
+		applicable.RelationshipCounts = append(applicable.RelationshipCounts, ReconciliationRelationshipCount{rel.source, rel.target, rel.label, side.relationships[rel]})
+	}
+	value := ReconciliationValue{
+		Homes:              append([]NewComponentHome{}, r.Value.Homes...),
+		DetailAnchors:      append([]DetailReassignment{}, r.Value.DetailAnchors...),
+		References:         append([]ReferenceAppearanceChange{}, r.Value.References...),
+		RelationshipCounts: append([]ReconciliationRelationshipCount{}, r.Value.RelationshipCounts...),
+	}
+	homes, anchors := map[string]bool{}, map[string]bool{}
+	refs, counts := map[reconciliationPair]bool{}, map[reconciliationRelationship]bool{}
+	for _, home := range value.Homes {
+		homes[home.ComponentID] = true
+	}
+	for _, anchor := range value.DetailAnchors {
+		anchors[anchor.DiagramID] = true
+	}
+	for _, ref := range value.References {
+		refs[reconciliationPair{ref.DiagramID, ref.ComponentID}] = true
+	}
+	for _, count := range value.RelationshipCounts {
+		counts[reconciliationRelationship{count.SourceID, count.TargetID, count.Label}] = true
+	}
+	for _, home := range applicable.Homes {
+		if !homes[home.ComponentID] {
+			value.Homes = append(value.Homes, home)
+		}
+	}
+	for _, anchor := range applicable.DetailAnchors {
+		if !anchors[anchor.DiagramID] {
+			value.DetailAnchors = append(value.DetailAnchors, anchor)
+		}
+	}
+	for _, ref := range applicable.References {
+		if !refs[reconciliationPair{ref.DiagramID, ref.ComponentID}] {
+			value.References = append(value.References, ref)
+		}
+	}
+	for _, count := range applicable.RelationshipCounts {
+		if !counts[reconciliationRelationship{count.SourceID, count.TargetID, count.Label}] {
+			value.RelationshipCounts = append(value.RelationshipCounts, count)
+		}
+	}
+	return value
 }
 
 func (f reconciliationFacts) factSide(l ReconciliationLocator) ReconciliationSide {

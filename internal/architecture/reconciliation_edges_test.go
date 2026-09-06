@@ -138,6 +138,10 @@ func TestReconciliationExternalComponentAbsenceRequiresDependentChoice(t *testin
 	if err != nil || partial.Status != "needs_resolution" {
 		t.Fatalf("dependent work silently dropped: %+v %v", partial, err)
 	}
+	partial, err = m.Reconcile(t.Context(), b, a, p, []ReconciliationResolution{choice, {Locator: dependent, Choice: "accepted", Value: &ReconciliationValue{}}})
+	if err != nil || partial.Status != "needs_resolution" || partial.Candidate != nil {
+		t.Fatalf("sparse side choice silently dropped dependent work: %+v %v", partial, err)
+	}
 	resolved, err := m.Reconcile(t.Context(), b, a, p, []ReconciliationResolution{choice, {Locator: dependent, Choice: "accepted", Value: &ReconciliationValue{RelationshipCounts: []ReconciliationRelationshipCount{{ids.worker, ids.ledger, "new dependency", 0}}}}})
 	if err != nil || resolved.Status != "ready" {
 		t.Fatalf("supported absence: %+v %v", resolved, err)

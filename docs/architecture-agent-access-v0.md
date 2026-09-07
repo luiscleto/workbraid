@@ -2,6 +2,14 @@
 
 Status: Approved living contract
 
+## Retained comparison reads
+
+The approved [version comparison](architecture-proposals-v0.md#read-only-version-comparisons) adds agent-v2 POST `/architecture/versions` and `/architecture/compare`, CLI `architecture versions` / `architecture compare`, and MCP `architecture_versions` / `architecture_compare`. These reads address an explicit store and use the same backend resolver without requiring or changing the process current project, preparing Review, capturing state or writing refs.
+
+Versions input is `store_id`, `source: accepted|proposal|applied|review_proposals|submitted_review`, optional `limit` (default 25, max 50 records), and returned `cursor`. `submitted_review` requires `change_set_id`; other sources reject it. `review_proposals` returns paged names/IDs derived from validated immutable review parents, including discarded proposals; subsequent review pages are scoped to the chosen ID. Other pages return exact selectors/provenance, unavailable entries and `next_cursor` when more exist. Continuations are bounded, closed, store/source/proposal/tip-bound read parameters, not retained authorities. Deadlines or malformed entries never imply false end-of-history. Moved Accepted invalidates continuation; reload choices while preserving explicit selections until replaced.
+
+Compare takes `store_id`, closed `before` and `after` selectors as defined in Proposals. CLI uses `--before-kind` / `--after-kind` and the corresponding `--before-revision`, or `--before-change-set-id --before-state --before-side`, adding `--before-review-id` for submitted reviews; After uses the matching prefix. MCP exposes closed alternatives. Results return `before`, `after`, `changes`, exact `diff`, `before_version`, `after_version` (exact selector, source context, revision/tree, relevant generation/document provenance), and absolute client `report_url`. No top-level Review/Update binding is created. `version_moved` requires choosing the exact moved source again; `version_unavailable` requires inspecting available choices, without repair/raw-object fallback. Existing protocol and mutation preconditions are unchanged.
+
 ## Printable URL discovery
 
 The approved [printable bound proposal](architecture-proposals-v0.md#printable-bound-proposals) adds `printable_url` compatibly to prepared Review and submitted-review inspection results, and to bound active/applied proposal inspection. Active URLs carry exact `reviewed_state` S; applied URLs carry exact `applied_state` T; historical URLs carry the immutable submitted review UUID. Opening/printing is read-only, requires the existing binding, and never prepares Review or accepts Architecture. Old active URLs fail after state movement; historical access is only through retained submissions, not arbitrary Git lookup. CLI help, embedded skill and MCP descriptions explain discovery without adding a print mutation/tool or changing agent-v2.

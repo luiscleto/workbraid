@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"workbraid/internal/agentapi"
+	"workbraid/internal/architecture"
 	"workbraid/internal/web"
 )
 
@@ -175,6 +176,32 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 	}
 
 	switch operation {
+	case "architecture_versions":
+		var input architecture.VersionPageRequest
+		flags.StringVar(&input.StoreID, "store-id", "", "exact store UUID")
+		flags.StringVar(&input.Source, "source", "", "accepted, proposal, applied, submitted_review")
+		flags.StringVar(&input.ChangeSetID, "change-set-id", "", "optional submitted-review proposal UUID")
+		flags.StringVar(&input.Cursor, "cursor", "", "returned next cursor")
+		flags.IntVar(&input.Limit, "limit", 0, "page size, 1 through 50; default 25")
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || !requireCLI(input.StoreID, input.Source) {
+			return invalid("Architecture versions requires --store-id and --source.")
+		}
+		return operation, input, nil
+	case "architecture_compare":
+		var input agentapi.ArchitectureCompareRequest
+		flags.StringVar(&input.StoreID, "store-id", "", "exact store UUID")
+		for prefix, side := range map[string]*architecture.VersionSelector{"before": &input.Before, "after": &input.After} {
+			flags.StringVar(&side.Kind, prefix+"-kind", "", "accepted, proposal, applied, submitted_review")
+			flags.StringVar(&side.Revision, prefix+"-revision", "", "exact Accepted history commit")
+			flags.StringVar(&side.ChangeSetID, prefix+"-change-set-id", "", "exact proposal UUID")
+			flags.StringVar(&side.State, prefix+"-state", "", "exact retained state commit")
+			flags.StringVar(&side.ReviewID, prefix+"-review-id", "", "exact submitted review UUID")
+			flags.StringVar(&side.Side, prefix+"-side", "", "base or candidate")
+		}
+		if flags.Parse(actionArgs) != nil || flags.NArg() != 0 || input.StoreID == "" || input.Before.Validate() != nil || input.After.Validate() != nil {
+			return invalid("Architecture compare requires --store-id and complete exact --before-* and --after-* selectors from architecture versions.")
+		}
+		return operation, input, nil
 	case "project_create":
 		var name trackedString
 		flags.Var(&name, "name", "project name")
@@ -788,6 +815,13 @@ Connect, choose a project, and inspect:
   project open --slug <slug>
   project close --store-id <uuid>
   architecture inspect
+  architecture versions --store-id <uuid> --source <accepted|proposal|applied|review_proposals|submitted_review> [--change-set-id <uuid>] [--limit <1..50>] [--cursor <returned>]
+  architecture compare --store-id <uuid> --before-kind <kind> --after-kind <kind> <exact side flags>
+    Accepted side flags: --before-revision <commit> (and matching --after-*).
+    Proposal/applied side flags: --before-change-set-id <uuid> --before-state <state> --before-side <base|candidate>.
+    submitted_review adds --before-review-id <uuid>. Copy complete selectors from versions.
+    review_proposals discovers retained review-owned proposal IDs; submitted_review requires --change-set-id.
+    These reads return report_url without preparing Review, writing refs, or selecting a project.
   architecture refresh --store-id <uuid> --accepted-revision <sha>
 
 Durable change sets:

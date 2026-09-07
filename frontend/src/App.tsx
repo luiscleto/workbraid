@@ -310,6 +310,7 @@ type DiagramEditor =
 type WorkspaceTask = 'documentation' | 'changes' | 'empty'
 
 type NavigationIntent =
+  | { kind: 'compare-versions' }
   | { kind: 'reconcile' }
   | { kind: 'component'; id: string }
   | { kind: 'diagram'; id: string; focusComponentID?: string }
@@ -1587,6 +1588,13 @@ export function App() {
       intent.apply()
       return
     }
+    if (intent.kind === 'compare-versions') {
+      if (state.kind === 'ready') {
+        editorDirtyRef.current = false
+        window.location.assign(`/projects/${encodeURIComponent(state.value.project_slug)}/compare`)
+      }
+      return
+    }
     if (intent.kind === 'reconcile') {
       if (state.kind !== 'ready' || !state.value.changes) return
       const changes = state.value.changes
@@ -2243,6 +2251,7 @@ export function App() {
             <p className="workspace-context"><strong>{result.project_name}</strong><span>Architecture</span></p>
           </div>
           <div className="frame-actions">
+            <button className="text-action" type="button" disabled={architectureBusy || acceptanceUnknown} onClick={() => requestNavigation({ kind: 'compare-versions' })}>Compare versions</button>
             {result.submitted_review
               ? <span className="submitted-review-context">Submitted review</span>
               : <ShowingMenu changeSets={result.change_sets} selectedID={selectedContextID} onSelect={(id) => requestNavigation({ kind: 'context', id })} />}

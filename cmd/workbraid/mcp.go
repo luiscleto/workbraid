@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"workbraid/internal/agentapi"
+	"workbraid/internal/architecture"
 )
 
 type noToolInput struct{}
@@ -41,6 +42,34 @@ func boolPointer(value bool) *bool { return &value }
 
 func readAnnotations(title string) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: boolPointer(false), DestructiveHint: boolPointer(false)}
+}
+
+func comparisonInputSchema() *jsonschema.Schema {
+	str := func() *jsonschema.Schema { return &jsonschema.Schema{Type: "string"} }
+	side := func() *jsonschema.Schema {
+		variants := []*jsonschema.Schema{}
+		for _, kind := range []string{"accepted", "proposal", "applied", "submitted_review"} {
+			properties := map[string]*jsonschema.Schema{"kind": {Type: "string", Enum: []any{kind}}}
+			required := []string{"kind"}
+			fields := []string{"revision"}
+			if kind != "accepted" {
+				fields = []string{"change_set_id", "state", "side"}
+			}
+			if kind == "submitted_review" {
+				fields = append(fields, "review_id")
+			}
+			for _, field := range fields {
+				properties[field] = str()
+				required = append(required, field)
+			}
+			if kind != "accepted" {
+				properties["side"].Enum = []any{"base", "candidate"}
+			}
+			variants = append(variants, &jsonschema.Schema{Type: "object", Properties: properties, Required: required, AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}}})
+		}
+		return &jsonschema.Schema{OneOf: variants}
+	}
+	return &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"store_id": str(), "before": side(), "after": side()}, Required: []string{"store_id", "before", "after"}, AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}}}
 }
 
 func placementInputSchema() *jsonschema.Schema {
@@ -165,6 +194,8 @@ func reviewSubmissionInputSchema() *jsonschema.Schema {
 }
 
 func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
+	addMCPTool[architecture.VersionPageRequest](server, client, "architecture_versions", "List retained Architecture versions", "Read one bounded page in an explicit store without changing the current project. source is accepted, proposal, applied, review_proposals or submitted_review; limit defaults to 25, maximum 50 records. review_proposals discovers review-owned proposal IDs/names including discarded proposals. submitted_review requires change_set_id and reads only that proposal. Copy exact selectors and next_cursor; never invent a Git object. Unavailable entries are not selectable.", readAnnotations("List retained Architecture versions"))
+	addMCPToolWithSchema[agentapi.ArchitectureCompareRequest](server, client, "architecture_compare", "Compare retained Architecture versions", "Read two exact retained versions from architecture_versions, without preparing Review, capturing state, writing refs or selecting a project. Returns before/after snapshots, changes, exact diff, side-owned document context and report_url. Active selectors expire on state movement. This result is not an acceptance binding.", readAnnotations("Compare retained Architecture versions"), comparisonInputSchema())
 	shapeSchema, _ := jsonschema.For[agentapi.DiagramSetShapeRequest](nil)
 	shapeSchema.Properties["shape"].Enum = []any{"rectangle", "ellipse", "diamond"}
 	addNoteSchema, _ := jsonschema.For[agentapi.DiagramAddNoteRequest](nil)

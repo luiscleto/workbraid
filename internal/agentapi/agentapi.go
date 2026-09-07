@@ -21,6 +21,12 @@ import (
 
 const Protocol = "workbraid-agent-v2"
 
+type ArchitectureCompareRequest struct {
+	StoreID string                       `json:"store_id"`
+	Before  architecture.VersionSelector `json:"before"`
+	After   architecture.VersionSelector `json:"after"`
+}
+
 type ProjectContext struct {
 	StoreID string `json:"store_id"`
 	Name    string `json:"name"`
@@ -324,6 +330,8 @@ var operationPaths = map[string]string{
 	"project_open":                   "/api/agent/v2/projects/open",
 	"project_close":                  "/api/agent/v2/projects/close",
 	"architecture_inspect":           "/api/agent/v2/architecture/inspect",
+	"architecture_versions":          "/api/agent/v2/architecture/versions",
+	"architecture_compare":           "/api/agent/v2/architecture/compare",
 	"architecture_refresh":           "/api/agent/v2/architecture/refresh",
 	"architecture_update":            "/api/agent/v2/architecture/update",
 	"change_sets_list":               "/api/agent/v2/change-sets/list",
@@ -412,6 +420,9 @@ func (client *Client) Call(ctx context.Context, operation string, input any) Env
 		if resultOK {
 			if path, ok := result["printable_url"].(string); ok && strings.HasPrefix(path, "/projects/") {
 				result["printable_url"] = client.baseURL + path
+			}
+			if path, ok := result["report_url"].(string); ok && strings.HasPrefix(path, "/projects/") {
+				result["report_url"] = client.baseURL + path
 			}
 			changeSetID, reviewID := "", ""
 			switch request := input.(type) {

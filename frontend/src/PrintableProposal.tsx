@@ -115,7 +115,7 @@ function DiagramFacts({diagram:d,review:r,includePresentation}:{diagram:Affected
  </section>
 }
 
-function DiagramDrawings({diagram:d,review:r,includePresentation,onReady}:{diagram:AffectedDiagram;review:ChangeReview;includePresentation:boolean;onReady:(id:string,ok:boolean)=>void}) {
+function DiagramDrawings({diagram:d,review:r,includePresentation,onReady,comparison=false}:{diagram:AffectedDiagram;review:ChangeReview;includePresentation:boolean;onReady:(id:string,ok:boolean)=>void;comparison?:boolean}) {
  const [images,setImages]=useState<string[]>(),[error,setError]=useState(''),[warnings,setWarnings]=useState<string[]>([])
  useEffect(()=>{
   let cancelled=false
@@ -127,7 +127,7 @@ function DiagramDrawings({diagram:d,review:r,includePresentation,onReady}:{diagr
   printDiagramImages(mapComponentsForDiagram(r.before,d.before),mapComponentsForDiagram(r.with_changes,d.with),{reviewSide:d.with?'with':'before',reviewDiagramID:d.id,reviewComponents:components,reviewPositionIDs:[...changedIDs],reviewRouteKeys:includePresentation?routeKeys:[],reviewRelationships:c.relationships}).then(({images,warnings})=>{if(!cancelled){setImages(images);setWarnings(warnings);onReady(d.id,true)}}).catch(e=>{if(!cancelled){setError(e instanceof Error?e.message:'The drawing failed.');onReady(d.id,false)}})
   return()=>{cancelled=true}
  },[r,d.id,includePresentation])
- const diagram=d.with??d.before!,side=d.with?'With changes':'Removed Diagram · Before only'
+ const diagram=d.with??d.before!,side=d.with?(comparison?'After':'With changes'):'Removed Diagram · Before only'
  return <section className="print-diagram" aria-label={`${d.with?.title??d.before?.title} drawings`}>
  {warnings.map(w=><p role="status" key={w}>{w}</p>)}
  {error?<p role="alert">Diagram could not be rendered. {error} Printing is unavailable; the exact changes remain below.</p>:<figure className="print-drawing">
@@ -136,6 +136,17 @@ function DiagramDrawings({diagram:d,review:r,includePresentation,onReady}:{diagr
    {images?<img src={images[0]} alt={`${side}: ${diagram.title}`}/>:<p>Preparing drawing…</p>}
   </figure>}
  </section>
+}
+
+export function ReportBody({review:r,includePresentation,includeDiff,onReady,comparison=false}:{review:ChangeReview;includePresentation:boolean;includeDiff:boolean;onReady:(id:string,ok:boolean)=>void;comparison?:boolean}) {
+ const diagrams=affectedDiagrams(r,includePresentation)
+ if(r.diff==='')return <p>{comparison?'No Architecture differences between these versions.':'No Architecture changes; this proposal contains only proposal text.'}</p>
+ return <>
+ <p className="print-scope">{includePresentation?'Content and presentation changes included.':'Presentation-only changes excluded.'} {comparison?'Use Include complete raw diff to inspect every source difference.':`Complete exact diff is available in normal Review${includeDiff?' and the appendix below.':'; use Include complete raw diff to print it.'}`}</p>
+ <h2 className={diagrams.length?'print-diagrams-heading':''}>Affected Diagrams</h2>{diagrams.length===0?<p>{includePresentation?'No affected Diagrams. Other Architecture changes remain in the complete exact diff.':'No content changes in Diagrams. Presentation-only or other Architecture changes are excluded from this view.'}</p>:diagrams.map(d=><DiagramDrawings key={`${d.id}:${includePresentation}`} diagram={d} review={r} includePresentation={includePresentation} onReady={onReady} comparison={comparison}/>)}
+ {diagrams.length>0&&<section className="print-changes"><h2>Changes by Diagram</h2>{diagrams.map(d=><DiagramFacts key={d.id} diagram={d} review={r} includePresentation={includePresentation}/>)}</section>}
+ {includeDiff&&<section className="print-appendix"><h2>Technical appendix · complete canonical diff</h2><RawDiff diff={r.diff}/></section>}
+ </>
 }
 
 export function PrintableProposal() {
@@ -173,11 +184,7 @@ export function PrintableProposal() {
  {error?<h1 role="alert">{error}</h1>:!value?<p>Loading exact proposal…</p>:<>
  <header className="print-header"><p>{value.project_name} · {value.review_id?'Submitted review':value.lifecycle==='applied'?'Applied proposal':'Active proposal'} · generation {value.review.generation}</p><p>{value.name}</p></header>
  <section className="print-design" aria-label="Proposal design"><MarkdownBody source={value.proposal_markdown}/></section>
- {value.review.diff===''?<p>No Architecture changes; this proposal contains only proposal text.</p>:<>
- <p className="print-scope">{includePresentation?'Content and presentation changes included.':'Presentation-only changes excluded.'} Complete exact diff is available in normal Review{includeDiff?' and the appendix below.':'; use Include complete raw diff to print it.'}</p>
- <h2 className={diagrams.length?'print-diagrams-heading':''}>Affected Diagrams</h2>{diagrams.length===0?<p>{includePresentation?'No affected Diagrams. Other Architecture changes remain in the complete exact diff.':'No content changes in Diagrams. Presentation-only or other Architecture changes are excluded from this view.'}</p>:diagrams.map(d=><DiagramDrawings key={`${d.id}:${includePresentation}`} diagram={d} review={value.review} includePresentation={includePresentation} onReady={(id,ok)=>setReady(old=>({...old,[id]:ok}))}/>)}
- {diagrams.length>0&&<section className="print-changes"><h2>Changes by Diagram</h2>{diagrams.map(d=><DiagramFacts key={d.id} diagram={d} review={value.review} includePresentation={includePresentation}/>)}</section>}
- {includeDiff&&<section className="print-appendix"><h2>Technical appendix · complete canonical diff</h2><RawDiff diff={value.review.diff}/></section>}</>}
+ <ReportBody review={value.review} includePresentation={includePresentation} includeDiff={includeDiff} onReady={(id,ok)=>setReady(old=>({...old,[id]:ok}))}/>
  <footer className="print-binding"><h2>Exact version</h2><p>Before base: {value.review.base_revision}<br/>With candidate: {value.review.candidate_tree}<br/>{value.review_id?'Immutable reviewed state':value.lifecycle==='applied'?'Applied receipt state':'Reviewed state'}: {value.state}{value.applied_revision&&<><br/>Applied revision: {value.applied_revision}</>}</p><p>Current Accepted observed separately: {value.accepted_revision}. {value.accepted_revision!==value.review.base_revision?'It differs from this document’s Before base.':''} Current proposal: {value.lifecycle==='no_longer_active'?'no longer active':value.lifecycle}.</p></footer>
  {!allReady&&diagrams.length>0&&<p className="print-pending" role="status">Printing is unavailable until every drawing is ready.</p>}
  </>}

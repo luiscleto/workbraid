@@ -97,6 +97,8 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/projects/open", h.agentProjectOpen)
 	mux.HandleFunc("POST /api/agent/v2/projects/close", h.agentProjectClose)
 	mux.HandleFunc("GET /api/agent/v2/architecture/inspect", h.agentArchitectureInspect)
+	mux.HandleFunc("POST /api/agent/v2/architecture/versions", h.agentArchitectureVersions)
+	mux.HandleFunc("POST /api/agent/v2/architecture/compare", h.agentArchitectureCompare)
 	mux.HandleFunc("POST /api/agent/v2/architecture/refresh", h.agentArchitectureRefresh)
 	mux.HandleFunc("POST /api/agent/v2/architecture/update", h.agentArchitectureUpdate)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/list", h.agentChangeSetsList)

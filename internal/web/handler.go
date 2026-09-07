@@ -161,6 +161,7 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/change-sets/proposal", handler.editChangeSetProposal)
 	mux.HandleFunc("POST /api/architecture/review", handler.reviewChanges)
 	mux.HandleFunc("POST /api/architecture/review-submissions/inspect", handler.inspectReviewSubmission)
+	mux.HandleFunc("GET /api/architecture/print", handler.printProposal)
 	mux.HandleFunc("POST /api/architecture/review-submissions/submit", handler.submitReviewSubmission)
 	mux.HandleFunc("POST /api/architecture/accept", handler.acceptChanges)
 	mux.HandleFunc("POST /api/architecture/discard", handler.discardChanges)
@@ -478,6 +479,7 @@ type diagramAuthoringComponentFact struct {
 }
 
 type reviewResponse struct {
+	PrintableURL  string                     `json:"printable_url,omitempty"`
 	ChangeSetID   string                     `json:"change_set_id"`
 	ReviewedState string                     `json:"reviewed_state"`
 	Diff          string                     `json:"diff"`
@@ -577,6 +579,7 @@ func responseForSnapshot(snapshot architecture.Snapshot, pending *pendingChangeS
 				reviewedState = pending.refObject
 			}
 			result.Changes.Review = &reviewResponse{
+				PrintableURL:  printablePath(snapshot.ProjectSlug(), pending.id, pending.lifecycle, pending.refObject),
 				ChangeSetID:   pending.id,
 				ReviewedState: reviewedState,
 				Diff:          pending.review.diff, BaseRevision: pending.review.baseRevision,

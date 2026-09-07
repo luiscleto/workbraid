@@ -847,5 +847,8 @@ identity. Each change set has its own generation. Inspect after conflicts. Revie
 the only ID/base/tree/generation binding accepted by Update and a review_url to give the
 reviewer. Review submissions are immutable informational feedback and never accept
 Architecture. Run workbraid --skill for typed recovery, out-of-date rules, and a complete
-JSON workflow.
+JSON workflow. Bound Review and proposal inspect return printable_url for explicit
+browser Print / Save as PDF without preparing Review. Active links require exact S;
+applied links require exact applied T. Submitted-review printable_url follows its
+immutable parent after iteration/application/discard; old active links fail.
 `

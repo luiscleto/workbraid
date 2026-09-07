@@ -1,0 +1,23 @@
+.print-document{max-width:1150px;margin:0 auto;padding:32px 48px;background:#fff;color:#27251f;min-height:100vh;font:16px/1.55 'IBM Plex Sans',sans-serif}
+.print-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;gap:20px}
+.print-header{border-bottom:1px solid #b6afa1;margin-bottom:24px;padding-bottom:12px;font-size:14px}
+.print-header p{margin:3px 0}.print-document h1,.print-document h2,.print-document h3,.print-document h4{font-family:'Newsreader Variable',serif;line-height:1.2}
+.print-document h1{font-size:36px}.print-document h2{font-size:28px;margin:32px 0 18px}.print-document h3{font-size:24px}.print-document h4{font-size:20px}
+.print-design{margin-bottom:32px}.print-document pre,.print-document .raw-diff{white-space:pre-wrap;overflow-wrap:anywhere;height:auto;min-height:0;max-height:none;overflow:visible;flex:none;font:12px/1.5 'IBM Plex Mono',monospace}
+.print-document .markdown-table-scroll{overflow:visible}.print-document table{table-layout:fixed;width:100%}.print-document td,.print-document th{overflow-wrap:anywhere}
+.print-document .markdown-body{max-width:none}.print-document p,.print-document li{overflow-wrap:anywhere;white-space:pre-wrap}
+.print-drawing{margin:24px 0}.print-drawing img{display:block;width:100%;height:auto;aspect-ratio:1400/820;object-fit:contain}
+.print-drawing h3{margin-bottom:8px}.print-key{font-size:12px;color:#5e594f}.print-facts{border-top:1px solid #b6afa1;padding:12px 0}.print-facts li{margin-bottom:8px}
+.print-source-diff pre{border:1px solid #d5cebf;padding:12px}.print-binding{font-size:12px;border-top:1px solid #b6afa1;margin-top:32px}.print-binding p{overflow-wrap:anywhere}
+.source-added{background:#b8dfc9;color:#153f2a;font-weight:600}.source-removed{background:#ecc1b8;color:#692d22;text-decoration:line-through}.source-context{background:transparent}
+@page{size:A4 landscape;margin:12mm}
+@media print{
+ html,body,#root{height:auto!important;min-height:0!important;overflow:visible!important;background:white!important}
+ .print-document{max-width:none;padding:0;margin:0;font-size:11pt;min-height:0}.print-actions{display:none}
+ .print-document h1{font-size:26pt}.print-document h2{font-size:20pt}.print-document h3{font-size:16pt}.print-document h4{font-size:13pt}
+ .print-document h2,.print-document h3,.print-document h4{break-after:avoid}
+ .print-diagrams-heading{display:none}
+ .print-document pre,.print-document .raw-diff{font-size:8pt;break-inside:auto}.print-document .diff-line{break-inside:avoid}
+ .print-drawing{break-before:page;break-inside:avoid;margin:0}.print-drawing img{width:100%;max-height:151mm;object-fit:contain}.print-key{font-size:8pt}
+ .print-changes,.print-appendix{break-before:page}.print-facts{break-inside:auto}.print-document *{print-color-adjust:exact;-webkit-print-color-adjust:exact}
+}

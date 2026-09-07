@@ -164,7 +164,14 @@ func TestRepeatedReviewKeepsExactStateAndSubmissionNeedsNoAcceptedObservation(t 
 		t.Fatalf("first review = %+v", first.Changes)
 	}
 	firstState := first.Changes.Review.ReviewedState
+	firstURL := first.Changes.Review.PrintableURL
+	if firstURL != printablePath(first.ProjectSlug, first.Changes.ID, "active", firstState) {
+		t.Fatalf("incorrect printable binding: %q", firstURL)
+	}
 	second := decodeArchitectureResponse(t, postJSONRequest(t, handler, "/api/architecture/review", observedAction(first)))
+	if second.Changes.Review.PrintableURL != firstURL {
+		t.Fatal("repeated Review moved printable URL")
+	}
 	if second.Changes == nil || second.Changes.Review == nil || second.Changes.Review.ReviewedState != firstState {
 		t.Fatalf("second review = %+v", second.Changes)
 	}
@@ -177,6 +184,9 @@ func TestRepeatedReviewKeepsExactStateAndSubmissionNeedsNoAcceptedObservation(t 
 	reopened := decodeArchitectureResponse(t, postJSONRequest(t, restarted, "/api/projects/open", map[string]any{"project_slug": first.ProjectSlug}))
 	selectActiveChangeSetForTest(&reopened, first.Changes.ID)
 	repeatedAfterRestart := decodeArchitectureResponse(t, postJSONRequest(t, restarted, "/api/architecture/review", observedAction(reopened)))
+	if repeatedAfterRestart.Changes.Review.PrintableURL != firstURL {
+		t.Fatal("restart moved printable URL")
+	}
 	if repeatedAfterRestart.Changes == nil || repeatedAfterRestart.Changes.Review == nil || repeatedAfterRestart.Changes.Review.ReviewedState != firstState {
 		t.Fatalf("review after restart rewrote active ref: %+v", repeatedAfterRestart.Changes)
 	}

@@ -271,6 +271,7 @@ func TestRefreshUnchangedPreservesExactReviewBinding(t *testing.T) {
 	selectActiveChangeSetForTest(&result, active.id)
 	expected := reviewResponseForBinding(active.id, before, active.baseSnapshot)
 	expected.ReviewedState = active.refObject
+	expected.PrintableURL = printablePath(active.baseSnapshot.ProjectSlug(), active.id, active.lifecycle, active.refObject)
 	if result.ActionError != "" || result.Stale || result.Changes == nil || result.Changes.Stale || result.Changes.Review == nil ||
 		!reflect.DeepEqual(*result.Changes.Review, expected) {
 		t.Fatalf("unchanged Refresh displaced review presentation: result=%+v", result.Changes)

@@ -2,6 +2,10 @@
 
 Status: Approved living contract
 
+## Printable URL discovery
+
+The approved [printable bound proposal](architecture-proposals-v0.md#printable-bound-proposals) adds `printable_url` compatibly to prepared Review and submitted-review inspection results, and to bound active/applied proposal inspection. Active URLs carry exact `reviewed_state` S; applied URLs carry exact `applied_state` T; historical URLs carry the immutable submitted review UUID. Opening/printing is read-only, requires the existing binding, and never prepares Review or accepts Architecture. Old active URLs fail after state movement; historical access is only through retained submissions, not arbitrary Git lookup. CLI help, embedded skill and MCP descriptions explain discovery without adding a print mutation/tool or changing agent-v2.
+
 ## Phase 3.4 shape and note surface
 
 Delegated root approval of proposal `3cf11d4b-c980-4022-92d2-f98d75bf36a4` generation 2, reviewed state `d9d35b11134533016248e5e64294462f76b3aeda`, authorizes additive agent-v2 operations. `diagram shapes` and `diagram notes` require store/Diagram IDs and optional proposal ID for a valid active/Applied candidate; absent proposal means Accepted. Return exact addresses with tagged default/explicit shape or complete notes, without writes.

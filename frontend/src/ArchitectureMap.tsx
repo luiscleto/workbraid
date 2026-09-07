@@ -962,24 +962,54 @@ function fitDiagram(instance:Core,padding:number,other?:cytoscape.BoundingBox12)
 
 // Browser-only derived images: use the same element projection, styles,
 // renderer intersections and bounds as the interactive map, never a layout.
+export function printProjectionElements(before:MapComponent[],withChanges:MapComponent[],options:ProjectionOptions):ElementDefinition[] {
+ const side=options.reviewSide??'with'
+ const elements=projectionElements(side==='before'?before:withChanges,{...options,reviewSide:side})
+ if(side==='before')return elements
+ const base=projectionElements(before,{...options,reviewSide:'before'})
+ // Removed Relationship occurrences retain their exact base projection. Reuse
+ // candidate endpoints by Component identity; only missing endpoints are ghosts
+ // at their base geometry. These annotations never create an appearance.
+ for(const edge of base.filter(e=>e.data.source&&e.data.reviewStatus==='removed')){
+  const endpoints:Record<string,string>={}
+  for(const end of ['source','target']){
+   const node=base.find(n=>n.data.id===edge.data[end]&&!n.data.source)
+   if(!node)continue
+   let target=elements.find(n=>!n.data.source&&n.data.componentID===node.data.componentID)
+   if(!target){
+    target={...node,data:{...node.data,id:`print-base:${node.data.id}`,reviewStatus:'removed',displayLabel:fittedTitle(`Before only: ${node.data.label}`,{width:Number(node.data.width),height:Number(node.data.height)},String(node.data.shape))}}
+    elements.push(target)
+   }
+   endpoints[end]=String(target.data.id)
+  }
+  if(endpoints.source&&endpoints.target)elements.push({...edge,data:{...edge.data,...endpoints,id:`print-removed:${edge.data.id}`}})
+ }
+ return elements
+}
+
 export async function printDiagramImages(before: MapComponent[], withChanges: MapComponent[], options: ProjectionOptions) {
  await document.fonts.load('14px "IBM Plex Sans"')
  await document.fonts.ready
  const width=1400,height=820
  const containers:HTMLDivElement[]=[], graphs:Core[]=[], warnings:string[]=[]
  try {
-  for(const [index,components] of [before,withChanges].entries()) {
+  {
    const container=document.createElement('div')
    Object.assign(container.style,{position:'fixed',left:'-20000px',width:`${width}px`,height:`${height}px`})
    document.body.appendChild(container);containers.push(container)
-   const graph=cytoscape({container,elements:projectionElements(components,{...options,reviewSide:index===0?'before':'with'}),layout:{name:'preset',fit:false},style:[...mapStyles,
-    {selector:'node[reviewStatus = "unchanged"]',style:{opacity:0.78}},
-    {selector:'edge[reviewStatus = "unchanged"]',style:{opacity:0.78}},
-    {selector:'node[positionChanged = "yes"], edge[routeChanged = "yes"]',style:{opacity:1}},
+   const graph=cytoscape({container,elements:printProjectionElements(before,withChanges,options),layout:{name:'preset',fit:false},style:[...mapStyles,
+    {selector:'node[reviewStatus = "unchanged"]',style:{opacity:1,'border-color':'#737064','border-width':2}},
+    {selector:'edge[reviewStatus = "unchanged"]',style:{opacity:1,width:2,'line-style':'solid','line-color':'#807c70','target-arrow-color':'#807c70',color:'#454238'}},
+    {selector:'node[positionChanged = "yes"]',style:{opacity:1,'border-width':5,'border-color':'#126747'}},
+    {selector:'node[reviewStatus = "content_changed"]',style:{opacity:1,'background-color':'#ffdb70','border-color':'#946000','border-width':5}},
+    {selector:'node[reviewStatus = "added"]',style:{opacity:1,'background-color':'#b5e7c8','border-color':'#126747','border-width':5}},
+    {selector:'node[reviewStatus = "removed"]',style:{opacity:1,'background-color':'#f9e2dc','border-color':'#a12b20','border-style':'dashed','border-width':4}},
+    {selector:'edge[reviewStatus = "added"], edge[routeChanged = "yes"]',style:{opacity:1,width:5,'line-color':'#126747','target-arrow-color':'#126747',color:'#104e35'}},
+    {selector:'edge[reviewStatus = "removed"]',style:{opacity:1,width:4,'line-color':'#ad2920','target-arrow-color':'#ad2920',color:'#922219','line-style':'dashed'}},
    ],minZoom:0.0001,maxZoom:2.5})
    graphs.push(graph)
    const unavailable=updateRouteFallbacks(graph)
-   for(const label of unavailable)warnings.push(`${index===0?'Before':'With changes'}: ${label} — stored routing cannot be drawn at this geometry; shared derived fallback is shown where available. The curve may be absent.`)
+   for(const label of unavailable)warnings.push(`${options.reviewSide==='before'?'Before only':'With changes'}: ${label} — stored routing cannot be drawn at this geometry; shared derived fallback is shown where available. The curve may be absent.`)
   }
   const boxes=graphs.filter(g=>g.elements().length).map(diagramBounds)
   const frame=boxes.length?{x1:Math.min(...boxes.map(b=>b.x1)),y1:Math.min(...boxes.map(b=>b.y1)),x2:Math.max(...boxes.map(b=>b.x2)),y2:Math.max(...boxes.map(b=>b.y2))}:{x1:0,y1:0,x2:1,y2:1}

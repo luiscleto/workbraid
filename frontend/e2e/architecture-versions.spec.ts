@@ -1,6 +1,6 @@
 import {expect,test} from '@playwright/test'
 import {spawn,execFileSync,type ChildProcess} from 'node:child_process'
-import {mkdtempSync} from 'node:fs'
+import {mkdtempSync,writeFileSync} from 'node:fs'
 import {createServer} from 'node:net'
 import {tmpdir} from 'node:os'
 import {dirname,join,resolve} from 'node:path'
@@ -84,13 +84,18 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await expect(page.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible()
  expect(inspect()).toEqual(chosen);expect(refs()).toBe(initialRefs)
  // A process restart reconstructs this exact pair; no report captures it.
+ const stoppedPID=server.pid
  const exit=new Promise(resolve=>server.once('exit',resolve));server.kill('SIGTERM');await exit
  server=spawn(binary,['--listen',new URL(origin).host,'--data-dir',join(directory,'data'),'--ui-dir',join(frontend,'dist')],{stdio:['ignore','pipe','pipe']})
  await expect.poll(async()=>{try{return(await fetch(origin+'/api/agent/v2/status')).ok}catch{return false}}).toBe(true)
  await page.goto(exactReportURL)
  await expect(page.getByRole('button',{name:'Print / Save as PDF'})).toBeVisible()
  expect(refs()).toBe(initialRefs)
+ const restartedRefs=refs()
  call('project','open','--slug',slug)
+ const reconstructed=inspect()
+ expect(reconstructed).toEqual(chosen)
+ writeFileSync(info.outputPath('read-only-restart-evidence.json'),JSON.stringify({origin,data_directory:join(directory,'data'),stopped_pid:stoppedPID,restarted_pid:server.pid,exit_observed:true,exact_report_url:exactReportURL,initial_refs:initialRefs,after_restart_report_refs:restartedRefs,foreign_current_context_preserved:current,unprepared_before:{id:chosen.id,generation:chosen.generation,state:chosen.change_set_state,tree:chosen.candidate_tree,review:chosen.review??null},reconstructed_after_restart:{id:reconstructed.id,generation:reconstructed.generation,state:reconstructed.change_set_state,tree:reconstructed.candidate_tree,review:reconstructed.review??null}},null,2))
  call('change-set','edit-proposal',...state(),'--proposal','Later proposal context')
  const movedRefs=refs()
  await page.reload()

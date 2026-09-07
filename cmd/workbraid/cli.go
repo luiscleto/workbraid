@@ -295,6 +295,8 @@ func parseDomainCommand(args []string, stdin io.Reader) (string, any, *agentapi.
 		return parseRelationshipRemove(flags, actionArgs, stdin, invalid)
 	case "diagram_set_route", "diagram_restore_default_route":
 		return parseRoutingCommand(operation, flags, actionArgs, stdin, invalid)
+	case "diagram_shapes", "diagram_notes", "diagram_set_shape", "diagram_restore_default_shape", "diagram_add_note", "diagram_edit_note", "diagram_delete_note":
+		return parseShapeNoteCommand(operation, flags, actionArgs, stdin, invalid)
 	case "diagram_positions", "diagram_routes", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size":
 		return parsePlacementCommand(operation, flags, actionArgs, invalid)
 	case "diagram_parent_options", "diagram_reassign_detail":
@@ -816,6 +818,13 @@ Authoring commands:
   diagram set-position <state> --diagram-id <uuid> --component-id <uuid> --x=-180 --y=320
   diagram auto-layout <state> --diagram-id <uuid>
   diagram sizes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram shapes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram notes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
+  diagram set-shape <state> --diagram-id <uuid> --component-id <uuid> --shape <rectangle|ellipse|diamond>
+  diagram restore-default-shape <state> --diagram-id <uuid> --component-id <uuid>
+  diagram add-note <state> --diagram-id <uuid> (--text <plain text>|--text-file <path|->)
+  diagram edit-note <state> --diagram-id <uuid> --note-id <uuid> (--text <plain text>|--text-file <path|->) --x <integer> --y <integer> --width <120..800> --height <48..600>
+  diagram delete-note <state> --diagram-id <uuid> --note-id <uuid>
   diagram routes --store-id <uuid> --diagram-id <uuid> [--change-set-id <uuid>]
   diagram set-route <state> --diagram-id <uuid> --source-id <uuid> --target-id <uuid> (--label <text>|--label-file <path|->) --occurrence <n> --bend <-100000..100000>
   diagram restore-default-route <state> --diagram-id <uuid> --source-id <uuid> --target-id <uuid> (--label <text>|--label-file <path|->) --occurrence <n>

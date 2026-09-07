@@ -8,6 +8,7 @@ import {
   ReviewRelationshipSelection,
 } from './ArchitectureMap'
 import { MarkdownBody } from './MarkdownBody'
+import {DiagramNotePane,type DiagramNote} from './DiagramNotePane'
 import { RawDiff } from './RawDiff'
 import { ReconciliationTask, type ReconciliationPreview, type ReconciliationResolution, type ReconciliationSnapshot } from './ReconciliationTask'
 
@@ -41,6 +42,8 @@ type ArchitectureResult = {
 }
 
 type DiagramProjection = {
+	shapes?: {diagram_id:string;component_id:string;shape:'rectangle'|'ellipse'|'diamond'|null}[]
+	notes?: DiagramNote[]
   id: string
   title: string
   filename: string
@@ -188,6 +191,8 @@ type ChangeReview = {
   comparison: {
 	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;before_source?:string;with_source?:string;path:string}[]
 	  node_sizes?: {diagram_id:string;component_id:string;before:{width:number;height:number}|null;with:{width:number;height:number}|null;before_source?:string;with_source?:string;path:string}[]
+	  node_shapes?:{diagram_id:string;component_id:string;before:string|null;with:string|null;before_visible:boolean;with_visible:boolean;path:string}[]
+	  diagram_notes?:{diagram_id:string;note_id:string;before:Omit<DiagramNote,'id'>|null;with:Omit<DiagramNote,'id'>|null;path:string}[]
 	  edge_routes?: (Pick<RouteProjection,'diagram_id'|'source_id'|'target_id'|'label'|'occurrence'>&{before:{bend:number}|null;with:{bend:number}|null;before_state:string;with_state:string;path:string})[]
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
@@ -473,6 +478,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
     nodes.set(appearance.component_id, {
       id: appearance.component_id,
       component_id: appearance.component_id,
+	  shape:diagram.shapes?.find(s=>s.component_id===appearance.component_id)?.shape,
       title: component.title,
       filename: component.filename,
       node_kind: appearance.role,
@@ -485,6 +491,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
     nodes.set(boundary.key, {
       id: boundary.key,
       component_id: boundary.component_id,
+	  shape:diagram.shapes?.find(s=>s.component_id===boundary.component_id)?.shape,
       title: boundary.title,
       node_kind: 'boundary',
       boundary_home_title: boundary.home_diagram_title,
@@ -501,7 +508,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       routing: relationship.routing,
     })
   }
-  return [...nodes.values()]
+  return [...nodes.values(),...(diagram.notes??[]).map(n=>({id:`note:${n.id}`,title:n.text,note:true,shape:'rectangle' as const,position:{x:n.x,y:n.y},size:{width:n.width,height:n.height},relationships:[]}))]
 }
 
 function canonicalReviewPath(component: AuthoringComponent) {
@@ -681,6 +688,8 @@ export function App() {
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
   const [positionDirty, setPositionDirty] = useState(false)
   const [sizeDirty, setSizeDirty] = useState(false)
+	const [noteDirty,setNoteDirty]=useState(false)
+	const [noteSelection,setNoteSelection]=useState<{diagramID:string;id:string}|null>(null)
   const [routeDirty,setRouteDirty]=useState(false)
   const [selectedRouteKey,setSelectedRouteKey]=useState<string>()
   const [positionDraftEpoch, setPositionDraftEpoch] = useState(0)
@@ -856,7 +865,7 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || noteDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1320,6 +1329,28 @@ export function App() {
 	} finally {setArchitectureBusy(false)}
   }
 
+  async function keepShapeNote(result:ArchitectureResult,diagramID:string,action:string,values:Record<string,unknown>):Promise<boolean>{
+    const route=window.location.pathname
+    setArchitectureBusy(true);setArchitectureNotice('')
+    try{
+      const response=await postJSON(`/api/architecture/diagrams/${action}`,{project_slug:result.project_slug,store_id:result.store_id,expected_revision:result.revision,change_set_id:result.changes?.id,pending_generation_observed:true,expected_pending_generation:result.changes?.generation??null,diagram_id:diagramID,...values})
+      const payload=await response.json() as ArchitectureResult|ErrorPayload
+      if(window.location.pathname!==route)return false
+      if(!response.ok||!('state' in payload)||payload.action_error){setPlacementBlocked(true);setArchitectureNotice('That change was not kept. Refresh and inspect the current proposal before editing again.');return false}
+      const oldNotes=(result.changes?.candidate??result).diagrams?.find(d=>d.id===diagramID)?.notes??[]
+      if(payload.action_change_set_id||result.changes){enterProposalResult(payload);setWorkspaceTask('documentation')}
+      setSelectedDiagramID(diagramID);setNoteDirty(false)
+      if(action==='add-note'){const added=(payload.changes?.candidate??payload).diagrams?.find(d=>d.id===diagramID)?.notes?.find(n=>!oldNotes.some(old=>old.id===n.id));if(added)setNoteSelection({diagramID,id:added.id})}
+      if(action==='delete-note')setNoteSelection(null)
+      return true
+    }catch{setPlacementBlocked(true);setArchitectureNotice('WorkBraid could not confirm that change. Refresh and inspect before trying again.');return false}finally{setArchitectureBusy(false)}
+  }
+  async function keepNoteGeometry(result:ArchitectureResult,diagram:DiagramProjection,key:string,geometry:Partial<Pick<DiagramNote,'x'|'y'|'width'|'height'>>):Promise<boolean>{
+    const note=diagram.notes?.find(n=>`note:${n.id}`===key);if(!note)return false
+    const {id,...value}=note
+    return keepShapeNote(result,diagram.id,'edit-note',{note_id:id,...value,...geometry})
+  }
+
 
   async function keepRoute(result:ArchitectureResult,address:RouteProjection,route:{bend:number}|null):Promise<boolean> {
 	const diagramID=address.diagram_id
@@ -1479,7 +1510,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || noteDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -1496,6 +1527,7 @@ export function App() {
   }
 
   async function performNavigation(intent: NavigationIntent) {
+	setNoteSelection(null);setNoteDirty(false)
     setNavigationIntent(null)
     setSelectedRouteKey(undefined)
     setRouteDirty(false)
@@ -1901,7 +1933,7 @@ export function App() {
       if (!diagramReviewStatus.has(change.diagram_id)) diagramReviewStatus.set(change.diagram_id, 'Changed')
     }
 	for(const change of review?.comparison.node_positions??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
-	for(const change of review?.comparison.node_sizes??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
+	for(const change of [...(review?.comparison.node_sizes??[]),...(review?.comparison.node_shapes??[]),...(review?.comparison.diagram_notes??[])]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
 	for(const change of review?.comparison.edge_routes??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
     const submittedReview = result.submitted_review
     const reviewAnnotationComments = submittedReview?.comments ?? localReviewComments
@@ -1997,6 +2029,7 @@ export function App() {
       })
     }
     const selectMapNode = (id: string) => {
+	  if(id.startsWith('note:')&&activeDiagram){requestNavigation({kind:'authoring-pane',apply:()=>{setNoteSelection({diagramID:activeDiagram.id,id:id.slice(5)});setSelectedComponentID(undefined);setWorkspaceTask('documentation')}});return}
       if (!activeDiagram) {
         selectComponent(id)
         return
@@ -2330,6 +2363,7 @@ export function App() {
             {!review && authoringAvailable && (
               <button className="index-add" type="button" onClick={() => requestNavigation({ kind: 'add' })}>Add component</button>
             )}
+			{activeDiagram&&<div className="diagram-notes"><details><summary>Notes{activeDiagram.notes?.length?` · ${activeDiagram.notes.length}`:''}</summary>{(activeDiagram.notes??[]).map(n=><button className="text-action" key={n.id} type="button" onClick={()=>selectMapNode(`note:${n.id}`)}>{n.text.slice(0,80)}</button>)}{!review&&authoringAvailable&&<button className="text-action" type="button" onClick={()=>requestNavigation({kind:'authoring-pane',apply:()=>{setNoteSelection({diagramID:activeDiagram.id,id:'new'});setWorkspaceTask('documentation')}})}>Add note</button>}</details></div>}
             {!review && authoringAvailable && activeDiagram && (result.reference_choices?.some((choice) => choice.diagram_id === activeDiagram.id)) && (
               <label className="reference-picker">Show component here
                 <select value="" onChange={(event) => {
@@ -2390,12 +2424,12 @@ export function App() {
             ) : (
               <ArchitectureMap
 				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}:${review?.candidate_tree??'authoring'}`}
-				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
-				onResize={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,s)=>keepSize(result,activeDiagram.id,id,s):undefined}
+				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>id.startsWith('note:')?keepNoteGeometry(result,activeDiagram,id,p):keepPosition(result,activeDiagram.id,id,p):undefined}
+				onResize={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,s)=>id.startsWith('note:')?keepNoteGeometry(result,activeDiagram,id,s):keepSize(result,activeDiagram.id,id,s):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
                 reviewOtherComponents={reviewOtherComponents}
-                selectedID={selectedBoundary?.key ?? selectedComponentID}
+                selectedID={noteSelection?.diagramID===activeDiagram?.id?`note:${noteSelection?.id}`:selectedBoundary?.key ?? selectedComponentID}
                 onSelect={selectMapNode}
                 onRoute={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current ? (route,bend)=>keepRoute(result,route,{bend}):undefined}
                 {...(!review ? {selectedRelationshipKey:selectedRoute?.key,onSelectRelationship:(edge:ReviewRelationshipSelection)=>requestNavigation({kind:'authoring-pane',apply:()=>{setSelectedRouteKey(edge.key);setWorkspaceTask('documentation')}})}:{})}
@@ -2405,11 +2439,13 @@ export function App() {
                   reviewSide,
                   reviewComponents: review.comparison.components,
                   reviewPositionIDs: review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
-                  reviewSizeIDs: review.comparison.node_sizes?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
+                  reviewSizeIDs: [...(review.comparison.node_sizes??[]),...(review.comparison.node_shapes??[])].filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
                   reviewRelationships: review.comparison.relationships,
                   reviewComposition: <>
                     {review.comparison.edge_routes?.filter(r=>r.diagram_id===activeDiagram?.id).map(r=><li key={JSON.stringify([r.source_id,r.target_id,r.label,r.occurrence])}><button type="button" onClick={()=>focusReviewDiagram({kind:'diagram',key:JSON.stringify(r),title:activeDiagram?.title??'Diagram',status:'appearance_changed',description:'Route changed',reviewSide,diagramID:r.diagram_id,path:r.path})}>Route changed: {r.label} · occurrence {r.occurrence} · {r.before?`Bend ${r.before.bend}`:r.before_state==='not_applicable'?'Not visible':'Default'} → {r.with?`Bend ${r.with.bend}`:r.with_state==='not_applicable'?'Not visible':'Default'}</button></li>)}
                     {review.comparison.node_sizes?.filter(s=>s.diagram_id===activeDiagram?.id).map(s=><li key={`size:${s.component_id}`}><button type="button" onClick={()=>focusReviewDiagram({kind:'diagram',key:`size:${s.component_id}`,title:activeDiagram?.title??'Diagram',status:'appearance_changed',description:'Size changed',reviewSide,diagramID:s.diagram_id,path:s.path,componentID:s.component_id})}>Size changed: {diagramProjection.components.find(c=>c.id===s.component_id)?.title??'Component'} · {s.before?`${s.before.width} × ${s.before.height}`:'Not visible'} → {s.with?`${s.with.width} × ${s.with.height}`:'Not visible'}</button></li>)}
+					{review.comparison.node_shapes?.filter(s=>s.diagram_id===activeDiagram?.id).map(s=><li key={`shape:${s.component_id}`}><button type="button" onClick={()=>selectMapNode(s.component_id)}>Shape changed: {diagramProjection.components.find(c=>c.id===s.component_id)?.title??'Component'} · {s.before_visible?(s.before??'Default'):'Not visible'} → {s.with_visible?(s.with??'Default'):'Not visible'}</button></li>)}
+					{review.comparison.diagram_notes?.filter(n=>n.diagram_id===activeDiagram?.id).map(n=><li key={`note:${n.note_id}`}><button type="button" onClick={()=>{if(!n.with)setReviewSide('before');selectMapNode(`note:${n.note_id}`)}}>Note {n.before?(n.with?'changed':'removed'):'added'}: {(n.with??n.before)?.text.slice(0,80)}</button></li>)}
                     {[...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>)}
                     {review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => <li key={`position:${p.component_id}`}>
                       <button type="button" onClick={() => focusReviewDiagram({
@@ -2523,7 +2559,7 @@ export function App() {
                   if (shouldReturnThroughHistory) window.history.back()
                 }}
               />
-            ) : review && result.changes ? (
+            ) : noteSelection&&noteSelection.diagramID===activeDiagram?.id&&(noteSelection.id==='new'||activeDiagram?.notes?.some(n=>n.id===noteSelection.id)) ? <DiagramNotePane key={`${noteSelection.id}:${diagramProjection.revision}`} note={activeDiagram?.notes?.find(n=>n.id===noteSelection.id)} readOnly={Boolean(review)||!authoringAvailable} busy={architectureBusy||placementBlocked} onDirty={setNoteDirty} onClear={()=>requestNavigation({kind:'clear'})} onKeep={v=>keepShapeNote(result,activeDiagram!.id,noteSelection.id==='new'?'add-note':'edit-note',noteSelection.id==='new'?{text:v.text}:{note_id:noteSelection.id,...v})} onDelete={()=>keepShapeNote(result,activeDiagram!.id,'delete-note',{note_id:noteSelection.id})}/> : review && result.changes ? (
               <ChangesTask
                 result={result}
                 busy={architectureBusy}
@@ -2628,6 +2664,7 @@ export function App() {
 				{selectedBoundary&&<button className="inline-action" type="button" onClick={()=>selectDiagram(selectedBoundary.home_diagram_id,selectedBoundary.component_id)}>Open home · {selectedBoundary.home_diagram_title}</button>}
                 {authoringAvailable&&activeDiagram&&<details className="position-controls" key={`geometry:${activeDiagram.id}:${selected.id}`}>
                   <summary>Position and size</summary>
+				  <label>Shape<select aria-label="Node shape" disabled={architectureBusy||placementBlocked||positionDirty||sizeDirty} value={activeDiagram.shapes?.find(s=>s.component_id===selected.id)?.shape??'default'} onChange={e=>void keepShapeNote(result,activeDiagram.id,e.target.value==='default'?'restore-default-shape':'set-shape',{component_id:selected.id,...(e.target.value==='default'?{}:{shape:e.target.value})})}><option value="default">Default</option><option value="rectangle">Rectangle</option><option value="ellipse">Ellipse</option><option value="diamond">Diamond</option></select></label>
                   <PositionControls key={`${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedPosition?.x}:${selectedPosition?.y}`} position={selectedPosition} busy={architectureBusy||placementBlocked||sizeDirty} onDirty={setPositionDirty} onKeep={p=>keepPosition(result,activeDiagram.id,selected.id,p)} />
                   <SizeControls key={`size:${positionDraftEpoch}:${activeDiagram.id}:${selected.id}:${selectedSize.width}:${selectedSize.height}`} size={selectedSize} busy={architectureBusy||placementBlocked||positionDirty} onDirty={setSizeDirty} onKeep={s=>keepSize(result,activeDiagram.id,selected.id,s)} />
                 </details>}

@@ -57,6 +57,8 @@ type diagram struct {
 	positions   []diagramPosition
 	sizes       []diagramSize
 	routes      []diagramRoute
+	shapes      []diagramShape
+	notes       []DiagramNote
 	mode        string
 }
 
@@ -128,6 +130,8 @@ func (snapshot Snapshot) ComponentTitles() []string {
 // and boundary references are resolved by the accepted loader rather than by
 // the browser.
 type DiagramProjection struct {
+	Notes                   []DiagramNote
+	Shapes                  []NodeShapeChange
 	ID                      string
 	Title                   string
 	Filename                string
@@ -189,14 +193,14 @@ type DiagramRelationship struct {
 }
 
 func (snapshot Snapshot) RootDiagramID() string {
-	if snapshot.formatVersion < 2 || snapshot.formatVersion > 5 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 6 {
 		return ""
 	}
 	return snapshot.rootDiagram.String()
 }
 
 func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
-	if snapshot.formatVersion < 2 || snapshot.formatVersion > 5 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 6 {
 		return nil
 	}
 	componentsByID := make(map[uuid.UUID]component, len(snapshot.components))
@@ -242,6 +246,11 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 			source = "derived"
 		}
 		projection := DiagramProjection{ID: current.id.String(), Title: current.title, Filename: filepath.Base(current.path)}
+		projection.Notes = append([]DiagramNote{}, current.notes...)
+		for cid := range visibleComponents(current, snapshot.components) {
+			projection.Shapes = append(projection.Shapes, NodeShapeChange{current.id.String(), cid.String(), shapeAt(current, cid.String())})
+		}
+		sort.Slice(projection.Shapes, func(i, j int) bool { return projection.Shapes[i].ComponentID < projection.Shapes[j].ComponentID })
 		if parent, exists := parentByDiagram[current.id]; exists {
 			projection.ParentDiagramID = parent.diagram.String()
 			projection.ParentAnchorComponentID = parent.anchor.String()
@@ -425,6 +434,8 @@ type ComponentChange struct {
 // one candidate-construction path. The owning pending Architecture change set
 // supplies it alongside its Component edits.
 type CandidateComposition struct {
+	NodeShapes          []NodeShapeChange           `json:"node_shapes" yaml:"node_shapes"`
+	DiagramNotes        []DiagramNoteChange         `json:"diagram_notes" yaml:"diagram_notes"`
 	ArchitectureVersion int                         `json:"architecture_version" yaml:"architecture_version"`
 	NodePositions       []NodePositionChange        `json:"node_positions" yaml:"node_positions"`
 	EdgeRoutes          []EdgeRouteChange           `json:"edge_routes" yaml:"edge_routes"`
@@ -493,7 +504,7 @@ var (
 
 func (snapshot Snapshot) HasDiagram(id string) bool {
 	parsed, err := uuid.Parse(id)
-	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 6) {
 		return false
 	}
 	for _, current := range snapshot.diagrams {
@@ -544,7 +555,7 @@ func (snapshot Snapshot) HasDetailLink(diagramID, componentID, detailDiagramID s
 
 func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
 	parsed, err := uuid.Parse(componentID)
-	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 6) {
 		return "", "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -566,7 +577,7 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) (string, bool) {
 	diagramUUID, diagramErr := uuid.Parse(diagramID)
 	componentUUID, componentErr := uuid.Parse(componentID)
-	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
+	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 6) {
 		return "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -950,7 +961,7 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 	rootDiagramID := uuid.NewString()
 	manifestBytes, err := marshalManifest(manifest{
 		Format:      "workbraid-architecture",
-		Version:     5,
+		Version:     6,
 		StoreID:     parsedStoreID.String(),
 		Project:     manifestProject{Name: projectName, Slug: projectSlug},
 		RootDiagram: rootDiagramID,
@@ -1205,6 +1216,11 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 	homeCounts := make(map[uuid.UUID]int, len(components))
 	parentCounts := make(map[uuid.UUID]int, len(diagrams))
 	for _, current := range diagrams {
+		if version >= 6 {
+			if err := validateShapesNotes(current, components); err != nil {
+				return nil, uuid.Nil, err
+			}
+		}
 		if version >= 5 {
 			if err := validateRoutes(current, components); err != nil {
 				return nil, uuid.Nil, err
@@ -1348,6 +1364,9 @@ func (manager *Manager) PrepareCandidate(ctx context.Context, base Snapshot, cha
 }
 
 func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, changes []ComponentChange, composition CandidateComposition, prepared *CandidateComposition) (Candidate, error) {
+	if err := validateShapeNoteProvenance(base, changes, composition); err != nil {
+		return Candidate{}, err
+	}
 	storePath, err := manager.StorePath(base.storeID.String())
 	if err != nil {
 		return Candidate{}, err
@@ -1375,7 +1394,7 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 	if target == 0 {
 		target = base.formatVersion
 	}
-	if (target < 2 || target > 5) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) || (target < 4 && len(composition.NodeSizes) > 0) {
+	if (target < 2 || target > 6) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) || (target < 4 && len(composition.NodeSizes) > 0) {
 		return Candidate{}, fmt.Errorf("%w: invalid target Architecture version", ErrInvalid)
 	}
 	if target != base.formatVersion {
@@ -1557,6 +1576,9 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 		components := make([]component, 0, len(finalComponents))
 		for _, c := range finalComponents {
 			components = append(components, c)
+		}
+		if err := applyShapesNotes(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
+			return Candidate{}, err
 		}
 		if err := applyNodeSizes(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
 			return Candidate{}, err
@@ -2236,7 +2258,7 @@ func parseManifest(contents []byte) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
-	if version < 2 || version > 5 {
+	if version < 2 || version > 6 {
 		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if err := validateManifestYAML(document.Content[0], version); err != nil {
@@ -2360,7 +2382,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version < 2 || value.Version > 5 {
+	if value.Version < 2 || value.Version > 6 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -2405,6 +2427,8 @@ type diagramPositionYAML struct {
 }
 
 type diagramYAML struct {
+	Shapes      []diagramShape          `yaml:"shapes,omitempty"`
+	Notes       []DiagramNote           `yaml:"notes,omitempty"`
 	Routes      []diagramRouteYAML      `yaml:"routes,omitempty"`
 	Sizes       []diagramSizeYAML       `yaml:"sizes,omitempty"`
 	ID          string                  `yaml:"id"`
@@ -2421,6 +2445,7 @@ type diagramAppearanceYAML struct {
 
 func marshalDiagram(value diagram) ([]byte, error) {
 	encoded := diagramYAML{ID: value.id.String(), Title: value.title, Appearances: make([]diagramAppearanceYAML, len(value.appearances))}
+	encoded.Shapes, encoded.Notes = value.shapes, value.notes
 	for _, r := range value.routes {
 		encoded.Routes = append(encoded.Routes, diagramRouteYAML{r.slot.source.String(), r.slot.target.String(), r.slot.label, r.slot.occurrence, r.route.Bend})
 	}
@@ -2477,6 +2502,22 @@ func parseDiagram(path string, contents []byte, versions ...int) (diagram, error
 		return diagram{}, errors.New("Diagram title is empty")
 	}
 	result := diagram{id: id, path: path, title: value.Title, appearances: make([]diagramAppearance, len(value.Appearances))}
+	for _, s := range value.Shapes {
+		cid, e := uuid.Parse(s.Component)
+		if e != nil {
+			return diagram{}, e
+		}
+		s.Component = cid.String()
+		result.shapes = append(result.shapes, s)
+	}
+	for _, n := range value.Notes {
+		nid, e := uuid.Parse(n.ID)
+		if e != nil {
+			return diagram{}, e
+		}
+		n.ID = nid.String()
+		result.notes = append(result.notes, n)
+	}
 	for index, item := range value.Appearances {
 		componentID, err := uuid.Parse(item.Component)
 		if err != nil {
@@ -2537,11 +2578,24 @@ func validateDiagramYAML(root *yaml.Node, version int) error {
 	seenPositions := false
 	seenSizes := false
 	seenRoutes := false
+	seenPresentation := map[string]bool{}
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
 		value := root.Content[index+1]
 		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
 			return errors.New("Diagram field names must be strings")
+		}
+		if (key.Value == "shapes" || key.Value == "notes") && version >= 6 {
+			if seenPresentation[key.Value] || value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {
+				return errors.New("shapes/notes must be one sequence")
+			}
+			seenPresentation[key.Value] = true
+			for _, item := range value.Content {
+				if err := validateShapeNoteYAML(item, key.Value == "notes", false); err != nil {
+					return err
+				}
+			}
+			continue
 		}
 		if key.Value == "routes" && version >= 5 {
 			if seenRoutes || value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {

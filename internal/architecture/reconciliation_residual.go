@@ -13,6 +13,7 @@ func reconciliationResidual(accepted, proposed Snapshot, original, final reconci
 	a, p := snapshotReconciliationFacts(accepted), snapshotReconciliationFacts(proposed)
 	changes := []ComponentChange{}
 	composition := CandidateComposition{ArchitectureVersion: final.version}
+	composition = shapeNoteResidual(accepted, a, final, composition)
 	routeAddresses := map[RouteAddress]bool{}
 	for k := range a.routes {
 		routeAddresses[k] = true

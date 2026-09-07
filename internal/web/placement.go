@@ -250,6 +250,16 @@ func (h *Handler) agentPositions(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, diagram := range snapshot.DiagramProjections() {
 		if diagram.ID == v.DiagramID {
+			if strings.HasSuffix(r.URL.Path, "/shapes") || strings.HasSuffix(r.URL.Path, "/notes") {
+				result["diagram_id"], result["architecture_version"] = diagram.ID, snapshot.FormatVersion()
+				if strings.HasSuffix(r.URL.Path, "/notes") {
+					result["notes"] = diagram.Notes
+				} else {
+					result["shapes"] = diagram.Shapes
+				}
+				h.writeAgentSuccessLocked(w, http.StatusOK, result)
+				return
+			}
 			if strings.HasSuffix(r.URL.Path, "/routes") {
 				result["diagram_id"] = diagram.ID
 				result["architecture_version"] = snapshot.FormatVersion()

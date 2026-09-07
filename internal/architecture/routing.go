@@ -245,7 +245,7 @@ func SetEdgeRoute(current Snapshot, c CandidateComposition, a RouteAddress, r *R
 			}
 		}
 	}
-	c.ArchitectureVersion = 5
+	c.ArchitectureVersion = max(5, current.FormatVersion())
 	c.EdgeRoutes = setRouteOverride(c.EdgeRoutes, a, r)
 	sortRouteFacts(c.EdgeRoutes)
 	return c

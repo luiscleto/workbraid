@@ -1,5 +1,11 @@
 import { expect, it } from 'vitest'
-import { deterministicPositions, displayPositions, projectionElements, roundPosition } from './ArchitectureMap'
+import { deterministicPositions, displayPositions, fittedTitle, projectionElements, roundPosition } from './ArchitectureMap'
+
+it('fits Unicode scalars without splitting emoji and keeps plain note line breaks', () => {
+  expect(fittedTitle('😀😀😀😀😀😀😀😀😀', {width:80,height:120}, 'rectangle')).toBe('😀😀😀😀😀😀😀\n😀😀')
+  expect(fittedTitle(' one\n\n two ', {width:240,height:120}, 'rectangle', true)).toBe(' one\n\n two ')
+  expect(fittedTitle('Exact full title', {width:80,height:48}, 'diamond')).toBe('')
+})
 
 it.each([[0.5, 1], [-0.5, -1], [-180.49, -180], [-180.5, -181], [100000, 100000]])('rounds model coordinate %s to %s', (value, expected) => {
   expect(roundPosition(value)).toBe(expected)
@@ -132,7 +138,8 @@ it('maps v2 relationship deltas to exact selected-Diagram internal and boundary 
   const addedBoundary = candidateDetail.find((element) => element.data.id === 'diagram:detail:worker:1')
   expect(addedBoundary?.data).toMatchObject({ reviewStatus: 'added', source: 'worker', target: 'boundary:gateway', source_id: 'worker', target_id: 'gateway', source_title: 'Worker', target_title: 'Gateway' })
   expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data).toMatchObject({ label: 'Gateway', boundaryHomeTitle: 'System' })
-  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data.displayLabel).toContain('…')
+  // The minimum diamond has no safe text line; exact source remains available to selection/panes.
+  expect(candidateDetail.find((element) => element.data.id === 'boundary:gateway')?.data.displayLabel).toBe('')
   expect(candidateDetail.filter((element) => 'source' in element.data)).toHaveLength(1)
   expect(candidateDetail.find((element) => element.data.id === 'worker')?.data.reviewStatus).toBe('unchanged')
 
@@ -143,7 +150,7 @@ it('maps v2 relationship deltas to exact selected-Diagram internal and boundary 
   expect(baseDetail.find((element) => element.data.id === 'diagram:detail:worker:1')?.data).toMatchObject({ reviewStatus: 'removed', source: 'worker', target: 'boundary:records', source_id: 'worker', target_id: 'records' })
   expect(baseDetail.find((element) => element.data.id === 'worker')?.data).toMatchObject({ displayLabel: 'Worker', nodeKind: 'reference' })
   expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data).toMatchObject({ label: 'Records', boundaryHomeTitle: 'Data', nodeKind: 'boundary' })
-  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data.displayLabel).toContain('…')
+  expect(baseDetail.find((element) => element.data.id === 'boundary:records')?.data.displayLabel).toBe('')
 
   const candidateRoot = projectionElements([
     { id: 'worker', component_id: 'worker', title: 'Worker', relationships: [{ target_id: 'gateway', label: 'reports', projection_key: 'diagram:root:worker:1' }] },

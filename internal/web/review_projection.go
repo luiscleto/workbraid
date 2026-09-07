@@ -19,17 +19,19 @@ type snapshotProjectionResponse struct {
 }
 
 type diagramResponse struct {
-	ID                      string                        `json:"id"`
-	Title                   string                        `json:"title"`
-	Filename                string                        `json:"filename"`
-	Depth                   int                           `json:"depth"`
-	Context                 string                        `json:"context,omitempty"`
-	ParentDiagramID         string                        `json:"parent_diagram_id,omitempty"`
-	ParentAnchorComponentID string                        `json:"parent_anchor_component_id,omitempty"`
-	Breadcrumbs             []diagramBreadcrumbResponse   `json:"breadcrumbs"`
-	Appearances             []diagramAppearanceResponse   `json:"appearances"`
-	Boundaries              []diagramBoundaryResponse     `json:"boundaries"`
-	Relationships           []diagramRelationshipResponse `json:"relationships"`
+	Shapes                  []architecture.NodeShapeChange `json:"shapes"`
+	Notes                   []architecture.DiagramNote     `json:"notes"`
+	ID                      string                         `json:"id"`
+	Title                   string                         `json:"title"`
+	Filename                string                         `json:"filename"`
+	Depth                   int                            `json:"depth"`
+	Context                 string                         `json:"context,omitempty"`
+	ParentDiagramID         string                         `json:"parent_diagram_id,omitempty"`
+	ParentAnchorComponentID string                         `json:"parent_anchor_component_id,omitempty"`
+	Breadcrumbs             []diagramBreadcrumbResponse    `json:"breadcrumbs"`
+	Appearances             []diagramAppearanceResponse    `json:"appearances"`
+	Boundaries              []diagramBoundaryResponse      `json:"boundaries"`
+	Relationships           []diagramRelationshipResponse  `json:"relationships"`
 }
 
 type diagramBreadcrumbResponse struct {
@@ -78,6 +80,8 @@ type diagramRelationshipResponse struct {
 }
 
 type reviewComparisonResponse struct {
+	NodeShapes    []reviewShapeChange                `json:"node_shapes"`
+	DiagramNotes  []reviewNoteChange                 `json:"diagram_notes"`
 	EdgeRoutes    []reviewEdgeRouteChange            `json:"edge_routes"`
 	NodeSizes     []reviewNodeSizeChange             `json:"node_sizes"`
 	NodePositions []reviewNodePositionChange         `json:"node_positions"`
@@ -214,6 +218,7 @@ func projectDiagrams(snapshot architecture.Snapshot) []diagramResponse {
 	result := make([]diagramResponse, len(projected))
 	for index, diagram := range projected {
 		value := diagramResponse{
+			Shapes: diagram.Shapes, Notes: diagram.Notes,
 			ID: diagram.ID, Title: diagram.Title, Filename: diagram.Filename, Depth: diagram.Depth, ParentDiagramID: diagram.ParentDiagramID,
 			ParentAnchorComponentID: diagram.ParentAnchorComponentID,
 			Breadcrumbs:             make([]diagramBreadcrumbResponse, len(diagram.Breadcrumbs)),
@@ -327,6 +332,7 @@ func captureReviewPresentation(base, candidate architecture.Snapshot) (snapshotP
 		return a.DiagramID < b.DiagramID
 	})
 	comparison.NodeSizes = compareSizes(before, withChanges)
+	comparison.NodeShapes, comparison.DiagramNotes = compareShapesNotes(before, withChanges)
 	comparison.EdgeRoutes = compareRoutes(before, withChanges)
 	return before, withChanges, comparison
 }

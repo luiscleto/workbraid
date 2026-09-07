@@ -2,6 +2,14 @@
 
 Status: Approved living contract
 
+## Phase 3.4 shape and note surface
+
+Delegated root approval of proposal `3cf11d4b-c980-4022-92d2-f98d75bf36a4` generation 2, reviewed state `d9d35b11134533016248e5e64294462f76b3aeda`, authorizes additive agent-v2 operations. `diagram shapes` and `diagram notes` require store/Diagram IDs and optional proposal ID for a valid active/Applied candidate; absent proposal means Accepted. Return exact addresses with tagged default/explicit shape or complete notes, without writes.
+
+All mutations require `--store-id --change-set-id --generation --diagram-id`. `diagram set-shape` adds `--component-id --shape` (rectangle|ellipse|diamond); `diagram restore-default-shape` adds component ID only. `diagram add-note` requires exactly one of `--text` or `--text-file <path|->`, generates UUID/default geometry, and accepts no creation ID. `diagram edit-note` adds `--note-id`, exactly one text input and all `--x --y --width --height`; replacement is complete, without omitted-field inheritance. `diagram delete-note` adds note ID. File/stdin preserves exact UTF-8 and is mutually exclusive with literal text. MCP names are `diagram_shapes`, `diagram_notes`, `diagram_set_shape`, `diagram_restore_default_shape`, `diagram_add_note`, `diagram_edit_note`, `diagram_delete_note`, with matching snake_case fields and literal text. API suffixes are `/diagrams/shapes`, `/diagrams/notes`, `/diagrams/set-shape`, `/diagrams/restore-default-shape`, `/diagrams/add-note`, `/diagrams/edit-note`, `/diagrams/delete-note`.
+
+Closed schemas reject missing/unknown fields and invalid values. Existing state/lifecycle/eligibility errors apply; unknown note edit is target_not_found. Identical complete-note edits, repeated same explicit/default shapes and deletion of an absent valid UUID are no-ops after state/Diagram validation, before upgrade. Tagged boundary Diamond differs from Default. Placement §11 defines text/geometry/visibility/upgrade rules; Reconciliation defines the closed node_shape/diagram_note choices and scoped same-ID restoration. No client-owned candidate, public creation identity or parent restoration exists. Keep help, embedded skill, MCP and HTTP behavior in full parity.
+
 ## Phase 3.3 routing surface
 
 Delegated root approval of routing proposal `d119baeb-1b2b-4451-8113-7f4fe05678ec` generation 8, reviewed state `595bab6de6933c7a047c70520f1830594f166fed`, authorizes these additive agent-v2 operations under the unchanged authority/envelope contract:

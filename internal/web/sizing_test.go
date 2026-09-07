@@ -18,7 +18,7 @@ func sizingLegacyFixture(t *testing.T, version int) nativeRefreshFixture {
 	t.Helper()
 	f := newNativeRefreshFixture(t, false)
 	parent := f.base.Revision
-	manifest := strings.Replace(git(t, "--git-dir", f.storePath, "show", parent+":architecture.yaml"), "version: 5", fmt.Sprintf("version: %d", version), 1) + "\n"
+	manifest := strings.Replace(git(t, "--git-dir", f.storePath, "show", parent+":architecture.yaml"), "version: 6", fmt.Sprintf("version: %d", version), 1) + "\n"
 	diagram := fmt.Sprintf("id: %s\ntitle: Legacy\nappearances:\n  - component: %s\n    role: home\n", f.base.RootDiagramID, f.component)
 	if version >= 3 {
 		diagram += fmt.Sprintf("positions:\n  - component: %s\n    x: 123\n    y: -456\n", f.component)

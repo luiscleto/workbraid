@@ -34,7 +34,7 @@ func TestSizingClosedPortableAndOperationalSchemas(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(loaded.NodeSizes, composition.NodeSizes) {
 		t.Fatalf("size facts: %v %+v", err, loaded)
 	}
-	for _, bad := range []string{strings.Replace(string(raw), "version: 5", "version: 3", 1), strings.Replace(string(raw), "node_sizes:", "other_sizes:", 1), strings.Replace(string(raw), "width: 200", "width: 200.5", 1)} {
+	for _, bad := range []string{strings.Replace(string(raw), "version: 6", "version: 3", 1), strings.Replace(string(raw), "node_sizes:", "other_sizes:", 1), strings.Replace(string(raw), "width: 200", "width: 200.5", 1)} {
 		if _, _, err := parseChangeState([]byte(bad)); err == nil {
 			t.Fatal("invalid operational sizes accepted")
 		}

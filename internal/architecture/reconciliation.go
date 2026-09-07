@@ -53,6 +53,7 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 	c.mergePositions()
 	c.mergeSizes()
 	c.mergeRoutes()
+	c.mergeShapesNotes()
 	if c.err != nil {
 		return c.result, c.err
 	}
@@ -85,6 +86,9 @@ func (manager *Manager) Reconcile(ctx context.Context, base, accepted Snapshot, 
 		return c.result, fmt.Errorf("reconciliation constructor: %w", err)
 	}
 	reproduced := snapshotReconciliationFacts(candidate.Snapshot())
+	if !reflect.DeepEqual(c.final.shapes, reproduced.shapes) || !reflect.DeepEqual(c.final.notes, reproduced.notes) {
+		return c.result, fmt.Errorf("resolved shapes/notes changed during construction")
+	}
 	if !reflect.DeepEqual(c.final.routes, reproduced.routes) {
 		return c.result, fmt.Errorf("resolved routes changed during construction")
 	}
@@ -246,13 +250,14 @@ func (f reconciliationFacts) componentContext(id string) any {
 	}
 	return struct {
 		Title, Description, Home string
+		Shapes                   map[reconciliationPair]string
 		Relationships            map[reconciliationRelationship]int
 		References               map[reconciliationPair]bool
 		Children                 map[string]string
 		Positions                map[reconciliationPair]Position
 		Sizes                    map[reconciliationPair]Size
 		Routes                   map[RouteAddress]Route
-	}{c.Title, c.Description, f.homes[id], rels, refs, children, positions, sizes, routes}
+	}{c.Title, c.Description, f.homes[id], f.componentShapes(id), rels, refs, children, positions, sizes, routes}
 }
 
 func (f reconciliationFacts) diagramContext(id string) any {
@@ -298,6 +303,8 @@ func (f reconciliationFacts) diagramContext(id string) any {
 	}
 	return struct {
 		Title, Anchor string
+		Shapes        map[reconciliationPair]string
+		Notes         map[reconciliationNoteKey]NoteValue
 		Root          bool
 		Homes         map[string]string
 		References    map[reconciliationPair]bool
@@ -305,7 +312,7 @@ func (f reconciliationFacts) diagramContext(id string) any {
 		Positions     map[reconciliationPair]Position
 		Sizes         map[reconciliationPair]Size
 		Routes        map[RouteAddress]Route
-	}{d.title, f.anchors[id], f.root == id, homes, refs, children, positions, sizes, routes}
+	}{d.title, f.anchors[id], f.diagramShapes(id), f.diagramNotes(id), f.root == id, homes, refs, children, positions, sizes, routes}
 }
 
 func (c *reconciliationCalculation) object(l ReconciliationLocator, b, a, p any) bool {

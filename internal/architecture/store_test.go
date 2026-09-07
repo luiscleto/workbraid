@@ -59,7 +59,7 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse generated manifest: %v", err)
 	}
-	if parsed.Format != "workbraid-architecture" || parsed.Version != 5 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.Slug != projectSlug || parsed.RootDiagram == "" {
+	if parsed.Format != "workbraid-architecture" || parsed.Version != 6 || parsed.StoreID != storeID || parsed.Project.Name != "Example Project" || parsed.Project.Slug != projectSlug || parsed.RootDiagram == "" {
 		t.Fatalf("unexpected manifest: %+v", parsed)
 	}
 	rootBytes, err := runGit(context.Background(), nil, "--git-dir", storePath, "show", snapshot.Revision()+":diagrams/root.yaml")
@@ -70,7 +70,7 @@ func TestInitializeCreatesAndLoadsExactBootstrap(t *testing.T) {
 	if err != nil || root.id.String() != parsed.RootDiagram || root.title != "Example Project" || len(root.appearances) != 0 {
 		t.Fatalf("unexpected generated root: %+v err=%v", root, err)
 	}
-	if snapshot.FormatVersion() != 5 || snapshot.RootDiagramID() != parsed.RootDiagram {
+	if snapshot.FormatVersion() != 6 || snapshot.RootDiagramID() != parsed.RootDiagram {
 		t.Fatalf("unexpected v2 snapshot: version=%d root=%q", snapshot.FormatVersion(), snapshot.RootDiagramID())
 	}
 
@@ -759,7 +759,7 @@ func TestStructuredPlainTitlesRoundTripThroughRealCandidateParsing(t *testing.T)
 func v2HomeDiagramTree(t *testing.T, storePath string, manifestBytes []byte, sources ...[]byte) string {
 	t.Helper()
 	parsed, err := parseManifest(manifestBytes)
-	if err != nil || parsed.Version < 2 || parsed.Version > 5 {
+	if err != nil || parsed.Version < 2 || parsed.Version > 6 {
 		t.Fatalf("parse v2 fixture manifest: %+v err=%v", parsed, err)
 	}
 	root := diagram{id: uuid.MustParse(parsed.RootDiagram), path: "diagrams/root.yaml", title: "Root"}

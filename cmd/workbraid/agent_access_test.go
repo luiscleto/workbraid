@@ -250,7 +250,7 @@ func TestRealBinaryCLIAndMCPShareParallelDurableChangeSets(t *testing.T) {
 	session := connectRealMCP(t, ctx, binary, origin)
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 42 {
+	if err != nil || len(tools.Tools) != 49 {
 		t.Fatalf("real MCP discovery: tools=%d err=%v", len(tools.Tools), err)
 	}
 	if status := runRealMCP(t, ctx, session, "status", map[string]any{}); status.Result.(map[string]any)["protocol"] != agentapi.Protocol {
@@ -681,6 +681,7 @@ func TestMCPDiscoverySchemasAndStructuredStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantNames := []string{
+		"diagram_shapes","diagram_notes","diagram_set_shape","diagram_restore_default_shape","diagram_add_note","diagram_edit_note","diagram_delete_note",
 		"architecture_inspect", "architecture_refresh", "architecture_update", "change_set_create", "change_set_discard", "change_set_edit_proposal", "change_set_inspect", "change_set_reconcile_apply", "change_set_reconcile_preview", "change_set_rename", "change_set_review", "change_sets_list",
 		"component_create", "component_edit", "component_move_home", "diagram_create_detail", "diagram_edit_title", "diagram_parent_options", "diagram_positions", "diagram_set_position", "diagram_auto_layout", "diagram_sizes", "diagram_set_size", "diagram_restore_default_size", "diagram_routes", "diagram_set_route", "diagram_restore_default_route", "diagram_reassign_detail", "diagram_show_component", "diagram_stop_showing_component", "project_close", "project_create", "project_current", "project_open", "projects_list", "relationship_add", "relationship_edit", "relationship_remove",
 		"review_submission_inspect", "review_submission_submit", "review_submissions_list", "status",

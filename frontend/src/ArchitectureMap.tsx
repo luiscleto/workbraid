@@ -14,6 +14,8 @@ export type RouteProjection = {
 }
 
 export type MapComponent = {
+	shape?: 'rectangle'|'ellipse'|'diamond'|null
+	note?: boolean
 	size?: {width:number;height:number} | null
 	position?: {x:number;y:number} | null
   id: string
@@ -592,7 +594,8 @@ export function ArchitectureMap({
           const g=resizeGesture.current;resizeGesture.current=null;if(!g)return
           const size={width:roundPosition(g.start.width+2*(event.clientX-g.x)/g.zoom),height:roundPosition(g.start.height+2*(event.clientY-g.y)/g.zoom)}
           applyDisplaySize(g.node,g.start)
-          if(size.width<80||size.width>1600||size.height<48||size.height>1200){syncOverlays.current();return}
+          const note=g.node.data('note')==='yes'
+          if(size.width<(note?120:80)||size.width>(note?800:1600)||size.height<48||size.height>(note?600:1200)){syncOverlays.current();return}
           if(size.width===g.start.width&&size.height===g.start.height){syncOverlays.current();return}
           applyDisplaySize(g.node,size)
           placementPending.current=true;g.node.cy().nodes().ungrabify()
@@ -600,7 +603,8 @@ export function ArchitectureMap({
           finally{placementPending.current=false;if(graph.current&&placementHandler.current)graph.current.nodes('[!uiAnnotation]').grabify();syncOverlays.current()}
         }}
         onClick={()=>{
-          const width=document.querySelector<HTMLInputElement>('[aria-label="Node width"]')
+          const selected=graph.current?.nodes(':selected').first()
+          const width=document.querySelector<HTMLInputElement>(selected?.data('note')==='yes'?'[aria-label="Note width"]':'[aria-label="Node width"]')
           const disclosure=width?.closest('details')
           if(disclosure)disclosure.open=true
           width?.focus()
@@ -707,7 +711,9 @@ export function projectionElements(components: MapComponent[], options: Projecti
         id: component.id,
         componentID: component.component_id ?? component.id,
         label: component.title,
-        displayLabel: fittedTitle(component.title,size,component.node_kind==='boundary'),
+        displayLabel: fittedTitle(component.title,size,component.shape??(component.node_kind==='boundary'?'diamond':'rectangle'),component.note),
+		shape:component.shape??(component.node_kind==='boundary'?'diamond':'round-rectangle'),
+		note:component.note?'yes':'',
         width:size.width,
         height:size.height,
         nodeKind: component.node_kind ?? '',
@@ -907,31 +913,35 @@ function relationshipStatusLabel(status: ReviewMapRelationshipChange['status']) 
 
 // Renderer text is disposable. Exact title source remains in label and the pane.
 let titleMeasure: CanvasRenderingContext2D | null | undefined
-export function fittedTitle(title:string,size:{width:number;height:number},boundary:boolean):string {
- const width=Math.max(1,(boundary?size.width/2:size.width)-24)
- const height=Math.max(1,(boundary?size.height/2:size.height)-24)
- const lines=Math.max(1,Math.floor(height/18))
+export function fittedTitle(title:string,size:{width:number;height:number},shape:boolean|string,plain=false):string {
+ const factor=shape===true||shape==='diamond'?2:shape==='ellipse'?Math.SQRT2:1
+ const width=Math.max(0,size.width/factor-24)
+ const height=Math.max(0,size.height/factor-24)
+ const lines=Math.floor(height/18)
  if(titleMeasure===undefined){
   try{titleMeasure=document.createElement('canvas').getContext('2d')}catch{titleMeasure=null}
  }
  if(titleMeasure)titleMeasure.font='14px "IBM Plex Sans"'
  const measure=(s:string)=>titleMeasure?.measureText(s).width??Array.from(s).length*8
- const chars=Array.from(title.replace(/\s+/g,' '))
+ if(lines===0||measure('…')>width)return ''
+ const chars=Array.from(plain?title.replace(/\r\n/g,'\n'):title.replace(/\s+/g,' '))
  const result:string[]=[]
- let rest=chars.join('')
- while(rest&&result.length<lines){
+ let rest=chars
+ while(rest.length&&result.length<lines){
   let n=0
-  while(n<rest.length&&measure(rest.slice(0,n+1))<=width)n++
-  n=Math.max(1,n)
+  while(n<rest.length&&rest[n]!=='\n'&&measure(rest.slice(0,n+1).join(''))<=width)n++
+  if(rest[n]==='\n'&&result.length<lines-1){result.push(rest.slice(0,n).join(''));rest=rest.slice(n+1);continue}
+  if(n===0){result.push('…');break}
   if(n<rest.length&&result.length<lines-1){const space=rest.lastIndexOf(' ',n);if(space>0)n=space}
-  let line=rest.slice(0,n).trimEnd();rest=rest.slice(n).trimStart()
-  if(result.length===lines-1&&rest){while(line&&measure(line+'…')>width)line=Array.from(line).slice(0,-1).join('');line+='…'}
+  let line=rest.slice(0,n).join('');rest=rest.slice(n)
+  if(!plain){line=line.trimEnd();while(rest.length&&/\s/.test(rest[0]))rest.shift()}
+  if(result.length===lines-1&&rest.length){while(line&&measure(line+'…')>width)line=Array.from(line).slice(0,-1).join('');line+='…'}
   result.push(line)
  }
  return result.join('\n')
 }
 function applyDisplaySize(node:cytoscape.NodeSingular,size:{width:number;height:number}){
- node.data({...size,displayLabel:fittedTitle(String(node.data('label')),size,node.data('nodeKind')==='boundary')})
+ node.data({...size,displayLabel:fittedTitle(String(node.data('label')),size,node.data('shape'),node.data('note')==='yes')})
 }
 function diagramBounds(instance:Core){
  const box=instance.elements().boundingBox()
@@ -965,20 +975,21 @@ const mapStyles: cytoscape.StylesheetJson = [
       'text-halign': 'center',
       width: 'data(width)',
       height: 'data(height)',
-      shape: 'round-rectangle',
+      shape: node=>node.data('shape'),
     },
   },
   { selector: 'node[reviewStatus = "unchanged"]', style: { opacity: 0.48, 'border-style': 'dotted' } },
-  { selector: 'node[reviewStatus = "added"]', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 3, shape: 'hexagon' } },
+  { selector: 'node[reviewStatus = "added"]', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 3 } },
   { selector: 'node[reviewStatus = "content_changed"]', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 3, 'border-style': 'dashed' } },
   { selector: 'node[nodeKind = "reference"]', style: { 'border-style': 'dashed', 'background-color': '#eee3c8' } },
   { selector: 'node[positionChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[sizeChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
-  { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3' } },
+  { selector: 'node[nodeKind = "boundary"]', style: { 'border-style': 'dotted', 'background-color': '#efe7d3' } },
+  { selector: 'node[note = "yes"]', style: { shape:'rectangle','background-color':'#fff7d9','border-color':'#a39472','border-width':1,'text-halign':'center','text-valign':'center' } },
   { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','overlay-opacity':0.08 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'overlay-opacity':0.08, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-style': 'dotted', opacity: 1 } },
-  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', shape: 'hexagon', opacity: 1 } },
+  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', opacity: 1 } },
   { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-style': 'dashed', opacity: 1 } },
   { selector: 'node[uiAnnotation]', style: { width: 32, height: 20, shape: 'round-rectangle', label: 'data(displayLabel)', color: '#68470f', 'background-color': '#f2dea0', 'border-color': '#a77b25', 'border-width': 1, 'font-size': 9, 'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center', opacity: 1, 'z-index': 20 } },
   { selector: 'node[uiAnnotation][annotationAdd]', style: { opacity: 0.58, 'background-color': '#f8f0dc', 'border-style': 'dashed' } },

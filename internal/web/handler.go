@@ -82,6 +82,8 @@ type pendingChangeSet struct {
 	nodePositions                  []architecture.NodePositionChange
 	edgeRoutes                     []architecture.EdgeRouteChange
 	nodeSizes                      []architecture.NodeSizeChange
+	nodeShapes                     []architecture.NodeShapeChange
+	diagramNotes                   []architecture.DiagramNoteChange
 	detailReassignments            []architecture.DetailReassignment
 	id                             string
 	name                           string
@@ -144,6 +146,9 @@ func newHandler(expectedOrigin, uiDirectory, dataDirectory string) (*Handler, ht
 	mux.HandleFunc("POST /api/architecture/diagrams/set-position", handler.browserPlacement)
 	mux.HandleFunc("POST /api/architecture/diagrams/auto-layout", handler.browserPlacement)
 	mux.HandleFunc("POST /api/architecture/diagrams/set-size", handler.browserSizing)
+	for _, action := range []string{"set-shape", "restore-default-shape", "add-note", "edit-note", "delete-note"} {
+		mux.HandleFunc("POST /api/architecture/diagrams/"+action, handler.browserShapeNote)
+	}
 	mux.HandleFunc("POST /api/architecture/diagrams/set-route", handler.browserRouting)
 	mux.HandleFunc("POST /api/architecture/diagrams/restore-default-route", handler.browserRouting)
 	mux.HandleFunc("POST /api/architecture/diagrams/restore-default-size", handler.browserSizing)
@@ -861,6 +866,8 @@ func pendingFromDurableChangeSet(durable architecture.ChangeSet) *pendingChangeS
 		architectureVersion: durable.Composition.ArchitectureVersion,
 		nodePositions:       append([]architecture.NodePositionChange(nil), durable.Composition.NodePositions...),
 		nodeSizes:           append([]architecture.NodeSizeChange(nil), durable.Composition.NodeSizes...),
+		nodeShapes:          append([]architecture.NodeShapeChange(nil), durable.Composition.NodeShapes...),
+		diagramNotes:        append([]architecture.DiagramNoteChange(nil), durable.Composition.DiagramNotes...),
 		edgeRoutes:          append([]architecture.EdgeRouteChange(nil), durable.Composition.EdgeRoutes...),
 		detailReassignments: append([]architecture.DetailReassignment(nil), durable.Composition.DetailReassignments...),
 		id:                  durable.ID, name: durable.Name, lifecycle: durable.Lifecycle, proposal: durable.Proposal,
@@ -886,7 +893,7 @@ func (h *Handler) durableChangeSet(record *pendingChangeSet) architecture.Change
 		AppliedRevision: record.appliedRevision, RefObject: record.refObject,
 		BaseRevision: record.baseRevision, Generation: record.generation, BaseSnapshot: record.baseSnapshot,
 		Changes:     record.changes,
-		Composition: architecture.CandidateComposition{ArchitectureVersion: record.architectureVersion, NodePositions: record.nodePositions, NodeSizes: record.nodeSizes, EdgeRoutes: record.edgeRoutes, DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
+		Composition: architecture.CandidateComposition{NodeShapes: record.nodeShapes, DiagramNotes: record.diagramNotes, ArchitectureVersion: record.architectureVersion, NodePositions: record.nodePositions, NodeSizes: record.nodeSizes, EdgeRoutes: record.edgeRoutes, DetailReassignments: record.detailReassignments, NewComponentHomes: record.newComponentHomes, DetailDiagrams: record.detailDiagrams, DiagramTitles: record.diagramTitles, HomeMoves: record.homeMoves, References: record.references},
 		Candidate:   record.candidate,
 	}
 	if record.review != nil {
@@ -902,6 +909,8 @@ func clonePending(record *pendingChangeSet) *pendingChangeSet {
 	clone := *record
 	clone.nodePositions = append([]architecture.NodePositionChange(nil), record.nodePositions...)
 	clone.nodeSizes = append([]architecture.NodeSizeChange(nil), record.nodeSizes...)
+	clone.nodeShapes = append([]architecture.NodeShapeChange(nil), record.nodeShapes...)
+	clone.diagramNotes = append([]architecture.DiagramNoteChange(nil), record.diagramNotes...)
 	clone.edgeRoutes = append([]architecture.EdgeRouteChange(nil), record.edgeRoutes...)
 	clone.detailReassignments = append([]architecture.DetailReassignment(nil), record.detailReassignments...)
 	clone.changes = append([]architecture.ComponentChange(nil), record.changes...)
@@ -1554,6 +1563,8 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 		ArchitectureVersion: pending.architectureVersion,
 		NodePositions:       pending.nodePositions,
 		NodeSizes:           pending.nodeSizes,
+		NodeShapes:          pending.nodeShapes,
+		DiagramNotes:        pending.diagramNotes,
 		EdgeRoutes:          pending.edgeRoutes,
 		DetailReassignments: pending.detailReassignments,
 		NewComponentHomes:   pending.newComponentHomes,
@@ -1569,6 +1580,8 @@ func (h *Handler) constructCandidate(ctx context.Context, snapshot architecture.
 	if err == nil {
 		pending.architectureVersion, pending.nodePositions = composition.ArchitectureVersion, composition.NodePositions
 		pending.nodeSizes = composition.NodeSizes
+		pending.nodeShapes = composition.NodeShapes
+		pending.diagramNotes = composition.DiagramNotes
 		pending.edgeRoutes = composition.EdgeRoutes
 	}
 	return candidate, err
@@ -1664,6 +1677,12 @@ func pendingHasDiagram(snapshot architecture.Snapshot, pending *pendingChangeSet
 }
 
 func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) {
+	// Fresh proposals have not round-tripped through the durable encoder yet.
+	// Observed removals still need the base format when invalid authored work
+	// prevents the candidate constructor from returning normalized facts.
+	if pending.architectureVersion == 0 {
+		pending.architectureVersion = snapshot.FormatVersion()
+	}
 	var previous []architecture.ComponentChange
 	var previousComposition architecture.CandidateComposition
 	if old := h.changeSets[pending.id]; old != nil {
@@ -1673,6 +1692,8 @@ func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architectur
 	reset := architecture.ResetChangedRouteCounts(snapshot, previous, pending.changes, h.durableChangeSet(pending).Composition)
 	reset = architecture.ResetLostRouteVisibility(snapshot, previous, pending.changes, previousComposition, reset)
 	pending.edgeRoutes = reset.EdgeRoutes
+	reset = architecture.ResetLostShapes(snapshot, previous, pending.changes, previousComposition, reset)
+	pending.nodeShapes = reset.NodeShapes
 	pending.generation++
 	pending.review = nil
 	pending.candidate = nil
@@ -1995,7 +2016,7 @@ func homeMovesWithoutComponent(moves []architecture.ComponentHomeMove, component
 }
 
 func pendingChangeSetEmpty(pending *pendingChangeSet) bool {
-	return len(pending.edgeRoutes) == 0 && len(pending.nodeSizes) == 0 && len(pending.nodePositions) == 0 && (pending.architectureVersion == 0 || pending.architectureVersion == pending.baseSnapshot.FormatVersion()) && len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
+	return len(pending.nodeShapes) == 0 && len(pending.diagramNotes) == 0 && len(pending.edgeRoutes) == 0 && len(pending.nodeSizes) == 0 && len(pending.nodePositions) == 0 && (pending.architectureVersion == 0 || pending.architectureVersion == pending.baseSnapshot.FormatVersion()) && len(pending.changes) == 0 && len(pending.newComponentHomes) == 0 &&
 		len(pending.detailDiagrams) == 0 && len(pending.diagramTitles) == 0 && len(pending.homeMoves) == 0 && len(pending.references) == 0 && len(pending.detailReassignments) == 0
 }
 

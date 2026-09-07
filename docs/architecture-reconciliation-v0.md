@@ -2,6 +2,14 @@
 
 Status: Approved
 
+## Phase 3.4 shapes and notes
+
+Delegated root approval of proposal `3cf11d4b-c980-4022-92d2-f98d75bf36a4` generation 2, reviewed state `d9d35b11134533016248e5e64294462f76b3aeda`, authorizes the closed v6 facts in Placement §11 and Proposals and Reviews. Resolve shapes independently after visibility, using tagged default/explicit equality and normal three-way comparison; a retaining older format contributes no shape edit. Locator is exactly `{kind:"node_shape",diagram_id,component_id}`. Side choices contain only locator/choice; manual contains exactly `value:{shape:rectangle|ellipse|diamond|null}`. Final invisible pairs have no shape conflict.
+
+Notes compare whole complete values, including absence, by Diagram/note UUID. Independent IDs merge; equal results coalesce; divergent edits and both deletion-versus-edit directions require explicit whole-note keep/replace/delete. Locator is exactly `{kind:"diagram_note",diagram_id,note_id}`; side choices contain only locator/choice, manual exactly `value:{note:{text,x,y,width,height}|null}` with portable bounds/text rules. No field synthesis or identity mutation. Independently added same-new-UUID notes with different complete values block as unsupported `replace_identity`, without replacement choices. Complete same-new-Component/Diagram comparison includes applicable shapes/notes.
+
+When B contains a note, A deletes it and P edits it, a chosen keep/replacement may restore its same Diagram-local UUID through ordinary complete final note upsert relative to A. This note-only capability does not restore Components, Diagrams, source or public creation IDs. Non-null facts require the retained owning Diagram; missing-parent lifecycle stays unsupported. Result version is max(A,P); emit exact ordinary residual facts against A, not copied B tombstones, and require strict reconstructed tree equality. Note-new deletion may normalize away its fact. S/B/A/P, non-mutating Preview/Check, proposal-only Apply, historical feedback and separate Review/Update remain unchanged.
+
 ## Phase 3.3 routing reconciliation
 
 Delegated root approval of routing proposal `d119baeb-1b2b-4451-8113-7f4fe05678ec`, generation 8, reviewed state `595bab6de6933c7a047c70520f1830594f166fed`, extends comparison with the exact Diagram presentation slots and portable/operational v5 rules in [Placement §10](architecture-placement-amendment-v0.md#10-deliberate-link-routing-phase-33). It supersedes routing exclusions and new operational-version statements below, without changing S/B/A/P or acceptance authority.

@@ -1677,6 +1677,12 @@ func pendingHasDiagram(snapshot architecture.Snapshot, pending *pendingChangeSet
 }
 
 func (h *Handler) rebuildPendingLocked(ctx context.Context, snapshot architecture.Snapshot, pending *pendingChangeSet) {
+	// Fresh proposals have not round-tripped through the durable encoder yet.
+	// Observed removals still need the base format when invalid authored work
+	// prevents the candidate constructor from returning normalized facts.
+	if pending.architectureVersion == 0 {
+		pending.architectureVersion = snapshot.FormatVersion()
+	}
 	var previous []architecture.ComponentChange
 	var previousComposition architecture.CandidateComposition
 	if old := h.changeSets[pending.id]; old != nil {

@@ -1,6 +1,6 @@
 import {afterEach,expect,it,vi} from 'vitest'
 import {cleanup,render,screen} from '@testing-library/react'
-import {affectedDiagrams,sourceDiff,PrintableProposal} from './PrintableProposal'
+import {affectedDiagrams,sourceDiff,visibleSource,PrintableProposal} from './PrintableProposal'
 import {type ChangeReview,type DiagramProjection,type ReviewSnapshot} from './App'
 
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
@@ -28,6 +28,16 @@ it.each([[' a\r\n',' a\n'],['# A\n','A\n=\n'],['a\t \n','a\n'],['a\n','a'],['','
  const lines=sourceDiff(before,after)
  expect(lines.filter(l=>l.kind!=='added').map(l=>l.text).join('')).toBe(before)
  expect(lines.filter(l=>l.kind!=='removed').map(l=>l.text).join('')).toBe(after)
+})
+it('keeps unchanged interior lines and highlights Unicode and CRLF edits within each changed line',()=>{
+ const before='routes λ\r\nunchanged middle\n😀 stays old\n',after='validates λ\nunchanged middle\n😀 stays new\n'
+ const lines=sourceDiff(before,after)
+ expect(lines.find(l=>l.text==='unchanged middle\n')?.kind).toBe('context')
+ for(const line of lines){if(line.parts)expect(line.parts.map(p=>p.text).join('')).toBe(line.text)}
+ expect(lines.find(l=>l.text==='😀 stays new\n')?.parts?.filter(p=>p.kind==='context').map(p=>p.text).join('')).toContain('😀 stays ')
+ expect(lines.find(l=>l.text==='routes λ\r\n')?.parts?.some(p=>p.kind==='removed'&&p.text==='\r')).toBe(true)
+ expect(visibleSource(' \t')).not.toBe(visibleSource('·→'))
+ expect(visibleSource('\\u{b7}')).not.toBe(visibleSource('·'))
 })
 it.each([{diff:'',message:'No Architecture changes; this proposal contains only proposal text.',appendix:false},{diff:'diff --git a/architecture.yaml b/architecture.yaml\nold mode 100644\nnew mode 100755\n',message:'No Diagram presentation or content changes. The complete canonical changes are retained in the technical appendix.',appendix:true}])('keeps zero-Diagram print truthful (appendix=$appendix)',async({diff,message,appendix})=>{
  window.history.replaceState({},'', '/projects/example/proposals/proposal/print?reviewed_state=state')

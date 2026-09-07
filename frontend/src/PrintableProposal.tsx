@@ -17,24 +17,66 @@ export function affectedDiagrams(r:ChangeReview):AffectedDiagram[] {
  const before=r.before.diagrams??[],after=r.with_changes.diagrams??[],c=r.comparison
  const textIDs=[...new Set([...r.before.components,...r.with_changes.components].map(c=>c.id))].filter(id=>source(r.before,id)!==source(r.with_changes,id))
  const structural=new Set([...(c.diagrams??[]),...(c.appearances??[]),...(c.node_positions??[]),...(c.node_sizes??[]),...(c.edge_routes??[]),...(c.node_shapes??[]),...(c.diagram_notes??[])].map(c=>c.diagram_id))
- const ordered=[...after,...before.filter(d=>!after.some(a=>a.id===d.id))]
+ const union=[...after,...before.filter(d=>!after.some(a=>a.id===d.id))],ordered:DiagramProjection[]=[],seen=new Set<string>()
+ const visit=(d:DiagramProjection)=>{if(seen.has(d.id))return;seen.add(d.id);ordered.push(d);for(const child of union)if(child.parent_diagram_id===d.id)visit(child)}
+ for(const d of union)if(!d.parent_diagram_id||!union.some(p=>p.id===d.parent_diagram_id))visit(d)
+ for(const d of union)visit(d)
  return ordered.map(d=>{
   const b=before.find(x=>x.id===d.id),w=after.find(x=>x.id===d.id),v=new Set([...visible(b),...visible(w)])
   return {id:d.id,before:b,with:w,textIDs:textIDs.filter(id=>v.has(id))}
  }).filter(d=>!d.before||!d.with||structural.has(d.id)||d.textIDs.length||d.before.parent_anchor_component_id!==d.with.parent_anchor_component_id||d.before.parent_diagram_id!==d.with.parent_diagram_id||JSON.stringify(d.before.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())!==JSON.stringify(d.with.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())||c.relationships.some(e=>e.diagram_projections?.some(p=>p.diagram_id===d.id)))
 }
 
-export function sourceDiff(before:string,after:string) {
- const a=before.match(/[^\n]*\n|[^\n]+$/g)??[],b=after.match(/[^\n]*\n|[^\n]+$/g)??[]
+type SourcePart = {kind:'context'|'removed'|'added';text:string}
+type SourceLine = SourcePart & {parts?:SourcePart[]}
+
+// Exact source presentation only. The bounded table avoids quadratic memory
+// for very large bodies; the fallback still returns every exact source byte.
+function compareSourceParts(a:string[],b:string[]):SourcePart[] {
  let start=0,end=0
  while(start<a.length&&start<b.length&&a[start]===b[start])start++
  while(end<a.length-start&&end<b.length-start&&a[a.length-end-1]===b[b.length-end-1])end++
- return [...a.slice(0,start).map(text=>({kind:'context',text})),...a.slice(start,a.length-end).map(text=>({kind:'removed',text})),...b.slice(start,b.length-end).map(text=>({kind:'added',text})),...a.slice(a.length-end).map(text=>({kind:'context',text}))]
+ const left=a.slice(start,a.length-end),right=b.slice(start,b.length-end)
+ const result:SourcePart[]=a.slice(0,start).map(text=>({kind:'context',text}))
+ if(left.length*right.length>1000000){
+  result.push(...left.map(text=>({kind:'removed' as const,text})),...right.map(text=>({kind:'added' as const,text})))
+ }else{
+  const columns=right.length+1,table=new Uint32Array((left.length+1)*columns)
+  for(let i=left.length-1;i>=0;i--)for(let j=right.length-1;j>=0;j--)table[i*columns+j]=left[i]===right[j]?1+table[(i+1)*columns+j+1]:Math.max(table[(i+1)*columns+j],table[i*columns+j+1])
+  let i=0,j=0
+  while(i<left.length||j<right.length){
+   if(i<left.length&&j<right.length&&left[i]===right[j]){result.push({kind:'context',text:left[i++]});j++}
+   else if(i<left.length&&(j===right.length||table[(i+1)*columns+j]>=table[i*columns+j+1]))result.push({kind:'removed',text:left[i++]})
+   else result.push({kind:'added',text:right[j++]})
+  }
+ }
+ result.push(...a.slice(a.length-end).map(text=>({kind:'context' as const,text})))
+ return result
+}
+
+export function sourceDiff(before:string,after:string):SourceLine[] {
+ const lines:SourceLine[]=compareSourceParts(before.match(/[^\n]*\n|[^\n]+$/g)??[],after.match(/[^\n]*\n|[^\n]+$/g)??[])
+ for(let i=0;i<lines.length;){
+  if(lines[i].kind==='context'){i++;continue}
+  let end=i;while(end<lines.length&&lines[end].kind!=='context')end++
+  const removed=lines.slice(i,end).filter(l=>l.kind==='removed'),added=lines.slice(i,end).filter(l=>l.kind==='added')
+  for(let n=0;n<Math.min(removed.length,added.length);n++){
+   const words=(text:string)=>text.match(/[\p{L}\p{N}_]+|[^\p{L}\p{N}_]/gu)??[]
+   const parts=compareSourceParts(words(removed[n].text),words(added[n].text))
+   removed[n].parts=parts.filter(p=>p.kind!=='added');added[n].parts=parts.filter(p=>p.kind!=='removed')
+  }
+  i=end
+ }
+ return lines
+}
+
+export function visibleSource(text:string) {
+ return Array.from(text).map(char=>char===' '?'·':char==='\t'?'→':char==='\r'?'␍':char==='\n'?'↵':char==='\\'?'\\\\':'·→␍↵∎'.includes(char)?`\\u{${char.codePointAt(0)!.toString(16)}}`:char).join('')
 }
 
 function SourceDiff({before,after}:{before:string;after:string}) {
- return <div className="print-source-diff"><p className="print-key">Source text · − deleted / + added · spaces ·, tabs →, CR ␍, LF ↵; ∎ means no final newline.</p>
- <pre>{sourceDiff(before,after).map((line,i)=><span key={i} className={`diff-line diff-${line.kind}`}><span aria-hidden="true">{line.kind==='added'?'+ ':line.kind==='removed'?'− ':'  '}</span>{line.text.replace(/ /g,'·').replace(/\t/g,'→').replace(/\r/g,'␍').replace(/\n$/,'↵')}{line.text.endsWith('\n')?'':'∎'}{'\n'}</span>)}</pre></div>
+ return <div className="print-source-diff"><p className="print-key">Source text · − deleted / + added, with inline changes highlighted. Spaces ·, tabs →, CR ␍, LF ↵; ∎ means no final newline. Literal marker characters use Unicode escapes; backslashes are doubled.</p>
+ <pre>{sourceDiff(before,after).map((line,i)=><span key={i} className={`diff-line diff-${line.kind}`}><span aria-hidden="true">{line.kind==='added'?'+ ':line.kind==='removed'?'− ':'  '}</span>{(line.parts??[{kind:line.kind,text:line.text}]).map((part,n)=><span key={n} className={`source-${part.kind}`}>{visibleSource(part.text)}</span>)}{line.text.endsWith('\n')?'':'∎'}{'\n'}</span>)}</pre></div>
 }
 
 function textHome(r:ChangeReview,id:string) {
@@ -60,8 +102,12 @@ function DiagramFacts({diagram:d,review:r}:{diagram:AffectedDiagram;review:Chang
  for(const p of c.node_shapes??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.component_id)} shape: ${p.before_visible?p.before??'Default':'not visible'} → ${p.with_visible?p.with??'Default':'not visible'}.`)
  for(const p of c.edge_routes??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.source_id)} → ${title(r,p.target_id)} · “${p.label}” · occurrence ${p.occurrence} bend: ${p.before?`Custom ${p.before.bend}`:p.before_state} → ${p.with?`Custom ${p.with.bend}`:p.with_state}.`)
  for(const b of d.with?.boundaries??[]){const old=d.before?.boundaries.find(n=>n.component_id===b.component_id);if(old&&(old.home_diagram_id!==b.home_diagram_id||old.home_diagram_title!==b.home_diagram_title))facts.push(`${b.title} home context: ${old.home_diagram_title} → ${b.home_diagram_title}.`)}
+ const sameBoundary=(a:DiagramProjection['boundaries'][number],b:DiagramProjection['boundaries'][number])=>a.component_id===b.component_id&&a.title===b.title&&a.home_diagram_id===b.home_diagram_id&&a.home_diagram_title===b.home_diagram_title
+ const contexts=(d.before?.boundaries??[]).map(boundary=>({boundary,side:d.with?.boundaries.some(b=>sameBoundary(b,boundary))?'Before and With changes':'Before'}))
+ for(const boundary of d.with?.boundaries??[])if(!d.before?.boundaries.some(b=>sameBoundary(b,boundary)))contexts.push({boundary,side:'With changes'})
  return <section className="print-facts" id={`changes-${d.id}`}><h3>{d.with?.title??d.before?.title}</h3>
  {facts.length>0&&<ul>{facts.map((f,i)=><li key={i}>{f}</li>)}</ul>}
+ {contexts.length>0&&<section><h4>Boundary context</h4><ul>{contexts.map(({boundary:b,side},i)=><li key={i}>{side}: {b.title} · Lives in {b.home_diagram_title}</li>)}</ul></section>}
  {d.textIDs.map(id=>textHome(r,id)===d.id?<section id={`source-${id}`} key={id}><h4>{title(r,id)} · Component text</h4><SourceDiff before={source(r.before,id)} after={source(r.with_changes,id)}/></section>:<p key={id}><a href={`#source-${id}`}>{title(r,id)} · text changes in {diagramTitle(r,textHome(r,id))}</a></p>)}
  {(c.diagram_notes??[]).filter(n=>n.diagram_id===d.id).map(n=><section key={n.note_id}><h4>Diagram note · {n.before?n.with?'changed':'removed':'added'}</h4><p>Position: {position(n.before)} → {position(n.with)}. Size: {size(n.before)} → {size(n.with)}.</p>{n.before?.text!==n.with?.text&&<SourceDiff before={n.before?.text??''} after={n.with?.text??''}/>}</section>)}
  </section>
@@ -81,7 +127,16 @@ function DiagramDrawings({diagram:d,review:r,onReady}:{diagram:AffectedDiagram;r
  },[r,d.id])
  return <section className="print-diagram" aria-label={`${d.with?.title??d.before?.title} drawings`}>
  {warnings.map(w=><p role="status" key={w}>{w}</p>)}
- {error?<p role="alert">Diagram could not be rendered. {error} Printing is unavailable; the exact changes remain below.</p>:['Before','With changes'].map((side,i)=><figure className="print-drawing" key={side}><figcaption><h3>{d.with?.title??d.before?.title} · {side}</h3><p className="print-key">Same frame · green stroke: presentation/composition changed · gold: text changed · green fill: added · dashed red link: removed</p></figcaption>{!(i===0?d.before:d.with)?<p>Diagram does not exist on this side.</p>:images?<img src={images[i]} alt={`${side}: ${i===0?d.before?.title:d.with?.title}`}/>:<p>Preparing drawing…</p>}</figure>)}
+ {error?<p role="alert">Diagram could not be rendered. {error} Printing is unavailable; the exact changes remain below.</p>:['Before','With changes'].map((side,i)=>{
+  const diagram=i===0?d.before:d.with
+  return <figure className="print-drawing" key={side}>
+   <figcaption><h3>{diagram?.title??'Diagram absent'} · {side}</h3><p className="print-key">Same frame · green stroke: presentation/composition changed · gold: text changed · green fill: added · dashed red link: removed</p></figcaption>
+   {!diagram?<p>Diagram does not exist on this side.</p>:<>
+    {diagram.appearances.length+diagram.boundaries.length+(diagram.notes?.length??0)===0&&<p>No visible Components or notes on this side.</p>}
+    {images?<img src={images[i]} alt={`${side}: ${diagram.title}`}/>:<p>Preparing drawing…</p>}
+   </>}
+  </figure>
+ })}
  </section>
 }
 

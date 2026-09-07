@@ -1,55 +1,70 @@
 # WorkBraid
 
-WorkBraid is a local Architecture workbench for documenting Components, their Relationships and nested Diagrams. Named proposals keep changes separate from Accepted Architecture. Review compares exact snapshots and their complete diff; Update deliberately accepts the reviewed result. Submitted feedback stays attached to the version it reviewed, and reconciliation combines parallel proposals before a new Review/Update.
+**Understand your architecture. Let agents propose what comes next.**
 
-One Go process serves the UI and owns private Git stores. Browser, CLI and MCP use that same process. WorkBraid does not scan or modify your source repository.
+A local architecture workbench for people and coding agents.
 
-## Run locally
+![WorkBraid: agents read and propose architecture through the CLI; a delivery-system map highlights proposed changes beside a printable comparison report.](docs/assets/workbraid-showcase.webp)
 
-Build from a checkout with Go, Node/npm and Git installed:
+- **A map with context** — connect components, write their documentation, and drill into detailed diagrams.
+- **Changes you can review** — keep named proposals separate from accepted architecture. Compare before and after, leave proposal feedback, then accept it.
+- **Agents at the same desk** — read architecture and create proposals through the CLI or MCP, then open the result in your browser.
+- **Parallel ideas** — keep independent proposals, then combine them when you choose.
+- **Reports you can share** — compare versions and print diagrams, proposal text, and changes to PDF from your browser.
+
+## Run from source
+
+Needs **Go 1.26+**, **Node.js 24+** (recommended), **npm**, and **Git on PATH**. From this checkout, in a Unix shell:
 
 ```sh
 npm ci --prefix frontend
 npm run build --prefix frontend
-go build -o /tmp/workbraid ./cmd/workbraid
-/tmp/workbraid --listen 127.0.0.1:8080 --ui-dir frontend/dist
+go build -o bin/workbraid ./cmd/workbraid
+./bin/workbraid --listen 127.0.0.1:8080 --ui-dir frontend/dist
 ```
 
-Open `http://127.0.0.1:8080`. Use **New project** to create an empty Architecture or select an existing project. Project names generate stable route slugs; the source checkout is not the project catalog.
+Open [127.0.0.1:8080](http://127.0.0.1:8080), create a **New project**, and add your first component. Keep the server running while using the browser or agents.
 
-Application data defaults to `workbraid` under the operating system's user configuration directory. `WORKBRAID_DATA_DIR` or the server's `--data-dir` selects another location. Use a durable per-user location for real work, separate from test/gate data, and run only one authoritative process against it. A temporary binary path does not make app data temporary. Private stores live under `architecture/<store-uuid>.git`; preserve the whole app-data directory when backing up work.
+## Connect an agent
 
-## CLI and MCP
+Have your agent read the built-in guide, then inspect the running app:
 
 ```sh
-/tmp/workbraid --skill
-/tmp/workbraid --server http://127.0.0.1:8080 --json status
-/tmp/workbraid --server http://127.0.0.1:8080 --json project list
-/tmp/workbraid --server http://127.0.0.1:8080 mcp
+./bin/workbraid --skill
+./bin/workbraid --json status
+./bin/workbraid --json project list
 ```
 
-CLI global flags precede the command. `--help` and the embedded `--skill` describe the commands supported by that binary. Use returned IDs and generations, inspect the exact Review binding, and Update only when acceptance is intended. Clients do not open private Git directly. MCP is a stateless stdio bridge to the running loopback process.
+For an MCP client, add a **stdio** server using your binary's absolute path:
 
-## Current work and contracts
+```json
+{
+  "command": "/absolute/path/to/bin/workbraid",
+  "args": ["mcp"]
+}
+```
 
-The human delegated planning, approval and implementation of Phase 3.3 routing, bounded Phase 3.4 shapes/notes, and the printable proposal page to root. After fresh independent review, root may approve exact proposal generations and their contract decisions, then orchestrate workers in separate workspaces (not extra panes). This supersedes earlier stop clauses and interim human gates within this scope. A final combined human visual gate is required before Phase 4; no Phase 4 work is authorized. See [current proposal discovery](docs/roadmap.md).
+The app must already be running. For another address, put `"--server", "http://127.0.0.1:8081"` before `"mcp"` in the arguments.
 
-Future plans live as proposal Markdown in the running WorkBraid self-project, not repository plan files. Use the public CLI/UI/MCP to inspect the catalog and proposal list before editing. Store: `7329b076-50c4-4ac2-b63d-cb5cdb2a87fa`. [Phase 3.2 — Readable node presentation](http://127.0.0.1:8080/projects/workbraid/proposals/bbc915b9-4e06-47c0-ad96-db5f8f166435) is proposal `bbc915b9-4e06-47c0-ad96-db5f8f166435`, generation 3, reviewed state `f5a44f18557d4070de57dad9fb7e185f2126ce61`. The human explicitly authorized execution after [approval review `883fe237-a0c2-43c2-9990-a1f46f63d0af`](http://127.0.0.1:8080/projects/workbraid/proposals/bbc915b9-4e06-47c0-ad96-db5f8f166435/reviews/883fe237-a0c2-43c2-9990-a1f46f63d0af). The Markdown-only plan remains active, not Applied.
+The guide covers reading, authoring, and review. `--help` lists commands; global flags go before the command. Agent proposals stay pending until explicitly accepted.
 
-Phase 3.2 is **complete** at implementation `94161f19fe03a1f8fd30807c97636f7680352b55`: independent technical/canonical/history/restart checks passed, the human gave explicit visual PASS, and the authorized combined Position and size disclosure follow-up passed bounded review and built-browser smoke. The final owned-runtime restart preserved exact Accepted, proposals and feedback, including the human’s generation-11 sizing draft. No new gate or plan acceptance was required.
+## Your work stays local
 
-Human or explicitly delegated root plan approval identifies the proposal UUID and generation/text in orchestration. It is distinct from Architecture Update and informational submitted review verdicts. Markdown-only planning does not require an invented Architecture diff or an acceptance action.
+WorkBraid saves projects in private Git repositories on your machine, separate from your source code. It does not scan or modify your source repository. Data lives in the `workbraid` folder in your system's user configuration directory; `--data-dir` or `WORKBRAID_DATA_DIR` chooses another location. Back up that whole folder, and use one running server per data folder.
 
-Phase 3.1 stable placement is **complete**, with explicit human visual PASS on implementation `406e18ea26a01fc0ed82e2c1c5efe66bb72de4cf`. The human accepted WorkBraid’s self-Architecture at `06110ef95cec9e385d38c17831c38c5c51c6cfc3`; its seven Components, two Diagrams, complete visible coordinates and applied receipt reconstructed exactly after a full process restart. The built Accepted route passed without console errors. [Open WorkBraid locally](http://127.0.0.1:8080/projects/workbraid).
+**Alpha:** build from source. Designed for a local desktop browser; no sign-in, hosted collaboration, or automatic source-code import. Your agent's own data-sharing settings still apply.
 
-| Document | Owns |
-| --- | --- |
-| [Architecture](docs/architecture-v0.md) | Domain, identity, portable v2 base, catalog, source fidelity and runtime authority |
-| [Proposals and Reviews](docs/architecture-proposals-v0.md) | Durable state, operational versions, exact Review/Update, immutable feedback and anchors |
-| [Reconciliation](docs/architecture-reconciliation-v0.md) | Detail reassignment, semantic choices, S/B/A/P, residual construction and exact Apply |
-| [Placement](docs/architecture-placement-amendment-v0.md) | Stable visible-node positions and sizes, legacy transitions and geometry reconciliation |
-| [UI](docs/ui-v0.md) | Language, drafting-table direction, navigation and review interaction |
-| [Agent Access](docs/architecture-agent-access-v0.md) | Local CLI/MCP protocol, preconditions, discovery and recovery |
-| [Roadmap](docs/roadmap.md) | Proposal planning discovery and future boundaries; implementation requires approval |
+<a id="current-work-and-contracts"></a>
 
-[AGENTS.md](AGENTS.md) describes development coordination. Completed plans and superseded designs live in Git history, not a second documentation archive. Runtime evidence and historical test fixtures remain separate from this cleanup.
+## Developer docs
+
+[Agent guide](AGENTS.md) · [Roadmap](docs/roadmap.md)
+
+<details>
+<summary>Living contracts</summary>
+
+[Architecture](docs/architecture-v0.md) · [UI](docs/ui-v0.md) · [Agent access](docs/architecture-agent-access-v0.md) · [Proposals and reviews](docs/architecture-proposals-v0.md) · [Combining proposals](docs/architecture-reconciliation-v0.md) · [Diagram layout](docs/architecture-placement-amendment-v0.md)
+
+</details>
+
+[Apache License 2.0](LICENSE).

@@ -19,6 +19,31 @@ test.beforeAll(async()=>{
 test.afterAll(async()=>{if(server){const exit=new Promise(resolve=>server.once('exit',resolve));server.kill('SIGTERM');await exit}})
 function call(...args:string[]){const result=JSON.parse(execFileSync(binary,['--server',origin,'--json',...args],{encoding:'utf8'}));expect(result.ok).toBe(true);return result}
 
+for(const destination of ['accepted','proposal'] as const){
+ test(`late production pagination does not enter ${destination} choices`,async({page})=>{
+  const project=call('project','create','--name',`Pagination ${destination}`),store=project.context.project.store_id,slug=project.context.project.slug,revision=project.context.accepted_revision
+  for(let i=0;i<26;i++)call('change-set','create','--store-id',store,'--accepted-revision',revision,'--name',`Delivery option ${i}`)
+  await page.goto(origin+`/projects/${slug}/compare`)
+  await page.locator('#Before-source').selectOption('proposal')
+  await expect(page.locator('#Before-version option')).toHaveCount(51)
+  let release!:()=>void,entered!:()=>void,fulfilled!:()=>void
+  const gate=new Promise<void>(resolve=>release=resolve),held=new Promise<void>(resolve=>entered=resolve),done=new Promise<void>(resolve=>fulfilled=resolve)
+  await page.route('**/api/agent/v2/architecture/versions',async route=>{
+   const input=route.request().postDataJSON()
+   if(input.source==='proposal'&&input.cursor){const response=await route.fetch();entered();await gate;await route.fulfill({response});fulfilled()}else await route.continue()
+  })
+  await page.getByRole('button',{name:'Load more',exact:true}).first().click();await held
+  await page.locator('#Before-source').selectOption('accepted')
+  await expect(page.locator('#Before-version option')).toHaveCount(2)
+  if(destination==='proposal'){await page.locator('#Before-source').selectOption('proposal');await expect(page.locator('#Before-version option')).toHaveCount(51)}
+  release();await done
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+  await expect(page.locator('#Before-version option')).toHaveCount(destination==='accepted'?2:51)
+  if(destination==='proposal')await expect(page.getByRole('button',{name:'Load more',exact:true}).first()).toBeEnabled()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+ })
+}
+
 test('retained versions: real selector, report, narrow and PDF',async({page},info)=>{
  const project=call('project','create','--name','Delivery architecture'),store=project.context.project.store_id,slug=project.context.project.slug
  const accepted=call('architecture','inspect').result
@@ -52,6 +77,9 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await page.getByRole('button',{name:'Swap versions'}).click()
  await page.getByRole('button',{name:'Swap versions'}).click()
  expect(new URL(page.url()).search).toBe(selectedPair)
+ await expect(page.locator('#Before-version')).toHaveValue(new URLSearchParams(selectedPair).get('before')!)
+ await expect(page.locator('#After-version')).toHaveValue(new URLSearchParams(selectedPair).get('after')!)
+ await page.evaluate(()=>document.fonts.ready)
  await page.screenshot({path:info.outputPath('selector-wide.png'),fullPage:true})
  await page.getByRole('button',{name:'Report',exact:true}).click()
  await expect(page.getByRole('button',{name:'Print / Save as PDF'})).toBeVisible()
@@ -64,7 +92,9 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await page.screenshot({path:info.outputPath('report-narrow.png'),fullPage:true})
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true)
  await page.getByRole('link',{name:'Compare versions',exact:true}).click()
- await expect(page.locator('#After-version')).toBeEnabled()
+ await expect(page.locator('#Before-version')).toHaveValue(new URLSearchParams(selectedPair).get('before')!)
+ await expect(page.locator('#After-version')).toHaveValue(new URLSearchParams(selectedPair).get('after')!)
+ await page.evaluate(()=>document.fonts.ready)
  await page.screenshot({path:info.outputPath('selector-narrow.png'),fullPage:true})
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true)
  expect(refs()).toBe(initialRefs);expect(call('status').context).toEqual(current);expect(errors).toEqual([])

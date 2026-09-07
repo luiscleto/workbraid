@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeReview, ReviewSnapshot } from './App'
 import { affectedDiagrams, ReportBody } from './PrintableProposal'
 import { MarkdownBody } from './MarkdownBody'
@@ -76,28 +76,31 @@ function VersionPicker({project}:{project:Project}) {
   </div>
   <div className="compare-submit"><button className="comparison-button secondary" disabled={!before||!after||busy} onClick={()=>{setBefore(after);setAfter(before);setError('');window.history.replaceState({},'',`${window.location.pathname}?${pairQuery(project.store_id,after,before)}`)}}>Swap versions</button><button className="comparison-button" disabled={!before||!after||busy} onClick={report}>{busy?'Loading comparison…':'Report'}</button></div>
   {error&&<p className="compare-error" role="alert">{error}</p>}
-  <p className="compare-footnote">Reports read the versions you choose. They do not prepare Review or update Architecture.</p>
+  <p className="compare-footnote">Reports are read-only and do not change your Architecture.</p>
  </main>
 }
 
 function VersionSelect({side,project,selected,onSelect}:{side:string;project:Project;selected?:Selector;onSelect:(s:Selector)=>void}) {
  const [source,setSource]=useState(selected?.kind??'accepted'),[versions,setVersions]=useState<Version[]>([]),[cursor,setCursor]=useState<string>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[retry,setRetry]=useState(0)
  const [proposal,setProposal]=useState(selected?.kind==='submitted_review'?selected.change_set_id:''),[proposals,setProposals]=useState<ReviewProposal[]>([]),[proposalCursor,setProposalCursor]=useState<string>()
+ const scope=JSON.stringify([project.store_id,source,proposal,retry]),scopeRef=useRef({key:scope})
+ // Identity changes on every scope transition, including A → B → A.
+ if(scopeRef.current.key!==scope)scopeRef.current={key:scope}
  useEffect(()=>{if(selected){setSource(selected.kind);if(selected.kind==='submitted_review')setProposal(selected.change_set_id)}},[selected?.kind,selected?.change_set_id])
  useEffect(()=>{
   if(source!=='submitted_review')return
   const controller=new AbortController()
-  read<{review_proposals?:ReviewProposal[];next_cursor?:string}>('versions',{store_id:project.store_id,source:'review_proposals'},controller.signal).then(p=>{setProposals(p.review_proposals??[]);setProposalCursor(p.next_cursor)}).catch(e=>{if(!controller.signal.aborted)setError(e.message)})
+  read<{review_proposals?:ReviewProposal[];next_cursor?:string}>('versions',{store_id:project.store_id,source:'review_proposals'},controller.signal).then(p=>{if(!controller.signal.aborted){setProposals(p.review_proposals??[]);setProposalCursor(p.next_cursor)}}).catch(e=>{if(!controller.signal.aborted)setError(e.message)})
   return()=>controller.abort()
  },[project.store_id,source,retry])
  useEffect(()=>{
   const controller=new AbortController();setBusy(true);setError('');setVersions([]);setCursor(undefined)
   if(source==='submitted_review'&&!proposal){setBusy(false);return()=>controller.abort()}
-  read<Page>('versions',{store_id:project.store_id,source,...(source==='submitted_review'?{change_set_id:proposal}:{})},controller.signal).then(p=>{setVersions(p.versions);setCursor(p.next_cursor)}).catch(e=>{if(!controller.signal.aborted)setError(e.message)}).finally(()=>{if(!controller.signal.aborted)setBusy(false)})
+  read<Page>('versions',{store_id:project.store_id,source,...(source==='submitted_review'?{change_set_id:proposal}:{})},controller.signal).then(p=>{if(!controller.signal.aborted){setVersions(p.versions);setCursor(p.next_cursor)}}).catch(e=>{if(!controller.signal.aborted)setError(e.message)}).finally(()=>{if(!controller.signal.aborted)setBusy(false)})
   return()=>controller.abort()
  },[project.store_id,source,proposal,retry])
- async function more(){setBusy(true);setError('');try{const p=await read<Page>('versions',{store_id:project.store_id,source,cursor,...(source==='submitted_review'?{change_set_id:proposal}:{})});setVersions(v=>[...v,...p.versions]);setCursor(p.next_cursor)}catch(e){setError(e instanceof Error?e.message:'More versions could not be loaded.')}finally{setBusy(false)}}
- async function moreProposals(){setBusy(true);try{const p=await read<{review_proposals?:ReviewProposal[];next_cursor?:string}>('versions',{store_id:project.store_id,source:'review_proposals',cursor:proposalCursor});setProposals(old=>[...new Map([...old,...p.review_proposals??[]].map(p=>[p.change_set_id,p])).values()]);setProposalCursor(p.next_cursor)}catch(e){setError(e instanceof Error?e.message:'Proposals could not be loaded.')}finally{setBusy(false)}}
+ async function more(){const requestScope=scopeRef.current;setBusy(true);setError('');try{const p=await read<Page>('versions',{store_id:project.store_id,source,cursor,...(source==='submitted_review'?{change_set_id:proposal}:{})});if(scopeRef.current!==requestScope)return;setVersions(v=>[...v,...p.versions]);setCursor(p.next_cursor)}catch(e){if(scopeRef.current===requestScope)setError(e instanceof Error?e.message:'More versions could not be loaded.')}finally{if(scopeRef.current===requestScope)setBusy(false)}}
+ async function moreProposals(){const requestScope=scopeRef.current;setBusy(true);try{const p=await read<{review_proposals?:ReviewProposal[];next_cursor?:string}>('versions',{store_id:project.store_id,source:'review_proposals',cursor:proposalCursor});if(scopeRef.current!==requestScope)return;setProposals(old=>[...new Map([...old,...p.review_proposals??[]].map(p=>[p.change_set_id,p])).values()]);setProposalCursor(p.next_cursor)}catch(e){if(scopeRef.current===requestScope)setError(e instanceof Error?e.message:'Proposals could not be loaded.')}finally{if(scopeRef.current===requestScope)setBusy(false)}}
  const selectedVersion=versions.find(v=>key(v.selector)===key(selected??{kind:''}))
  return <section className="version-side" aria-label={`${side} version`}>
   <h2>{side}</h2>
@@ -109,8 +112,7 @@ function VersionSelect({side,project,selected,onSelect}:{side:string;project:Pro
   </select>
   <div className="version-page-actions">{cursor&&<button className="comparison-text-button" disabled={busy} onClick={more}>{busy?'Loading…':'Load more'}</button>}{error&&<button className="comparison-text-button" onClick={()=>setRetry(n=>n+1)}>Reload choices</button>}</div>
   {error?<p className="compare-error" role="alert">{error}</p>:!busy&&versions.length===0?<p>No versions in this group.</p>:null}
-  <div className="version-selection" aria-live="polite">{selected?<><span className="eyebrow">Selected</span><p>{selectedVersion?.label??`${sources.find(s=>s[0]===selected.kind)?.[1]??'Retained version'} · exact selection retained`}</p><details><summary>Version details</summary><p>{selectedVersion?.context}</p><code>{JSON.stringify(selected,null,2)}</code></details></>:<p>Select a version above.</p>}</div>
-  {source==='accepted'&&<p className="version-explanation">Earlier versions reachable from current Accepted. External merge ancestors may not have been individually accepted in WorkBraid.</p>}
+  <div className="version-selection" aria-live="polite">{selected?<><span className="eyebrow">Selected</span><p>{selectedVersion?.label??`${sources.find(s=>s[0]===selected.kind)?.[1]??'Retained version'} · exact selection retained`}</p><details><summary>Version details</summary><p>{selectedVersion?.context}</p>{selected.kind==='accepted'&&<p className="version-explanation">Earlier versions reachable from current Accepted. External merge ancestors may not have been individually accepted in WorkBraid.</p>}<code>{JSON.stringify(selected,null,2)}</code></details></>:<p>Select a version above.</p>}</div>
  </section>
 }
 
@@ -135,7 +137,7 @@ function ComparisonReport({project}:{project:Project}) {
  {printError&&<p role="alert">{printError}</p>}
  {([['Before',value.before_version],['After',value.after_version]] as const).filter(([side,v])=>v.document!==undefined&&!(shared&&side==='After')).map(([side,v])=><section className="print-design" key={side}><h2>{shared?'Before and After':side} proposal document</h2><p className="print-key">Context retained with this version.</p>{v.document?<MarkdownBody source={v.document}/>:<p>No proposal text was recorded.</p>}</section>)}
  <ReportBody review={review} includePresentation={includePresentation} includeDiff={includeDiff} comparison onReady={(id,ok)=>setReady(old=>({...old,[id]:ok}))}/>
- <footer className="print-binding"><p>This report compares the selected versions. It does not prepare Review or approve an Architecture update.</p><details className="screen-identities"><summary>Exact versions</summary><code>{identities}</code></details><section className="printed-identities"><h2>Exact versions</h2><p>{value.project_name} · Store <span className="identity-value">{value.store_id}</span></p><div className="printed-pair"><PrintedVersion side="Before" version={value.before_version}/><PrintedVersion side="After" version={value.after_version}/></div></section></footer>
+ <footer className="print-binding"><p>Reports are read-only and do not change your Architecture.</p><details className="screen-identities"><summary>Exact versions</summary><code>{identities}</code></details><section className="printed-identities"><h2>Exact versions</h2><p>{value.project_name} · Store <span className="identity-value">{value.store_id}</span></p><div className="printed-pair"><PrintedVersion side="Before" version={value.before_version}/><PrintedVersion side="After" version={value.after_version}/></div></section></footer>
  {!allReady&&<p role="status">Printing is available when every drawing is ready.</p>}
  </>}
  </main>

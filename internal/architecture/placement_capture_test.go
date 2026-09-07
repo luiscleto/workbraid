@@ -50,6 +50,16 @@ func TestPlacementHistoricalReconstruction(t *testing.T) {
 		t.Fatalf("records %d bad %+v err %v", len(records), bad, err)
 	}
 	for _, record := range records {
+		// Generic read-only reports must preserve the same supported legacy
+		// operational bytes and exact trees before any new Review preparation.
+		beforeRefs := gitText(t, "--git-dir", path, "show-ref")
+		_, oldSide, newSide, comparisonDiff, comparisonErr := manager.CompareVersions(ctx, fixture.StoreID,
+			VersionSelector{Kind: "proposal", ChangeSetID: record.ID, State: record.RefObject, Side: "base"},
+			VersionSelector{Kind: "proposal", ChangeSetID: record.ID, State: record.RefObject, Side: "candidate"})
+		expectedDiff, diffErr := manager.CandidateDiff(ctx, record.BaseSnapshot, *record.Candidate)
+		if comparisonErr != nil || diffErr != nil || oldSide.Info.Revision != record.BaseRevision || newSide.Info.Revision != record.Candidate.Tree() || comparisonDiff != string(expectedDiff) || gitText(t, "--git-dir", path, "show-ref") != beforeRefs {
+			t.Fatalf("legacy comparison changed exact history: %v / %v", comparisonErr, diffErr)
+		}
 		reconstructed, err := manager.ConstructCandidate(ctx, record.BaseSnapshot, record.Changes, record.Composition)
 		if err != nil || reconstructed.Tree() != record.Candidate.Tree() {
 			t.Fatalf("historical tree %s: %v", record.ID, err)

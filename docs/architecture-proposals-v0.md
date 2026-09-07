@@ -2,6 +2,14 @@
 
 Status: Approved living contract
 
+## Read-only version comparisons
+
+The approved generation-1 version-report proposal `0a03625f-40a0-4e17-84a8-dbb833091d2e` adds comparison over two exact retained snapshots independently of preparing Review. Each side is a closed selector: `accepted` plus exact `revision`; `proposal` or `applied` plus `change_set_id`, exact current/receipt `state`, and `side: base|candidate`; or `submitted_review` plus `change_set_id`, `review_id`, exact reviewed-parent `state`, and `side`. An explicit common store UUID is required. Unknown/mixed fields, missing identity, unretained objects and cross-store inputs fail. Valid unreviewed candidates are supported; invalid candidates remain unavailable while their validated bases can be read. Either order and equal versions are valid.
+
+Active selectors expire on any state movement or lifecycle change. Applied selectors require their exact current receipt; submitted selectors follow the exact validated immutable parent and survive iteration/application/discard under existing retention. Accepted selectors require continued reachability from current Accepted ancestry. Links create no retention and never substitute a newer version. Recheck every contributing ref, including Accepted and conflicting lifecycle absence, before returning a comparison. Failure is truthful and nonmutating. Existing proposal print URLs, Review/Update bindings and lifetimes are unchanged.
+
+Generic results contain Before/After snapshots, provenance, existing UUID/multiset changes and exact diff; they are not prepared Review or acceptance bindings. Documents are exact side-owned proposal context, labelled Before/After and shown once only for the same exact source. Two Accepted revisions have no invented proposal document. Equal trees mean no Architecture differences; filtering a nonempty diff never implies equality. Discovery pages names/commits before reconstruction (default 25, maximum 50 source records) and uses explicit continuations and deadlines. Submitted review pages require a chosen proposal; the read-only `review_proposals` subgroup pages existing review refs for retained proposal names/IDs, including discarded proposals. It adds no durable object, archive, status or selector kind. No initial unbounded candidate reconstruction, raw Git/YAML tool, report mutation or new acceptance action.
+
 ## Printable bound proposals
 
 Delegated root approval of proposal `6673c0da-c906-4c5a-bf62-bdd74a6ddfdf`, generation 2, reviewed state `5f72375846631f32fc3661a2be02be087d671dba`, independently approved in review `12235fb9-94d0-41cc-9c06-d9d9aef5a6cb`, authorizes a dedicated derived read-only printable page. It changes no format, persistence, lifecycle, candidate construction, review or acceptance authority. The planning proposal remains active Markdown-only; the combined human visual gate precedes Phase 4.

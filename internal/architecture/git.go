@@ -248,6 +248,19 @@ func (gitRunner) readBlob(ctx context.Context, repository, object string) ([]byt
 }
 
 func runGit(ctx context.Context, input []byte, arguments ...string) ([]byte, error) {
+	command := gitCommand(ctx, arguments...)
+	command.Stdin = bytes.NewReader(input)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return stdout.Bytes(), fmt.Errorf("git command failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func gitCommand(ctx context.Context, arguments ...string) *exec.Cmd {
 	fixed := []string{
 		"-c", "core.hooksPath=/dev/null",
 		"-c", "commit.gpgSign=false",
@@ -258,15 +271,7 @@ func runGit(ctx context.Context, input []byte, arguments ...string) ([]byte, err
 	}
 	command := exec.CommandContext(ctx, "git", append(fixed, arguments...)...)
 	command.Env = controlledGitEnvironment()
-	command.Stdin = bytes.NewReader(input)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("git command failed: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
+	return command
 }
 
 func controlledGitEnvironment() []string {

@@ -118,7 +118,7 @@ func TestRoutingLegacyUpgradeAndStrictReplay(t *testing.T) {
 			if e != nil || !reflect.DeepEqual(loaded.EdgeRoutes, facts.EdgeRoutes) {
 				t.Fatalf("facts %v", e)
 			}
-			for _, bad := range []string{strings.Replace(string(raw), "version: 5", "version: 4", 1), strings.Replace(string(raw), "bend: 125", "bend: null", 1), strings.Replace(string(raw), "occurrence: 2", "occurrence: 0", 1)} {
+			for _, bad := range []string{strings.Replace(string(raw), "version: 6", "version: 4", 1), strings.Replace(string(raw), "bend: 125", "bend: null", 1), strings.Replace(string(raw), "occurrence: 2", "occurrence: 0", 1)} {
 				if _, _, e := parseChangeState([]byte(bad)); e == nil {
 					t.Fatal("bad operational route accepted")
 				}

@@ -1,12 +1,13 @@
 import { ReactNode, useId, useState } from 'react'
+import type {DiagramNote} from './DiagramNotePane'
 
 type Home = { component_id: string; diagram_id: string }
 type Reference = Home & { present: boolean }
 type Anchor = { diagram_id: string; anchor_component_id: string }
 type Count = { source_id: string; target_id: string; label: string; count: number }
-export type ReconciliationLocator = { kind: string; occurrence?:number; component_id?: string; diagram_id?: string; source_id?: string; target_id?: string; label?: string; reason?: string; component_ids?: string[]; diagram_ids?: string[] }
-type Value = { route?:{bend:number}|null; size?:{width:number;height:number}|null; position?:{x:number;y:number}|null; text?: string; count?: number; present?: boolean; diagram_id?: string; anchor_component_id?: string; homes?: Home[]; references?: Reference[]; detail_anchors?: Anchor[]; relationship_counts?: Count[] }
-type Side = Value & { state?:'not_applicable'|'derived'|'stored'|'default'|'custom'; exists?: boolean; component?: { title: string; description: string }; diagram?: { title: string } }
+export type ReconciliationLocator = { kind: string; note_id?:string; occurrence?:number; component_id?: string; diagram_id?: string; source_id?: string; target_id?: string; label?: string; reason?: string; component_ids?: string[]; diagram_ids?: string[] }
+type Value = { shape?:'rectangle'|'ellipse'|'diamond'|null;note?:Omit<DiagramNote,'id'>|null;route?:{bend:number}|null; size?:{width:number;height:number}|null; position?:{x:number;y:number}|null; text?: string; count?: number; present?: boolean; diagram_id?: string; anchor_component_id?: string; homes?: Home[]; references?: Reference[]; detail_anchors?: Anchor[]; relationship_counts?: Count[] }
+type Side = Value & { state?:'not_applicable'|'derived'|'stored'|'default'|'custom'|'explicit'; exists?: boolean; component?: { title: string; description: string }; diagram?: { title: string } }
 export type ReconciliationResolution = { locator: ReconciliationLocator; choice: 'accepted' | 'proposed' | 'manual' | 'clear'; value?: Value }
 type Conflict = { route_loss?:{side:string;reason:string;addresses:{occurrence:number}[]}[]; locator: ReconciliationLocator; original: Side; accepted: Side; proposed: Side; choices: string[]; unsupported?: Record<string, string>; resolved: boolean; eligible_anchor_component_ids?: string[]; eligible_parents?: { component_id: string; title: string; home_diagram_id: string; home_diagram_title: string }[] }
 export type ReconciliationSnapshot = {
@@ -85,6 +86,8 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
 	: locator.kind==='route_value'||locator.kind==='route_loss' ? `${locator.kind==='route_loss'?'Routing would be cleared':'Route'}: ${componentName(locator.source_id)} → ${componentName(locator.target_id)} · ${locator.label} · ${diagramName(locator.diagram_id)}${locator.occurrence?` · occurrence ${locator.occurrence}`:''}`
 	: locator.kind==='node_position' ? `Position of ${componentName(locator.component_id)} in ${diagramName(locator.diagram_id)}`
 	: locator.kind==='node_size' ? `Size of ${componentName(locator.component_id)} in ${diagramName(locator.diagram_id)}`
+	: locator.kind==='node_shape' ? `Shape of ${componentName(locator.component_id)} in ${diagramName(locator.diagram_id)}`
+	: locator.kind==='diagram_note' ? `Note in ${diagramName(locator.diagram_id)} · ${locator.note_id?.slice(0,8)}`
     : locator.kind === 'relationship_count' ? `${componentName(locator.source_id)} → ${componentName(locator.target_id)}`
       : `${locator.component_id ? componentName(locator.component_id) : diagramName(locator.diagram_id)} · ${locator.kind.replace('component_', '').replace('diagram_', '').replaceAll('_', ' ')}`
   const current = preview.conflicts.find((conflict) => key(conflict.locator) === selected) ?? preview.conflicts[0]
@@ -94,7 +97,9 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
     setChecked(false); setShowResult(false); setError(''); onDirty(true)
   }
   function sideText(side: Side): string {
-    if(side.state==='default')return 'Default route'
+    if(side.state==='default')return current?.locator.kind==='node_shape'?'Default shape':'Default route'
+    if(side.state==='explicit')return `Explicit ${side.shape}`
+    if(side.note)return `${side.note.text}\n\nX ${side.note.x}, Y ${side.note.y} · ${side.note.width} × ${side.note.height}`
     if(side.state==='custom')return `Custom bend ${side.route?.bend}`
 	if(side.state==='not_applicable')return 'Not present here'
 	if(side.position&&(side.state==='stored'||side.state==='derived'))return `${side.state==='derived'?'Derived v2 layout · ':''}X ${side.position.x}, Y ${side.position.y}`
@@ -199,6 +204,8 @@ export function ReconciliationTask({ name, initial, onCheck, onApply, onLeave, o
 }
 
 function manualInitial(conflict: Conflict): Value {
+	if(conflict.locator.kind==='node_shape')return {shape:conflict.proposed.shape??null}
+	if(conflict.locator.kind==='diagram_note')return {note:conflict.proposed.note??null}
     if(conflict.locator.kind==='route_value')return {route:conflict.proposed.route??null}
 	if(conflict.locator.kind==='node_size')return {size:conflict.proposed.size??{width:200,height:96}}
 	if(conflict.locator.kind==='node_position')return {position:conflict.proposed.position??{x:0,y:0}}
@@ -216,6 +223,8 @@ function IdentityChoices({ label, options, value, onChange }: { label: string; o
   return <fieldset className="reconciliation-options"><legend>{label}</legend>{options.map((option) => <label key={option.id}><input type="radio" name={groupID} checked={value === option.id} onChange={() => onChange(option.id)} /><span><strong>{option.title}</strong>{option.context && <small>{option.context}</small>}{options.filter((other) => other.title === option.title).length > 1 && <small>{option.filename}</small>}</span></label>)}</fieldset>
 }
 function ScalarEditor({ conflict, value, components, diagrams, onChange }: { conflict: Conflict; value: Value; components: Option[]; diagrams: Option[]; onChange: (value: Value) => void }) {
+	if(conflict.locator.kind==='node_shape')return <label>Final shape<select value={value.shape??'default'} onChange={e=>onChange({shape:e.target.value==='default'?null:e.target.value as 'rectangle'|'ellipse'|'diamond'})}><option value="default">Default</option><option value="rectangle">Rectangle</option><option value="ellipse">Ellipse</option><option value="diamond">Diamond</option></select></label>
+	if(conflict.locator.kind==='diagram_note')return <fieldset className="position-controls"><legend>Final note</legend><label><input type="checkbox" checked={value.note==null} onChange={e=>onChange({note:e.target.checked?null:conflict.proposed.note??conflict.accepted.note??conflict.original.note??{text:'',x:0,y:0,width:240,height:120}})}/>Delete note</label>{value.note&&<><label>Plain text<textarea aria-label="Final note text" value={value.note.text} onChange={e=>onChange({note:{...value.note!,text:e.target.value}})}/></label><div className="position-fields">{(['x','y','width','height'] as const).map(k=><label key={k}>{k}<input type="number" step={1} min={k==='width'?120:k==='height'?48:-100000} max={k==='width'?800:k==='height'?600:100000} value={value.note![k]} onChange={e=>onChange({note:{...value.note!,[k]:e.target.value===''?NaN:Number(e.target.value)}})}/></label>)}</div></>}</fieldset>
     if(conflict.locator.kind==='route_value')return <fieldset className="position-controls"><legend>Final route</legend><label><input type="checkbox" checked={value.route==null} onChange={e=>onChange({route:e.target.checked?null:{bend:0}})}/>Default route</label>{value.route!=null&&<label>Bend<input aria-label="Final bend" type="number" min={-100000} max={100000} step={1} required value={Number.isFinite(value.route.bend)?value.route.bend:''} onChange={e=>onChange({route:{bend:e.target.value===''?NaN:Number(e.target.value)}})}/></label>}</fieldset>
 	if(conflict.locator.kind==='node_size')return <fieldset className="position-controls"><legend>Final size</legend><div className="position-fields"><label>Width<input aria-label="Final width" type="number" min={80} max={1600} step={1} required value={value.size?.width??''} onChange={e=>onChange({size:{width:e.target.value===''?NaN:Number(e.target.value),height:value.size?.height??96}})} /></label><label>Height<input aria-label="Final height" type="number" min={48} max={1200} step={1} required value={value.size?.height??''} onChange={e=>onChange({size:{width:value.size?.width??200,height:e.target.value===''?NaN:Number(e.target.value)}})} /></label></div></fieldset>
 	if(conflict.locator.kind==='node_position')return <fieldset className="position-controls"><legend>Final position</legend><div className="position-fields"><label>X<input aria-label="Final position X" type="number" min={-100000} max={100000} step={1} required value={value.position?.x??''} onChange={e=>onChange({position:{x:e.target.value===''?NaN:Number(e.target.value),y:value.position?.y??0}})} /></label><label>Y<input aria-label="Final position Y" type="number" min={-100000} max={100000} step={1} required value={value.position?.y??''} onChange={e=>onChange({position:{x:value.position?.x??0,y:e.target.value===''?NaN:Number(e.target.value)}})} /></label></div></fieldset>

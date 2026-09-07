@@ -89,6 +89,23 @@ func sizingInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func boundNoteSchema(s *jsonschema.Schema) {
+	for _, field := range []struct {
+		name     string
+		min, max float64
+	}{{"x", -100000, 100000}, {"y", -100000, 100000}, {"width", 120, 800}, {"height", 48, 600}} {
+		if p := s.Properties[field.name]; p != nil {
+			min, max := field.min, field.max
+			p.Minimum, p.Maximum = &min, &max
+		}
+	}
+	if p := s.Properties["text"]; p != nil {
+		min, max := 1, 2000
+		p.MinLength = &min
+		p.MaxLength = &max
+	}
+}
+
 func mutationAnnotations(title string, destructive, idempotent bool) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: idempotent, OpenWorldHint: boolPointer(false), DestructiveHint: boolPointer(destructive)}
 }
@@ -148,6 +165,19 @@ func reviewSubmissionInputSchema() *jsonschema.Schema {
 }
 
 func registerMCPTools(server *mcp.Server, client *agentapi.Client) {
+	shapeSchema, _ := jsonschema.For[agentapi.DiagramSetShapeRequest](nil)
+	shapeSchema.Properties["shape"].Enum = []any{"rectangle", "ellipse", "diamond"}
+	addNoteSchema, _ := jsonschema.For[agentapi.DiagramAddNoteRequest](nil)
+	boundNoteSchema(addNoteSchema)
+	editNoteSchema, _ := jsonschema.For[agentapi.DiagramEditNoteRequest](nil)
+	boundNoteSchema(editNoteSchema)
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_shapes", "Read Diagram shapes", "Inspect tagged default/explicit shape for each visible Component, including boundaries. Optional proposal ID, otherwise Accepted. Reads never write.", readAnnotations("Read Diagram shapes"))
+	addMCPTool[agentapi.DiagramPositionsRequest](server, client, "diagram_notes", "Read Diagram notes", "Inspect exact Diagram-local plain notes with IDs, text and integer geometry. Optional proposal ID, otherwise Accepted.", readAnnotations("Read Diagram notes"))
+	addMCPToolWithSchema[agentapi.DiagramSetShapeRequest](server, client, "diagram_set_shape", "Set shape", "Set rectangle, ellipse or diamond on a visible Diagram/Component under exact generation. Tagged overrides preserve position, size and routes. Same explicit value is a pre-upgrade no-op.", mutationAnnotations("Set shape", false, false), shapeSchema)
+	addMCPTool[agentapi.DiagramRestoreDefaultSizeRequest](server, client, "diagram_restore_default_shape", "Restore default shape", "Remove the shape override under exact generation. Absent override is a pre-upgrade no-op. Role determines Default.", mutationAnnotations("Restore default shape", false, false))
+	addMCPToolWithSchema[agentapi.DiagramAddNoteRequest](server, client, "diagram_add_note", "Add note", "Create a plain Diagram-local note under exact generation. Text is nonblank exact UTF-8, at most 2000 Unicode scalars. Backend generates UUID and stationary-peer default placement once; no supplied creation ID.", mutationAnnotations("Add note", false, false), addNoteSchema)
+	addMCPToolWithSchema[agentapi.DiagramEditNoteRequest](server, client, "diagram_edit_note", "Edit note", "Replace one complete note text and integer geometry under exact generation. X/Y -100000..100000, width 120..800, height 48..600. All fields required; identical full value is a no-op. Unknown note is target_not_found.", mutationAnnotations("Edit note", false, false), editNoteSchema)
+	addMCPTool[agentapi.DiagramDeleteNoteRequest](server, client, "diagram_delete_note", "Delete note", "Delete only the addressed Diagram note under exact generation. An already absent valid UUID is a pre-upgrade no-op. Does not delete Components, Diagrams or review comments.", mutationAnnotations("Delete note", true, false))
 	addMCPToolWithSchema[agentapi.ReconciliationPreviewRequest](server, client, "change_set_reconcile_preview", "Reconcile with Accepted", "Prepare or check complete typed choices for exact S/B/A/P. Inspect supplies S and P without Review changes. This creates no state, review, generation or refs. Description values preserve every Markdown byte. Both competing children require explicit final anchors; divergent same-new-UUID objects cannot be replaced.", readAnnotations("Reconcile with Accepted"), reconciliationInputSchema(false))
 	addMCPToolWithSchema[agentapi.ReconciliationApplyRequest](server, client, "change_set_reconcile_apply", "Apply reconciliation", "Recompute exact S/B/A/P and complete choices, then atomically verify Accepted A and update only this active Change Set from S. Required resolutions: [] for automatic work. Review is cleared; use ordinary Review changes afterward. On response loss inspect; retry with old S returns change_set_state_mismatch with current context and never reapplies. No reconciliation receipt or automatic retry exists.", mutationAnnotations("Apply reconciliation", false, false), reconciliationInputSchema(true))
 	addMCPTool[noToolInput](server, client, "status", "Check WorkBraid", "Check the local agent protocol, current project, Accepted revision, and authority state. This never opens or refreshes a project.", readAnnotations("Check WorkBraid"))

@@ -30,6 +30,8 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 		{"component_object", []string{"component_id"}, ""}, {"diagram_object", []string{"diagram_id"}, ""},
 		{"node_position", []string{"diagram_id", "component_id"}, "position"},
 		{"node_size", []string{"diagram_id", "component_id"}, "size"},
+		{"node_shape", []string{"diagram_id", "component_id"}, "shape"},
+		{"diagram_note", []string{"diagram_id", "note_id"}, "note"},
 		{"route_value", []string{"diagram_id", "source_id", "target_id", "label", "occurrence"}, "route"},
 	} {
 		fields := map[string]*jsonschema.Schema{"kind": constant(unit.kind)}
@@ -44,6 +46,14 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 		variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": locator, "choice": {Type: "string", Enum: []any{"accepted", "proposed"}}}, "locator", "choice"))
 		if unit.value != "" {
 			value := text()
+			if unit.value == "shape" {
+				value = &jsonschema.Schema{AnyOf: []*jsonschema.Schema{{Type: "string", Enum: []any{"rectangle", "ellipse", "diamond"}}, {Type: "null"}}}
+			}
+			if unit.value == "note" {
+				n, _ := jsonschema.For[architecture.NoteValue](nil)
+				boundNoteSchema(n)
+				value = &jsonschema.Schema{AnyOf: []*jsonschema.Schema{n, {Type: "null"}}}
+			}
 			if unit.value == "present" {
 				value = &jsonschema.Schema{Type: "boolean"}
 			}
@@ -75,7 +85,7 @@ func reconciliationInputSchema(apply bool) *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id", "position", "size", "route"} {
+	for _, field := range []string{"text", "count", "present", "diagram_id", "anchor_component_id", "position", "size", "route", "shape", "note"} {
 		delete(value.Properties, field)
 	}
 	variants = append(variants, closed(map[string]*jsonschema.Schema{"locator": composition, "choice": {Type: "string", Enum: []any{"accepted", "proposed", "manual"}}, "value": value}, "locator", "choice", "value"))

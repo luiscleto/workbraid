@@ -1311,6 +1311,11 @@ dd {
   background-size: 24px 24px;
 }
 
+.diagram-notes { margin: 16px 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.diagram-notes summary { cursor: pointer; font-size: .82rem; }
+.diagram-notes details[open] { display: grid; gap: 8px; }
+.diagram-notes .text-action { display: block; width: 100%; margin-top: 8px; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 5em; overflow: hidden; }
+
 .region-label {
   position: absolute;
   z-index: 2;

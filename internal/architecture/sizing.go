@@ -64,6 +64,12 @@ func allocateSizedPositions(d diagram, components []component, existing []diagra
 					}
 					p := Position{x * 24, y * 24}
 					free := true
+					for _, n := range d.notes {
+						if rectanglesOverlap(p, size, caption, Position{n.X, n.Y}, Size{n.Width, n.Height}, 0) {
+							free = false
+							break
+						}
+					}
 					for _, occupied := range result {
 						other := sizeFor(occupied.component)
 						otherCaption := 0

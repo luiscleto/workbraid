@@ -114,6 +114,27 @@ type DiagramSetSizeRequest struct {
 	Height int `json:"height" jsonschema:"Outer logical height, integer 48 through 1200."`
 }
 
+type DiagramSetShapeRequest struct {
+	DiagramRestoreDefaultSizeRequest
+	Shape string `json:"shape" jsonschema:"rectangle, ellipse, or diamond; explicit even when equal to the role silhouette."`
+}
+type DiagramAddNoteRequest struct {
+	DiagramAutoLayoutRequest
+	Text string `json:"text" jsonschema:"Exact nonblank plain UTF-8 text, at most 2000 Unicode scalar values."`
+}
+type DiagramDeleteNoteRequest struct {
+	DiagramAutoLayoutRequest
+	NoteID string `json:"note_id"`
+}
+type DiagramEditNoteRequest struct {
+	DiagramDeleteNoteRequest
+	Text   string `json:"text"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
 type DiagramReassignDetailRequest struct {
 	StatePreconditions
 	DiagramID         string `json:"diagram_id" jsonschema:"Exact non-root Diagram UUID whose parent link will move."`
@@ -330,6 +351,13 @@ var operationPaths = map[string]string{
 	"diagram_set_route":              "/api/agent/v2/diagrams/set-route",
 	"diagram_restore_default_route":  "/api/agent/v2/diagrams/restore-default-route",
 	"diagram_sizes":                  "/api/agent/v2/diagrams/sizes",
+	"diagram_shapes":                 "/api/agent/v2/diagrams/shapes",
+	"diagram_notes":                  "/api/agent/v2/diagrams/notes",
+	"diagram_set_shape":              "/api/agent/v2/diagrams/set-shape",
+	"diagram_restore_default_shape":  "/api/agent/v2/diagrams/restore-default-shape",
+	"diagram_add_note":               "/api/agent/v2/diagrams/add-note",
+	"diagram_edit_note":              "/api/agent/v2/diagrams/edit-note",
+	"diagram_delete_note":            "/api/agent/v2/diagrams/delete-note",
 	"diagram_set_size":               "/api/agent/v2/diagrams/set-size",
 	"diagram_restore_default_size":   "/api/agent/v2/diagrams/restore-default-size",
 	"diagram_create_detail":          "/api/agent/v2/diagrams/create-detail",

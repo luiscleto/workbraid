@@ -12,11 +12,11 @@ const source = (s:ReviewSnapshot,id:string) => s.components.find(c=>c.id===id)?.
 const title = (r:ChangeReview,id:string) => r.with_changes.components.find(c=>c.id===id)?.title??r.before.components.find(c=>c.id===id)?.title??id
 const diagramTitle = (r:ChangeReview,id?:string) => [...(r.with_changes.diagrams??[]),...(r.before.diagrams??[])].find(d=>d.id===id)?.title??'None'
 
-export function affectedDiagrams(r:ChangeReview):AffectedDiagram[] {
+export function affectedDiagrams(r:ChangeReview,includePresentation=false):AffectedDiagram[] {
  if(r.diff==='')return []
  const before=r.before.diagrams??[],after=r.with_changes.diagrams??[],c=r.comparison
  const textIDs=[...new Set([...r.before.components,...r.with_changes.components].map(c=>c.id))].filter(id=>source(r.before,id)!==source(r.with_changes,id))
- const structural=new Set([...(c.diagrams??[]),...(c.appearances??[]),...(c.node_positions??[]),...(c.node_sizes??[]),...(c.edge_routes??[]),...(c.node_shapes??[]),...(c.diagram_notes??[])].map(c=>c.diagram_id))
+ const structural=new Set([...(c.appearances??[]),...(includePresentation?[...(c.node_positions??[]),...(c.node_sizes??[]),...(c.edge_routes??[]),...(c.node_shapes??[])]:[]),...(c.diagram_notes??[]).filter(n=>includePresentation||n.before?.text!==n.with?.text)].map(c=>c.diagram_id))
  const union=[...after,...before.filter(d=>!after.some(a=>a.id===d.id))],ordered:DiagramProjection[]=[],seen=new Set<string>()
  const visit=(d:DiagramProjection)=>{if(seen.has(d.id))return;seen.add(d.id);ordered.push(d);for(const child of union)if(child.parent_diagram_id===d.id)visit(child)}
  for(const d of union)if(!d.parent_diagram_id||!union.some(p=>p.id===d.parent_diagram_id))visit(d)
@@ -24,7 +24,7 @@ export function affectedDiagrams(r:ChangeReview):AffectedDiagram[] {
  return ordered.map(d=>{
   const b=before.find(x=>x.id===d.id),w=after.find(x=>x.id===d.id),v=new Set([...visible(b),...visible(w)])
   return {id:d.id,before:b,with:w,textIDs:textIDs.filter(id=>v.has(id))}
- }).filter(d=>!d.before||!d.with||structural.has(d.id)||d.textIDs.length||d.before.parent_anchor_component_id!==d.with.parent_anchor_component_id||d.before.parent_diagram_id!==d.with.parent_diagram_id||JSON.stringify(d.before.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())!==JSON.stringify(d.with.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())||c.relationships.some(e=>e.diagram_projections?.some(p=>p.diagram_id===d.id)))
+ }).filter(d=>!d.before||!d.with||d.before.title!==d.with.title||structural.has(d.id)||d.textIDs.length||d.before.parent_anchor_component_id!==d.with.parent_anchor_component_id||d.before.parent_diagram_id!==d.with.parent_diagram_id||JSON.stringify(d.before.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())!==JSON.stringify(d.with.boundaries.map(b=>[b.component_id,b.home_diagram_id,b.home_diagram_title]).sort())||c.relationships.some(e=>e.diagram_projections?.some(p=>p.diagram_id===d.id)))
 }
 
 type SourcePart = {kind:'context'|'removed'|'added';text:string}
@@ -82,7 +82,7 @@ function SourceDiff({before,after}:{before:string;after:string}) {
 function textHome(r:ChangeReview,id:string) {
  return (r.with_changes.diagrams??[]).find(d=>d.appearances.some(a=>a.component_id===id&&a.role==='home'))?.id??(r.before.diagrams??[]).find(d=>d.appearances.some(a=>a.component_id===id&&a.role==='home'))?.id
 }
-function DiagramFacts({diagram:d,review:r}:{diagram:AffectedDiagram;review:ChangeReview}) {
+function DiagramFacts({diagram:d,review:r,includePresentation}:{diagram:AffectedDiagram;review:ChangeReview;includePresentation:boolean}) {
  const c=r.comparison, facts:string[]=[]
  if(!d.before)facts.push('Diagram added.')
  if(!d.with)facts.push('Diagram removed.')
@@ -97,51 +97,50 @@ function DiagramFacts({diagram:d,review:r}:{diagram:AffectedDiagram;review:Chang
  }
  const position=(p:{x:number;y:number}|null)=>p?`(${p.x}, ${p.y})`:'not visible'
  const size=(p:{width:number;height:number}|null)=>p?`${p.width} × ${p.height}`:'not visible'
+ if(includePresentation){
  for(const p of c.node_positions??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.component_id)} position: ${position(p.before)} → ${position(p.with)}.`)
  for(const p of c.node_sizes??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.component_id)} size: ${size(p.before)} → ${size(p.with)}.`)
  for(const p of c.node_shapes??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.component_id)} shape: ${p.before_visible?p.before??'Default':'not visible'} → ${p.with_visible?p.with??'Default':'not visible'}.`)
  for(const p of c.edge_routes??[])if(p.diagram_id===d.id)facts.push(`${title(r,p.source_id)} → ${title(r,p.target_id)} · “${p.label}” · occurrence ${p.occurrence} bend: ${p.before?`Custom ${p.before.bend}`:p.before_state} → ${p.with?`Custom ${p.with.bend}`:p.with_state}.`)
+ }
  for(const b of d.with?.boundaries??[]){const old=d.before?.boundaries.find(n=>n.component_id===b.component_id);if(old&&(old.home_diagram_id!==b.home_diagram_id||old.home_diagram_title!==b.home_diagram_title))facts.push(`${b.title} home context: ${old.home_diagram_title} → ${b.home_diagram_title}.`)}
  const sameBoundary=(a:DiagramProjection['boundaries'][number],b:DiagramProjection['boundaries'][number])=>a.component_id===b.component_id&&a.title===b.title&&a.home_diagram_id===b.home_diagram_id&&a.home_diagram_title===b.home_diagram_title
  const contexts=(d.before?.boundaries??[]).map(boundary=>({boundary,side:d.with?.boundaries.some(b=>sameBoundary(b,boundary))?'Before and With changes':'Before'}))
  for(const boundary of d.with?.boundaries??[])if(!d.before?.boundaries.some(b=>sameBoundary(b,boundary)))contexts.push({boundary,side:'With changes'})
  return <section className="print-facts" id={`changes-${d.id}`}><h3>{d.with?.title??d.before?.title}</h3>
  {facts.length>0&&<ul>{facts.map((f,i)=><li key={i}>{f}</li>)}</ul>}
- {contexts.length>0&&<section><h4>Boundary context</h4><ul>{contexts.map(({boundary:b,side},i)=><li key={i}>{side}: {b.title} · Lives in {b.home_diagram_title}</li>)}</ul></section>}
+ {contexts.some(c=>c.side!=='Before and With changes')&&<section><h4>Boundary context changes</h4><ul>{contexts.filter(c=>c.side!=='Before and With changes').map(({boundary:b,side},i)=><li key={i}>{side}: {b.title} · Lives in {b.home_diagram_title}</li>)}</ul></section>}
  {d.textIDs.map(id=>textHome(r,id)===d.id?<section id={`source-${id}`} key={id}><h4>{title(r,id)} · Component text</h4><SourceDiff before={source(r.before,id)} after={source(r.with_changes,id)}/></section>:<p key={id}><a href={`#source-${id}`}>{title(r,id)} · text changes in {diagramTitle(r,textHome(r,id))}</a></p>)}
- {(c.diagram_notes??[]).filter(n=>n.diagram_id===d.id).map(n=><section key={n.note_id}><h4>Diagram note · {n.before?n.with?'changed':'removed':'added'}</h4><p>Position: {position(n.before)} → {position(n.with)}. Size: {size(n.before)} → {size(n.with)}.</p>{n.before?.text!==n.with?.text&&<SourceDiff before={n.before?.text??''} after={n.with?.text??''}/>}</section>)}
+ {(c.diagram_notes??[]).filter(n=>n.diagram_id===d.id&&(includePresentation||n.before?.text!==n.with?.text)).map(n=><section key={n.note_id}><h4>Diagram note · {n.before?n.with?'changed':'removed':'added'}</h4>{includePresentation&&<p>Position: {position(n.before)} → {position(n.with)}. Size: {size(n.before)} → {size(n.with)}.</p>}{n.before?.text!==n.with?.text&&<SourceDiff before={n.before?.text??''} after={n.with?.text??''}/>}</section>)}
  </section>
 }
 
-function DiagramDrawings({diagram:d,review:r,onReady}:{diagram:AffectedDiagram;review:ChangeReview;onReady:(id:string,ok:boolean)=>void}) {
+function DiagramDrawings({diagram:d,review:r,includePresentation,onReady}:{diagram:AffectedDiagram;review:ChangeReview;includePresentation:boolean;onReady:(id:string,ok:boolean)=>void}) {
  const [images,setImages]=useState<string[]>(),[error,setError]=useState(''),[warnings,setWarnings]=useState<string[]>([])
  useEffect(()=>{
   let cancelled=false
   const c=r.comparison
-  const changedIDs=new Set([...(c.appearances??[]),...(c.node_positions??[]),...(c.node_sizes??[]),...(c.node_shapes??[])].filter(p=>p.diagram_id===d.id).map(p=>p.component_id))
-  for(const n of c.diagram_notes??[])if(n.diagram_id===d.id)changedIDs.add(`note:${n.note_id}`)
-  const components=[...c.components,...d.textIDs.filter(id=>!c.components.some(c=>c.component_id===id)).map(id=>({component_id:id,status:'content_changed' as const,path:''}))]
+  const changedIDs=new Set([...(c.appearances??[]),...(includePresentation?[...(c.node_positions??[]),...(c.node_sizes??[]),...(c.node_shapes??[])]:[])].filter(p=>p.diagram_id===d.id).map(p=>p.component_id))
+  for(const n of c.diagram_notes??[])if(n.diagram_id===d.id&&(includePresentation||n.before?.text!==n.with?.text))changedIDs.add(`note:${n.note_id}`)
+  const components=[...c.components,...d.textIDs.filter(id=>!c.components.some(c=>c.component_id===id)).map(id=>({component_id:id,status:'content_changed' as const,path:''})),...(c.diagram_notes??[]).filter(n=>n.diagram_id===d.id&&n.with&&n.before?.text!==n.with.text).map(n=>({component_id:`note:${n.note_id}`,status:n.before?'content_changed' as const:'added' as const,path:''}))]
   const routeKeys=[...(d.before?.relationships??[]),...(d.with?.relationships??[])].filter(e=>c.edge_routes?.some(p=>p.diagram_id===d.id&&p.source_id===e.source_component_id&&p.target_id===e.target_component_id&&p.label===e.label&&p.occurrence===e.routing?.occurrence)).map(e=>e.key)
-  printDiagramImages(mapComponentsForDiagram(r.before,d.before),mapComponentsForDiagram(r.with_changes,d.with),{reviewDiagramID:d.id,reviewComponents:components,reviewPositionIDs:[...changedIDs],reviewRouteKeys:routeKeys,reviewRelationships:c.relationships}).then(({images,warnings})=>{if(!cancelled){setImages(images);setWarnings(warnings);onReady(d.id,true)}}).catch(e=>{if(!cancelled){setError(e instanceof Error?e.message:'The drawing failed.');onReady(d.id,false)}})
+  printDiagramImages(mapComponentsForDiagram(r.before,d.before),mapComponentsForDiagram(r.with_changes,d.with),{reviewSide:d.with?'with':'before',reviewDiagramID:d.id,reviewComponents:components,reviewPositionIDs:[...changedIDs],reviewRouteKeys:includePresentation?routeKeys:[],reviewRelationships:c.relationships}).then(({images,warnings})=>{if(!cancelled){setImages(images);setWarnings(warnings);onReady(d.id,true)}}).catch(e=>{if(!cancelled){setError(e instanceof Error?e.message:'The drawing failed.');onReady(d.id,false)}})
   return()=>{cancelled=true}
- },[r,d.id])
+ },[r,d.id,includePresentation])
+ const diagram=d.with??d.before!,side=d.with?'With changes':'Removed Diagram · Before only'
  return <section className="print-diagram" aria-label={`${d.with?.title??d.before?.title} drawings`}>
  {warnings.map(w=><p role="status" key={w}>{w}</p>)}
- {error?<p role="alert">Diagram could not be rendered. {error} Printing is unavailable; the exact changes remain below.</p>:['Before','With changes'].map((side,i)=>{
-  const diagram=i===0?d.before:d.with
-  return <figure className="print-drawing" key={side}>
-   <figcaption><h3>{diagram?.title??'Diagram absent'} · {side}</h3><p className="print-key">Same frame · green stroke: presentation/composition changed · gold: text changed · green fill: added · dashed red link: removed</p></figcaption>
-   {!diagram?<p>Diagram does not exist on this side.</p>:<>
-    {diagram.appearances.length+diagram.boundaries.length+(diagram.notes?.length??0)===0&&<p>No visible Components or notes on this side.</p>}
-    {images?<img src={images[i]} alt={`${side}: ${diagram.title}`}/>:<p>Preparing drawing…</p>}
-   </>}
-  </figure>
- })}
+ {error?<p role="alert">Diagram could not be rendered. {error} Printing is unavailable; the exact changes remain below.</p>:<figure className="print-drawing">
+   <figcaption><h3>{diagram.title} · {side}</h3><p className="print-key">Gold: content changed · green fill: added · green stroke: composition{includePresentation?' / presentation':''} changed · dashed red: removed Relationship / base-only endpoint</p></figcaption>
+   {diagram.appearances.length+diagram.boundaries.length+(diagram.notes?.length??0)===0&&<p>No visible Components or notes in this {d.with?'candidate':'base'} Diagram.</p>}
+   {images?<img src={images[0]} alt={`${side}: ${diagram.title}`}/>:<p>Preparing drawing…</p>}
+  </figure>}
  </section>
 }
 
 export function PrintableProposal() {
  const [value,setValue]=useState<PrintDocument>(),[error,setError]=useState(''),[printError,setPrintError]=useState(''),[ready,setReady]=useState<Record<string,boolean>>({})
+ const [includePresentation,setIncludePresentation]=useState(false),[includeDiff,setIncludeDiff]=useState(false)
  const match=window.location.pathname.match(/^\/projects\/([^/]+)\/proposals\/([^/]+)(?:\/reviews\/([^/]+))?\/print\/?$/)
  const returnURL=match?`/projects/${match[1]}/proposals/${match[2]}`:'/'
  useEffect(()=>{
@@ -162,21 +161,23 @@ export function PrintableProposal() {
   load().catch(e=>{if(!cancelled)setError(e.message)})
   return()=>{cancelled=true}
  },[])
- const diagrams=value?affectedDiagrams(value.review):[]
+ const diagrams=value?affectedDiagrams(value.review,includePresentation):[]
  const allReady=!!value&&diagrams.every(d=>ready[d.id]===true)
  async function print(){
   try{await document.fonts.ready;await Promise.all([...document.querySelectorAll<HTMLImageElement>('.print-drawing img')].map(image=>image.decode()));await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));window.print()}
   catch{setPrintError('An image could not finish loading. Reload this exact page before printing.')}
  }
  return <main className="print-document"><nav className="print-actions"><a href={returnURL}>Return to proposal</a>{allReady&&<button onClick={print}>Print / Save as PDF</button>}</nav>
+ {value&&<div className="print-options"><label><input type="checkbox" checked={includePresentation} onChange={e=>{setReady({});setIncludePresentation(e.target.checked)}}/> Include presentation changes</label><label><input type="checkbox" checked={includeDiff} onChange={e=>setIncludeDiff(e.target.checked)}/> Include complete raw diff</label></div>}
  {printError&&<p role="alert">{printError}</p>}
  {error?<h1 role="alert">{error}</h1>:!value?<p>Loading exact proposal…</p>:<>
  <header className="print-header"><p>{value.project_name} · {value.review_id?'Submitted review':value.lifecycle==='applied'?'Applied proposal':'Active proposal'} · generation {value.review.generation}</p><p>{value.name}</p></header>
  <section className="print-design" aria-label="Proposal design"><MarkdownBody source={value.proposal_markdown}/></section>
  {value.review.diff===''?<p>No Architecture changes; this proposal contains only proposal text.</p>:<>
- <h2 className={diagrams.length?'print-diagrams-heading':''}>Affected Diagrams</h2>{diagrams.length===0?<p>No Diagram presentation or content changes. The complete canonical changes are retained in the technical appendix.</p>:diagrams.map(d=><DiagramDrawings key={d.id} diagram={d} review={value.review} onReady={(id,ok)=>setReady(old=>({...old,[id]:ok}))}/>)}
- {diagrams.length>0&&<section className="print-changes"><h2>Changes by Diagram</h2>{diagrams.map(d=><DiagramFacts key={d.id} diagram={d} review={value.review}/>)}</section>}
- <section className="print-appendix"><h2>Technical appendix · complete canonical diff</h2><RawDiff diff={value.review.diff}/></section></>}
+ <p className="print-scope">{includePresentation?'Content and presentation changes included.':'Presentation-only changes excluded.'} Complete exact diff is available in normal Review{includeDiff?' and the appendix below.':'; use Include complete raw diff to print it.'}</p>
+ <h2 className={diagrams.length?'print-diagrams-heading':''}>Affected Diagrams</h2>{diagrams.length===0?<p>{includePresentation?'No affected Diagrams. Other Architecture changes remain in the complete exact diff.':'No content changes in Diagrams. Presentation-only or other Architecture changes are excluded from this view.'}</p>:diagrams.map(d=><DiagramDrawings key={`${d.id}:${includePresentation}`} diagram={d} review={value.review} includePresentation={includePresentation} onReady={(id,ok)=>setReady(old=>({...old,[id]:ok}))}/>)}
+ {diagrams.length>0&&<section className="print-changes"><h2>Changes by Diagram</h2>{diagrams.map(d=><DiagramFacts key={d.id} diagram={d} review={value.review} includePresentation={includePresentation}/>)}</section>}
+ {includeDiff&&<section className="print-appendix"><h2>Technical appendix · complete canonical diff</h2><RawDiff diff={value.review.diff}/></section>}</>}
  <footer className="print-binding"><h2>Exact version</h2><p>Before base: {value.review.base_revision}<br/>With candidate: {value.review.candidate_tree}<br/>{value.review_id?'Immutable reviewed state':value.lifecycle==='applied'?'Applied receipt state':'Reviewed state'}: {value.state}{value.applied_revision&&<><br/>Applied revision: {value.applied_revision}</>}</p><p>Current Accepted observed separately: {value.accepted_revision}. {value.accepted_revision!==value.review.base_revision?'It differs from this document’s Before base.':''} Current proposal: {value.lifecycle==='no_longer_active'?'no longer active':value.lifecycle}.</p></footer>
  {!allReady&&diagrams.length>0&&<p className="print-pending" role="status">Printing is unavailable until every drawing is ready.</p>}
  </>}

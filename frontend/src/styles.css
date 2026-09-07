@@ -168,7 +168,7 @@ input:focus {
   outline-offset: -3px;
 }
 
-button {
+button, .printable-proposal-button {
   min-width: 126px;
   border: 1px solid var(--accent);
   border-bottom: 0;
@@ -184,11 +184,13 @@ button {
   text-transform: uppercase;
 }
 
-button:hover:not(:disabled) {
+.printable-proposal-button { display: inline-block; text-decoration: none; text-align: center; }
+
+button:hover:not(:disabled), .printable-proposal-button:hover {
   background: #24482f;
 }
 
-button:focus-visible {
+button:focus-visible, .printable-proposal-button:focus-visible {
   outline: 3px solid rgb(49 91 61 / 25%);
   outline-offset: 3px;
 }

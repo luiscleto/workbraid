@@ -3145,7 +3145,7 @@ function ChangesTask({
           </div>
         </div>
         <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : changes.lifecycle === 'no_longer_active' ? 'Proposal no longer active' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
-        {(activeReviewSubmission?.printable_url??changes.review.printable_url)&&<a target="_blank" rel="noreferrer" href={activeReviewSubmission?.printable_url??changes.review.printable_url}>Printable proposal</a>}
+        {(activeReviewSubmission?.printable_url??changes.review.printable_url)&&<a className="printable-proposal-button" target="_blank" rel="noreferrer" href={activeReviewSubmission?.printable_url??changes.review.printable_url}>Printable proposal</a>}
         {!activeReviewSubmission && <nav className="proposal-task-navigation" aria-label="Proposal task">
           {onContinueEditing && <button className="text-action" type="button" disabled={busy} onClick={onContinueEditing}>Back to proposal</button>}
           {changes.lifecycle === 'active' && onSubmitReview && <button className="text-action" type="button" onClick={() => {
@@ -3280,7 +3280,7 @@ function ChangesTask({
         )}
         {!activeReviewSubmission && <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />}
         <div className="change-actions">
-          {changes.review?.printable_url&&<a target="_blank" rel="noreferrer" href={changes.review.printable_url}>Printable proposal</a>}
+          {changes.review?.printable_url&&<a className="printable-proposal-button" target="_blank" rel="noreferrer" href={changes.review.printable_url}>Printable proposal</a>}
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
           {!activeReviewSubmission && !readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
           {discardAction}

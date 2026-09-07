@@ -1,5 +1,11 @@
 import { expect, it } from 'vitest'
-import { deterministicPositions, displayPositions, projectionElements, roundPosition } from './ArchitectureMap'
+import { deterministicPositions, displayPositions, fittedTitle, projectionElements, roundPosition } from './ArchitectureMap'
+
+it('fits Unicode scalars without splitting emoji and keeps plain note line breaks', () => {
+  expect(fittedTitle('😀😀😀😀😀😀😀😀😀', {width:80,height:120}, 'rectangle')).toBe('😀😀😀😀😀😀😀\n😀😀')
+  expect(fittedTitle(' one\n\n two ', {width:240,height:120}, 'rectangle', true)).toBe(' one\n\n two ')
+  expect(fittedTitle('Exact full title', {width:80,height:48}, 'diamond')).toBe('')
+})
 
 it.each([[0.5, 1], [-0.5, -1], [-180.49, -180], [-180.5, -181], [100000, 100000]])('rounds model coordinate %s to %s', (value, expected) => {
   expect(roundPosition(value)).toBe(expected)

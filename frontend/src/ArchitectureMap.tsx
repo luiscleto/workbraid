@@ -926,15 +926,16 @@ export function fittedTitle(title:string,size:{width:number;height:number},shape
  if(lines===0||measure('…')>width)return ''
  const chars=Array.from(plain?title.replace(/\r\n/g,'\n'):title.replace(/\s+/g,' '))
  const result:string[]=[]
- let rest=chars.join('')
- while(rest&&result.length<lines){
+ let rest=chars
+ while(rest.length&&result.length<lines){
   let n=0
-  while(n<rest.length&&rest[n]!=='\n'&&measure(rest.slice(0,n+1))<=width)n++
-  if(rest[n]==='\n'&&result.length<lines-1){result.push(rest.slice(0,n));rest=rest.slice(n+1);continue}
+  while(n<rest.length&&rest[n]!=='\n'&&measure(rest.slice(0,n+1).join(''))<=width)n++
+  if(rest[n]==='\n'&&result.length<lines-1){result.push(rest.slice(0,n).join(''));rest=rest.slice(n+1);continue}
   if(n===0){result.push('…');break}
   if(n<rest.length&&result.length<lines-1){const space=rest.lastIndexOf(' ',n);if(space>0)n=space}
-  let line=rest.slice(0,n).trimEnd();rest=rest.slice(n).trimStart()
-  if(result.length===lines-1&&rest){while(line&&measure(line+'…')>width)line=Array.from(line).slice(0,-1).join('');line+='…'}
+  let line=rest.slice(0,n).join('');rest=rest.slice(n)
+  if(!plain){line=line.trimEnd();while(rest.length&&/\s/.test(rest[0]))rest.shift()}
+  if(result.length===lines-1&&rest.length){while(line&&measure(line+'…')>width)line=Array.from(line).slice(0,-1).join('');line+='…'}
   result.push(line)
  }
  return result.join('\n')

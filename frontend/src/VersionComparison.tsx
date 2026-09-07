@@ -4,7 +4,7 @@ import { affectedDiagrams, ReportBody } from './PrintableProposal'
 import { MarkdownBody } from './MarkdownBody'
 import './comparison.css'
 
-type Selector = {kind:string;revision?:string;change_set_id?:string;state?:string;review_id?:string;side?:string}
+export type Selector = {kind:string;revision?:string;change_set_id?:string;state?:string;review_id?:string;side?:string}
 type Version = {selector:Selector;label:string;context?:string;revision:string;generation?:number;document?:string;document_source?:string;unavailable?:boolean}
 type Project = {store_id:string;slug:string;name:string;unavailable?:boolean;conflict?:boolean}
 type Page = {versions:Version[];next_cursor?:string}
@@ -25,10 +25,15 @@ function exactPair():{before?:Selector;after?:Selector;store?:string} {
  const parse=(name:string)=>q.has(name)?JSON.parse(q.get(name)!):undefined
  return {before:parse('before'),after:parse('after'),store:q.get('store_id')??undefined}
 }
-function pairQuery(store:string,before?:Selector,after?:Selector) {
+export function pairQuery(store:string,before?:Selector,after?:Selector) {
  const q=new URLSearchParams({store_id:store})
  if(before)q.set('before',key(before));if(after)q.set('after',key(after))
  return q.toString()
+}
+
+export async function currentAcceptedSelector(store:string,signal?:AbortSignal):Promise<Selector> {
+ const page=await read<{accepted_revision:string}>('versions',{store_id:store,source:'accepted',limit:1},signal)
+ return {kind:'accepted',revision:page.accepted_revision}
 }
 
 export function VersionComparison() {
@@ -56,6 +61,18 @@ function VersionPicker({project}:{project:Project}) {
  const initial=useMemo(()=>exactPair(),[])
  const [before,setBefore]=useState<Selector|undefined>(initial.before),[after,setAfter]=useState<Selector|undefined>(initial.after)
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
+ const [initializing,setInitializing]=useState(!window.location.search)
+ useEffect(()=>{
+  if(window.location.search)return
+  const controller=new AbortController()
+  const entry=window.location.href
+  currentAcceptedSelector(project.store_id,controller.signal).then(value=>{
+   if(controller.signal.aborted||window.location.href!==entry)return
+   setBefore(value)
+   window.history.replaceState({},'',`${window.location.pathname}?${pairQuery(project.store_id,value)}`)
+  }).catch(()=>{if(!controller.signal.aborted)setError('Current Accepted could not be loaded. Choose a version or reload to try again.')}).finally(()=>{if(!controller.signal.aborted)setInitializing(false)})
+  return()=>controller.abort()
+ },[project.store_id])
  function select(side:'before'|'after',value?:Selector) {
   if(side==='before')setBefore(value);else setAfter(value)
   setError('')
@@ -70,10 +87,10 @@ function VersionPicker({project}:{project:Project}) {
  return <main className="compare-page">
   <nav className="compare-nav"><a className="comparison-button secondary" href={`/projects/${encodeURIComponent(project.slug)}`}>Return to architecture</a><span>WorkBraid</span></nav>
   <header className="compare-heading"><p className="eyebrow">{project.name}</p><h1>Compare versions</h1><p>Choose two versions to see what changed.</p></header>
-  <div className="compare-pair">
+  {initializing?<p role="status">Loading current Accepted…</p>:<div className="compare-pair">
    <VersionSelect side="Before" project={project} selected={before} onSelect={v=>select('before',v)}/>
    <VersionSelect side="After" project={project} selected={after} onSelect={v=>select('after',v)}/>
-  </div>
+  </div>}
   <div className="compare-submit"><button className="comparison-button secondary" disabled={!before||!after||busy} onClick={()=>{setBefore(after);setAfter(before);setError('');window.history.replaceState({},'',`${window.location.pathname}?${pairQuery(project.store_id,after,before)}`)}}>Swap versions</button><button className="comparison-button" disabled={!before||!after||busy} onClick={report}>{busy?'Loading comparison…':'Report'}</button></div>
   {error&&<p className="compare-error" role="alert">{error}</p>}
   <p className="compare-footnote">Reports are read-only and do not change your Architecture.</p>

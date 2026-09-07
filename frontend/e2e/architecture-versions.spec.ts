@@ -69,6 +69,10 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await page.setViewportSize({width:1440,height:1000})
  await page.goto(origin+`/projects/${slug}/compare`)
  await expect(page.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible()
+ await expect(page.locator('#Before-version')).toHaveValue(JSON.stringify({kind:'accepted',revision:baseline}))
+ await expect(page.locator('#After-version')).toHaveValue('')
+ await page.reload()
+ await expect(page.locator('#Before-version')).toHaveValue(JSON.stringify({kind:'accepted',revision:baseline}))
  await page.getByLabel('From',{exact:true}).nth(1).selectOption('proposal')
  await expect(page.locator('#After-version option')).toHaveCount(3)
  await page.locator('#Before-version').selectOption({index:1})
@@ -112,6 +116,8 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await page.getByRole('button',{name:'Compare versions',exact:true}).click()
  await page.getByRole('button',{name:'Leave without keeping',exact:true}).click()
  await expect(page.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible()
+ await expect(page.locator('#Before-version')).toHaveValue(JSON.stringify({kind:'accepted',revision:baseline}))
+ await expect(page.locator('#After-version')).toHaveValue(JSON.stringify({kind:'proposal',change_set_id:chosen.id,state:chosen.change_set_state,side:'candidate'}))
  expect(inspect()).toEqual(chosen);expect(refs()).toBe(initialRefs)
  // A process restart reconstructs this exact pair; no report captures it.
  const stoppedPID=server.pid
@@ -139,3 +145,80 @@ test('retained versions: real selector, report, narrow and PDF',async({page},inf
  await expect(page.locator('.print-drawing')).toHaveCount(0)
  expect(refs()).toBe(movedRefs);expect(errors).toEqual([])
 })
+
+test('delayed comparison discovery cannot redirect after browser Back',async({page})=>{
+ const project=call('project','create','--name','Navigation while loading'),store=project.context.project.store_id,slug=project.context.project.slug
+ const proposal=call('change-set','create','--store-id',store,'--accepted-revision',project.context.accepted_revision,'--name','Navigation proposal').result
+ await page.goto(origin+`/projects/${slug}`)
+ await page.getByRole('button',{name:/Showing/}).click()
+ await page.getByRole('option',{name:'Navigation proposal'}).click()
+ await expect(page).toHaveURL(origin+`/projects/${slug}/proposals/${proposal.id}`)
+ let release!:()=>void,entered!:()=>void
+ const gate=new Promise<void>(resolve=>release=resolve),held=new Promise<void>(resolve=>entered=resolve)
+ await page.route('**/api/agent/v2/architecture/versions',async route=>{
+  if(route.request().postDataJSON().limit===1){const response=await route.fetch();entered();await gate;await route.fulfill({response})}else await route.continue()
+ })
+ await page.getByRole('button',{name:'Compare versions',exact:true}).click()
+ await held
+ await page.goBack()
+ await expect(page).toHaveURL(origin+`/projects/${slug}`)
+ release()
+ await expect(page.locator('.workspace-shell')).not.toHaveAttribute('inert','')
+ expect(page.url()).toBe(origin+`/projects/${slug}`)
+ await page.getByRole('button',{name:/Showing/}).click()
+ await page.getByRole('option',{name:'Navigation proposal'}).click()
+ await page.getByRole('textbox',{name:'Proposal',exact:true}).fill('New unsent text after cancelled navigation')
+ await page.getByRole('button',{name:'Compare versions',exact:true}).click()
+ await expect(page.getByRole('dialog',{name:'Leave without keeping?'})).toBeVisible()
+ await page.getByRole('button',{name:'Keep editing',exact:true}).click()
+ await expect(page.getByRole('textbox',{name:'Proposal',exact:true})).toHaveValue('New unsent text after cancelled navigation')
+})
+
+for(const source of ['active','prepared','applied','submitted'] as const){
+ test(`workspace comparison defaults from ${source}`,async({page})=>{
+  const project=call('project','create','--name',`Origin ${source}`),store=project.context.project.store_id,slug=project.context.project.slug,revision=project.context.accepted_revision
+  const proposal=call('change-set','create','--store-id',store,'--accepted-revision',revision,'--name','Origin proposal').result
+  let binding:any,submission:any
+  if(source==='applied')call('component','create','--store-id',store,'--change-set-id',proposal.id,'--generation','0','--diagram-id',call('architecture','inspect').result.root_diagram_id,'--title','Applied component','--description','Scratch fixture')
+  if(source!=='active')binding=call('change-set','review','--store-id',store,'--change-set-id',proposal.id,'--generation',source==='applied'?'1':'0').result
+  if(source==='submitted')submission=call('review-submission','submit','--store-id',store,'--change-set-id',proposal.id,'--reviewed-state',binding.reviewed_state,'--base-revision',binding.base_revision,'--candidate-tree',binding.candidate_tree,'--generation',String(binding.generation),'--verdict','comment','--author','Browser check','--body','Retained origin').result
+  if(source==='applied')call('architecture','update','--store-id',store,'--change-set-id',proposal.id,'--base-revision',binding.base_revision,'--candidate-tree',binding.candidate_tree,'--generation',String(binding.generation))
+  const chosen=call('change-set','inspect','--store-id',store,'--change-set-id',proposal.id).result
+  const accepted=call('architecture','inspect').result.revision
+  await page.goto(origin+`/projects/${slug}/proposals/${proposal.id}`+(source==='submitted'?`/reviews/${submission.id}`:source==='prepared'?'/review':''))
+  let release:undefined|(()=>void),held:Promise<void>|undefined
+  if(source==='active'){
+   let entered!:()=>void
+   held=new Promise<void>(resolve=>entered=resolve)
+   const gate=new Promise<void>(resolve=>release=resolve)
+   await page.route('**/api/agent/v2/architecture/versions',async route=>{
+    if(route.request().postDataJSON().limit===1){const response=await route.fetch();entered();await gate;await route.fulfill({response})}else await route.continue()
+   })
+  }
+  await page.getByRole('button',{name:'Compare versions',exact:true}).click()
+  if(held){
+   await held
+   await expect(page.locator('.workspace-shell')).toHaveAttribute('inert','')
+   const text=page.locator('textarea[id^="proposal-document-"]')
+   const saved=await text.inputValue()
+   await text.evaluate((element:HTMLTextAreaElement)=>element.focus())
+   await page.keyboard.type('Must not become unsent edits')
+   expect(await text.inputValue()).toBe(saved)
+   release!()
+  }
+  const before={kind:'accepted',revision:accepted},after=source==='submitted'?{kind:'submitted_review',change_set_id:proposal.id,state:binding.reviewed_state,review_id:submission.id,side:'candidate'}:{kind:source==='applied'?'applied':'proposal',change_set_id:proposal.id,state:chosen.change_set_state,side:'candidate'}
+  await expect(page.locator('#Before-version')).toHaveValue(JSON.stringify(before))
+  await expect(page.locator('#After-version')).toHaveValue(JSON.stringify(after))
+  const pair=new URL(page.url()).search
+  await page.reload()
+  await expect(page.locator('#After-version')).toHaveValue(JSON.stringify(after))
+  expect(new URL(page.url()).search).toBe(pair)
+  // An explicit partial URL must not acquire a default on entry or reload.
+  const partial=new URLSearchParams({store_id:store,after:JSON.stringify(after)})
+  await page.goto(origin+`/projects/${slug}/compare?${partial}`)
+  await expect(page.locator('#Before-version')).toHaveValue('')
+  await page.reload()
+  await expect(page.locator('#Before-version')).toHaveValue('')
+  expect(new URL(page.url()).searchParams.has('before')).toBe(false)
+ })
+}

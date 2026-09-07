@@ -9,6 +9,7 @@ import {
 } from './ArchitectureMap'
 import { MarkdownBody } from './MarkdownBody'
 import {DiagramNotePane,type DiagramNote} from './DiagramNotePane'
+import { currentAcceptedSelector, pairQuery, type Selector } from './VersionComparison'
 import { RawDiff } from './RawDiff'
 import { ReconciliationTask, type ReconciliationPreview, type ReconciliationResolution, type ReconciliationSnapshot } from './ReconciliationTask'
 
@@ -677,6 +678,7 @@ export function App() {
   const [authoringError, setAuthoringError] = useState('')
   const [architectureNotice, setArchitectureNotice] = useState('')
   const [architectureBusy, setArchitectureBusy] = useState(false)
+  const [openingComparison, setOpeningComparison] = useState(false)
   const [acceptanceUnknown, setAcceptanceUnknown] = useState(false)
   const [selectedComponentID, setSelectedComponentID] = useState<string>()
   const [selectedDiagramID, setSelectedDiagramID] = useState<string>()
@@ -1590,8 +1592,25 @@ export function App() {
     }
     if (intent.kind === 'compare-versions') {
       if (state.kind === 'ready') {
-        editorDirtyRef.current = false
-        window.location.assign(`/projects/${encodeURIComponent(state.value.project_slug)}/compare`)
+        const result = state.value
+        const submission = result.submitted_review
+        const proposal = result.changes
+        const after: Selector | undefined = submission
+          ? { kind: 'submitted_review', change_set_id: submission.change_set_id, state: submission.reviewed_state, review_id: submission.id, side: 'candidate' }
+          : proposal && (proposal.lifecycle === 'active' || proposal.lifecycle === 'applied')
+            ? { kind: proposal.lifecycle === 'applied' ? 'applied' : 'proposal', change_set_id: proposal.id, state: proposal.change_set_state, side: 'candidate' }
+            : undefined
+        const entry = window.location.href
+        setArchitectureBusy(true)
+        setOpeningComparison(true)
+        try {
+          const before = await currentAcceptedSelector(result.store_id)
+          if (stateRef.current !== state || window.location.href !== entry) return
+          editorDirtyRef.current = false
+          window.location.assign(`/projects/${encodeURIComponent(result.project_slug)}/compare?${pairQuery(result.store_id, before, after)}`)
+        } catch {
+          if (stateRef.current === state && window.location.href === entry) setArchitectureNotice('Current Accepted could not be loaded. Try Compare versions again.')
+        } finally { setArchitectureBusy(false); setOpeningComparison(false) }
       }
       return
     }
@@ -2244,7 +2263,7 @@ export function App() {
       </>
     ) : undefined
     return (
-      <main className="workspace-shell">
+      <main className="workspace-shell" inert={openingComparison || undefined} aria-busy={openingComparison || undefined}>
         <header className="application-frame">
           <div>
             <p className="eyebrow">WorkBraid</p>

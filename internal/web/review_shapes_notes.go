@@ -6,11 +6,13 @@ import (
 )
 
 type reviewShapeChange struct {
-	DiagramID   string  `json:"diagram_id"`
-	ComponentID string  `json:"component_id"`
-	Before      *string `json:"before"`
-	With        *string `json:"with"`
-	Path        string  `json:"path"`
+	DiagramID     string  `json:"diagram_id"`
+	ComponentID   string  `json:"component_id"`
+	Before        *string `json:"before"`
+	With          *string `json:"with"`
+	BeforeVisible bool    `json:"before_visible"`
+	WithVisible   bool    `json:"with_visible"`
+	Path          string  `json:"path"`
 }
 type reviewNoteChange struct {
 	DiagramID string                  `json:"diagram_id"`
@@ -32,8 +34,10 @@ func compareShapesNotes(before, with snapshotProjectionResponse) ([]reviewShapeC
 				v.DiagramID, v.ComponentID, v.Path = d.ID, s.ComponentID, "diagrams/"+d.Filename
 				if side == 0 {
 					v.Before = s.Shape
+					v.BeforeVisible = true
 				} else {
 					v.With = s.Shape
+					v.WithVisible = true
 				}
 				shapes[k] = v
 			}

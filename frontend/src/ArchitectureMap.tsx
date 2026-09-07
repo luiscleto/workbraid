@@ -79,6 +79,7 @@ type ArchitectureMapProps = {
   reviewComponents?: ReviewMapComponentChange[]
   reviewPositionIDs?: string[]
   reviewSizeIDs?: string[]
+  reviewRouteKeys?: string[]
   reviewRelationships?: ReviewMapRelationshipChange[]
   reviewComposition?: ReactNode
   reviewDiagramID?: string
@@ -94,7 +95,7 @@ type ArchitectureMapProps = {
   onSelectRelationshipAnnotation?: (key: string) => void
 }
 
-type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewSizeIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
+type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewSizeIDs' | 'reviewRouteKeys' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
   onRoute,
@@ -704,7 +705,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
   const titleByID = new Map(components.map((component) => [component.id, component.title]))
   const nodes: ElementDefinition[] = components.map((component) => {
     const size=component.size??(component.node_kind==='boundary'?{width:104,height:62}:{width:116,height:54})
-    const status = componentStatus.get(component.id) ?? (options.reviewSide ? 'unchanged' : '')
+    const status = componentStatus.get(component.component_id ?? component.id) ?? (options.reviewSide ? 'unchanged' : '')
     const annotationCount = options.annotationNodes?.[component.id] ?? 0
     return {
       data: {
@@ -768,6 +769,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
           displayLabel: status === 'added' ? `Added — ${relationship.label}` : status === 'removed' ? `Removed — ${relationship.label}` : relationship.label,
           routing: relationship.routing,
           distance: relationship.routing?.display_bend ?? (count === 1 ? 0 : (index - (count - 1) / 2) * 52),
+          routeChanged: options.reviewRouteKeys?.includes(key) ? 'yes' : '',
           defaultDistance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
           reviewStatus: status,
           status,
@@ -958,6 +960,62 @@ function fitDiagram(instance:Core,padding:number,other?:cytoscape.BoundingBox12)
  instance.viewport({zoom,pan:{x:instance.width()/2-zoom*(box.x1+box.x2)/2,y:instance.height()/2-zoom*(box.y1+box.y2)/2}})
 }
 
+// Browser-only derived images: use the same element projection, styles,
+// renderer intersections and bounds as the interactive map, never a layout.
+export async function printDiagramImages(before: MapComponent[], withChanges: MapComponent[], options: ProjectionOptions) {
+ await document.fonts.load('14px "IBM Plex Sans"')
+ await document.fonts.ready
+ const width=1400,height=820
+ const containers:HTMLDivElement[]=[], graphs:Core[]=[], warnings:string[]=[]
+ try {
+  for(const [index,components] of [before,withChanges].entries()) {
+   const container=document.createElement('div')
+   Object.assign(container.style,{position:'fixed',left:'-20000px',width:`${width}px`,height:`${height}px`})
+   document.body.appendChild(container);containers.push(container)
+   const graph=cytoscape({container,elements:projectionElements(components,{...options,reviewSide:index===0?'before':'with'}),layout:{name:'preset',fit:false},style:[...mapStyles,
+    {selector:'node[reviewStatus = "unchanged"]',style:{opacity:0.78}},
+    {selector:'edge[reviewStatus = "unchanged"]',style:{opacity:0.78}},
+    {selector:'node[positionChanged = "yes"], edge[routeChanged = "yes"]',style:{opacity:1}},
+   ],minZoom:0.0001,maxZoom:2.5})
+   graphs.push(graph)
+   const unavailable=updateRouteFallbacks(graph)
+   for(const label of unavailable)warnings.push(`${index===0?'Before':'With changes'}: ${label} — stored routing cannot be drawn at this geometry; shared derived fallback is shown where available. The curve may be absent.`)
+  }
+  const boxes=graphs.filter(g=>g.elements().length).map(diagramBounds)
+  const frame=boxes.length?{x1:Math.min(...boxes.map(b=>b.x1)),y1:Math.min(...boxes.map(b=>b.y1)),x2:Math.max(...boxes.map(b=>b.x2)),y2:Math.max(...boxes.map(b=>b.y2))}:{x1:0,y1:0,x2:1,y2:1}
+  if(!Object.values(frame).every(Number.isFinite))throw new Error('The renderer could not measure this Diagram.')
+  for(const graph of graphs)fitDiagram(graph,36,frame)
+  await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())))
+  const results=[]
+  for(const graph of graphs){
+   const image=new Image();image.src=graph.png({output:'base64uri',full:false,scale:2,bg:'#ffffff'})
+   await image.decode()
+   if(!image.naturalWidth||!image.naturalHeight)throw new Error('Diagram image is empty.')
+   const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight
+   const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Diagram image is unavailable.')
+   ctx.drawImage(image,0,0)
+   if(graph.elements().length){
+    const pixels=ctx.getImageData(0,0,canvas.width,canvas.height).data
+    let ink=false
+    for(let i=0;i<pixels.length;i+=4)if(pixels[i]<245||pixels[i+1]<245||pixels[i+2]<245){ink=true;break}
+    if(!ink)throw new Error('The renderer returned a blank Diagram image.')
+   }
+   const scale=canvas.width/width,zoom=graph.zoom(),pan=graph.pan()
+   ctx.scale(scale,scale)
+   graph.nodes('[nodeKind = "boundary"]').forEach(node=>{
+    const p=node.position(),w=Number(node.data('width'))*zoom,h=18*zoom
+    const x=p.x*zoom+pan.x-w/2,y=(p.y+Number(node.data('height'))/2+6)*zoom+pan.y
+    ctx.save();ctx.beginPath();ctx.rect(x+4*zoom,y,Math.max(0,w-8*zoom),h);ctx.clip();ctx.font=`italic ${12*zoom}px "IBM Plex Sans"`;ctx.fillStyle='#686753';ctx.textAlign='center';ctx.textBaseline='middle'
+    let text=`Lives in ${node.data('boundaryHomeTitle')}`
+    if(ctx.measureText(text).width>w-8*zoom){while(text.length&&ctx.measureText(text+'…').width>w-8*zoom)text=text.slice(0,-1);text+='…'}
+    ctx.fillText(text,x+w/2,y+h/2);ctx.restore()
+   })
+   results.push(canvas.toDataURL('image/png'))
+  }
+  return {images:results,warnings}
+ } finally { for(const graph of graphs)graph.destroy();for(const container of containers)container.remove() }
+}
+
 const mapStyles: cytoscape.StylesheetJson = [
   {
     selector: 'node',
@@ -986,6 +1044,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[sizeChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[nodeKind = "boundary"]', style: { 'border-style': 'dotted', 'background-color': '#efe7d3' } },
   { selector: 'node[note = "yes"]', style: { shape:'rectangle','background-color':'#fff7d9','border-color':'#a39472','border-width':1,'text-halign':'center','text-valign':'center' } },
+  { selector: 'node[note = "yes"][positionChanged = "yes"]', style: { 'border-color':'#315e46','border-width':3,opacity:1 } },
   { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','overlay-opacity':0.08 } },
   { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'overlay-opacity':0.08, opacity: 1 } },
   { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-style': 'dotted', opacity: 1 } },
@@ -1019,6 +1078,7 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'edge[reviewStatus = "unchanged"]', style: { opacity: 0.38, 'line-style': 'dotted' } },
   { selector: 'edge[reviewStatus = "added"]', style: { width: 3, 'line-color': '#126747', 'target-arrow-color': '#126747' } },
   { selector: 'edge[reviewStatus = "removed"]', style: { width: 2.5, 'line-color': '#a04432', 'target-arrow-color': '#a04432', 'line-style': 'dashed', opacity: 0.82 } },
+  { selector: 'edge[routeChanged = "yes"]', style: { 'line-color':'#315e46','target-arrow-color':'#315e46','line-style':'solid',width:3,opacity:1 } },
   { selector: 'edge:selected', style: { width: 4, opacity: 1, 'line-color': '#18734f', 'target-arrow-color': '#18734f' } },
   { selector: 'edge[reviewStatus = "unchanged"]:selected', style: { width: 4.5, opacity: 1, 'line-color': '#736c5c', 'target-arrow-color': '#736c5c', 'line-style': 'dotted' } },
   { selector: 'edge[reviewStatus = "added"]:selected', style: { width: 4.5, opacity: 1, 'line-color': '#126747', 'target-arrow-color': '#126747' } },

@@ -45,6 +45,7 @@ type agentValidationProjection struct {
 }
 
 type agentChangeSetProjection struct {
+	PrintableURL        string                                   `json:"printable_url,omitempty"`
 	ArchitectureVersion int                                      `json:"architecture_version"`
 	NodePositions       []architecture.NodePositionChange        `json:"node_positions"`
 	EdgeRoutes          []architecture.EdgeRouteChange           `json:"edge_routes"`
@@ -515,6 +516,11 @@ func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agen
 	}
 	if pending.review != nil && pending.review.generation == pending.generation && pending.candidate != nil && pending.review.candidateTree == pending.candidate.Tree() {
 		value.Review = &agentReviewIdentity{BaseRevision: pending.review.baseRevision, CandidateTree: pending.review.candidateTree, Generation: pending.review.generation}
+		slug := pending.baseSnapshot.ProjectSlug()
+		if h.loadedProject != nil {
+			slug = h.loadedProject.projectSlug
+		}
+		value.PrintableURL = printablePath(slug, pending.id, pending.lifecycle, pending.refObject)
 	}
 	return value
 }

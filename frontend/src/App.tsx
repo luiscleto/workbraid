@@ -41,7 +41,7 @@ type ArchitectureResult = {
   action_error?: string
 }
 
-type DiagramProjection = {
+export type DiagramProjection = {
 	shapes?: {diagram_id:string;component_id:string;shape:'rectangle'|'ellipse'|'diamond'|null}[]
 	notes?: DiagramNote[]
   id: string
@@ -180,7 +180,8 @@ function RouteControls({route,busy,onDirty,onKeep}:{route:RouteProjection;busy:b
 type RelationshipValue = { target_id: string; label: string }
 type RelationshipRow = RelationshipValue & { rowKey: string }
 
-type ChangeReview = {
+export type ChangeReview = {
+  printable_url?: string
   reviewed_state: string
   diff: string
   base_revision: string
@@ -232,6 +233,7 @@ type ReviewSubmissionSummary = {
 }
 
 type ReviewSubmission = ReviewSubmissionSummary & {
+  printable_url?: string
   body: string
   comments: { id: string; body: string; anchor: ReviewAnchor }[]
   proposal_markdown: string
@@ -262,7 +264,7 @@ type ReviewCommentTarget = {
 type LocalReviewComment = ReviewSubmissionComment
 type ReviewPresentation = Pick<ReviewSubmission, 'review' | 'proposal_markdown'>
 
-type ReviewSnapshot = {
+export type ReviewSnapshot = {
   revision: string
   format_version?: number
   component_count: number
@@ -468,7 +470,7 @@ function componentsForDiagram(result: Pick<ArchitectureResult, 'components'> | R
   })
 }
 
-function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> | ReviewSnapshot, diagram?: DiagramProjection): MapComponent[] {
+export function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> | ReviewSnapshot, diagram?: DiagramProjection): MapComponent[] {
   if (!diagram) return []
   const byID = new Map(result.components.map((component) => [component.id, component]))
   const nodes = new Map<string, MapComponent>()
@@ -3143,6 +3145,7 @@ function ChangesTask({
           </div>
         </div>
         <p className="review-proposal-name"><span>{changes.lifecycle === 'applied' ? 'Accepted proposal' : changes.lifecycle === 'no_longer_active' ? 'Proposal no longer active' : 'Open proposal'}</span><strong>{changes.name}</strong></p>
+        {(activeReviewSubmission?.printable_url??changes.review.printable_url)&&<a target="_blank" rel="noreferrer" href={activeReviewSubmission?.printable_url??changes.review.printable_url}>Printable proposal</a>}
         {!activeReviewSubmission && <nav className="proposal-task-navigation" aria-label="Proposal task">
           {onContinueEditing && <button className="text-action" type="button" disabled={busy} onClick={onContinueEditing}>Back to proposal</button>}
           {changes.lifecycle === 'active' && onSubmitReview && <button className="text-action" type="button" onClick={() => {
@@ -3277,6 +3280,7 @@ function ChangesTask({
         )}
         {!activeReviewSubmission && <SubmittedReviewList reviews={result.review_submissions?.filter((item) => item.change_set_id === changes.id) ?? []} onOpen={onOpenSubmittedReview} />}
         <div className="change-actions">
+          {changes.review?.printable_url&&<a target="_blank" rel="noreferrer" href={changes.review.printable_url}>Printable proposal</a>}
           {changes.review.diff === '' && <p role="status">There is no Architecture change to accept.</p>}
           {!activeReviewSubmission && !readOnly && !changes.out_of_date && changes.review.diff !== '' && <button className="inline-action" type="button" disabled={busy} onClick={onUpdate}>{busy ? 'Updating…' : 'Update architecture'}</button>}
           {discardAction}

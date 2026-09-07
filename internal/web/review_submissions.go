@@ -31,6 +31,7 @@ type reviewCommentResponse struct {
 }
 
 type reviewSubmissionResponse struct {
+	PrintableURL string `json:"printable_url"`
 	reviewSubmissionSummaryResponse
 	Body             string                  `json:"body"`
 	Comments         []reviewCommentResponse `json:"comments"`
@@ -109,10 +110,15 @@ func (h *Handler) fullReviewResponseLocked(ctx context.Context, review architect
 	}
 	before, withChanges, comparison := captureReviewPresentation(change.BaseSnapshot, change.Candidate.Snapshot())
 	comments := make([]reviewCommentResponse, len(review.Comments))
+	slug := change.BaseSnapshot.ProjectSlug()
+	if h.loadedProject != nil {
+		slug = h.loadedProject.projectSlug
+	}
 	for index, comment := range review.Comments {
 		comments[index] = reviewCommentResponse{ID: comment.ID, Body: comment.Body, Anchor: comment.Anchor}
 	}
 	return reviewSubmissionResponse{
+		PrintableURL:                    "/projects/" + slug + "/proposals/" + review.ChangeSetID + "/reviews/" + review.ID + "/print",
 		reviewSubmissionSummaryResponse: h.reviewSummaryLocked(review), Body: review.Body, Comments: comments,
 		ProposalMarkdown: change.Proposal,
 		Review: reviewResponse{ChangeSetID: review.ChangeSetID, ReviewedState: review.ReviewedState, Diff: string(diff),

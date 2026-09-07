@@ -410,6 +410,9 @@ func (client *Client) Call(ctx context.Context, operation string, input any) Env
 	if envelope.OK && envelope.Context.Project != nil {
 		result, resultOK := envelope.Result.(map[string]any)
 		if resultOK {
+			if path, ok := result["printable_url"].(string); ok && strings.HasPrefix(path, "/projects/") {
+				result["printable_url"] = client.baseURL + path
+			}
 			changeSetID, reviewID := "", ""
 			switch request := input.(type) {
 			case ReviewSubmissionsListRequest:

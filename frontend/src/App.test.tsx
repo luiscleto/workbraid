@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { App } from './App'
 
 const graphHarness = vi.hoisted(() => ({
-  calls: [] as Array<{ elements?: Array<{ data: Record<string, unknown> }> }>,
+  calls: [] as Array<{ container?: HTMLElement; elements?: Array<{ data: Record<string, unknown> }> }>,
   annotationMarkers: [] as Array<{ data: Record<string, unknown> }>,
   nodeSelect: undefined as undefined | ((event: { target: { id: () => string; data?: () => unknown } }) => void),
   edgeSelect: undefined as undefined | ((event: { target: { data: () => unknown } }) => void),
@@ -12,7 +12,7 @@ const graphHarness = vi.hoisted(() => ({
 }))
 
 vi.mock('cytoscape', () => ({
-  default: (options: { elements?: Array<{ data: Record<string, unknown> }> }) => {
+  default: (options: { container?: HTMLElement; elements?: Array<{ data: Record<string, unknown> }> }) => {
     if (graphHarness.fail) throw new Error('canvas unavailable')
     graphHarness.calls.push(options)
     return {
@@ -28,6 +28,7 @@ vi.mock('cytoscape', () => ({
       off: () => undefined,
       nodes: () => Object.assign([], { remove: () => undefined, ungrabify:()=>undefined,grabify:()=>undefined,filter:()=>({first:()=>({empty:()=>true})}) }),
       elements:()=>({boundingBox:()=>({x1:0,y1:0,x2:500,y2:300,w:500,h:300})}),
+      edges:()=>[],
       width:()=>800,height:()=>600,minZoom:()=>0.0001,maxZoom:()=>2.5,
 	  viewport:()=>undefined,
 	  zoom:()=>1,
@@ -1336,7 +1337,7 @@ describe('candidate review regressions', () => {
     const navigation = screen.getByRole('navigation', { name: 'Diagrams and components' })
     expect(within(navigation).getByRole('button', { name: 'Worker updated, Content changed' })).toBeInTheDocument()
     expect(screen.getByText('Candidate documentation.')).toBeInTheDocument()
-    const withElements = graphHarness.calls.at(-1)?.elements ?? []
+    const withElements = graphHarness.calls.filter(call => call.container?.dataset.testid === 'architecture-map').at(-1)?.elements ?? []
     expect(withElements.find((element) => element.data.id === 'edge-with')?.data.reviewStatus).toBe('added')
 
     act(() => graphHarness.nodeSelect?.({ target: { id: () => worker } }))
@@ -1347,7 +1348,7 @@ describe('candidate review regressions', () => {
     expect(screen.getByRole('button', { name: 'Before changes' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(navigation).getByRole('button', { name: /^Worker/ })).toBeInTheDocument()
     expect(screen.getByText('Does work.')).toBeInTheDocument()
-    const beforeElements = graphHarness.calls.at(-1)?.elements ?? []
+    const beforeElements = graphHarness.calls.filter(call => call.container?.dataset.testid === 'architecture-map').at(-1)?.elements ?? []
     expect(beforeElements.find((element) => element.data.id === 'edge')?.data.reviewStatus).toBe('removed')
     expect(beforeElements.some((element) => element.data.id === 'edge-with')).toBe(false)
   })
@@ -1674,14 +1675,14 @@ describe('proposal workspace contexts', () => {
     await user.click(within(navigation).getByRole('button', { name: 'Candidate nested' }))
     expect(await screen.findByText('Exists only in the proposal.')).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: 'Candidate service' })).toHaveAttribute('aria-current', 'page')
-    await waitFor(() => expect(graphHarness.calls.at(-1)?.elements?.some((element) => element.data.id === candidateComponent)).toBe(true))
+    await waitFor(() => expect(graphHarness.calls.filter(call => call.container?.dataset.testid === 'architecture-map').at(-1)?.elements?.some((element) => element.data.id === candidateComponent)).toBe(true))
 
     await user.click(within(navigation).getByRole('button', { name: 'Detail' }))
     expect(await screen.findByText('Does work.')).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: 'Worker, Included here · Lives in System' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigation).queryByRole('button', { name: 'External' })).not.toBeInTheDocument()
     await waitFor(() => {
-      const elements = graphHarness.calls.at(-1)?.elements ?? []
+      const elements = graphHarness.calls.filter(call => call.container?.dataset.testid === 'architecture-map').at(-1)?.elements ?? []
       expect(elements.some((element) => element.data.id === worker)).toBe(true)
       expect(elements.some((element) => element.data.id === external)).toBe(false)
     })

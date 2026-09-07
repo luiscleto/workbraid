@@ -56,6 +56,7 @@ type diagram struct {
 	appearances []diagramAppearance
 	positions   []diagramPosition
 	sizes       []diagramSize
+	routes      []diagramRoute
 	mode        string
 }
 
@@ -175,7 +176,8 @@ type DiagramBoundary struct {
 }
 
 type DiagramRelationship struct {
-	Key string
+	Routing RouteProjection
+	Key     string
 	// SourceRelationshipIndex is projection-only correspondence to the
 	// source-owned canonical declaration. It is not Relationship identity.
 	SourceRelationshipIndex int
@@ -187,14 +189,14 @@ type DiagramRelationship struct {
 }
 
 func (snapshot Snapshot) RootDiagramID() string {
-	if snapshot.formatVersion < 2 || snapshot.formatVersion > 4 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 5 {
 		return ""
 	}
 	return snapshot.rootDiagram.String()
 }
 
 func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
-	if snapshot.formatVersion < 2 || snapshot.formatVersion > 4 {
+	if snapshot.formatVersion < 2 || snapshot.formatVersion > 5 {
 		return nil
 	}
 	componentsByID := make(map[uuid.UUID]component, len(snapshot.components))
@@ -286,6 +288,10 @@ func (snapshot Snapshot) DiagramProjections() []DiagramProjection {
 			id := uuid.MustParse(b.ComponentID)
 			b.Position, b.DisplayPosition, b.PositionSource = diagramPositionFor(current, id), diagramPositionFor(display, id), source
 			b.Size, b.DisplaySize, b.SizeSource = sizeProjection(current, id, snapshot.formatVersion)
+		}
+		routes := snapshot.DiagramRoutes(current.id.String())
+		for i := range projection.Relationships {
+			projection.Relationships[i].Routing = routes[i]
 		}
 		projections = append(projections, projection)
 	}
@@ -421,6 +427,7 @@ type ComponentChange struct {
 type CandidateComposition struct {
 	ArchitectureVersion int                         `json:"architecture_version" yaml:"architecture_version"`
 	NodePositions       []NodePositionChange        `json:"node_positions" yaml:"node_positions"`
+	EdgeRoutes          []EdgeRouteChange           `json:"edge_routes" yaml:"edge_routes"`
 	NodeSizes           []NodeSizeChange            `json:"node_sizes" yaml:"node_sizes"`
 	DetailReassignments []DetailReassignment        `json:"detail_reassignments" yaml:"detail_reassignments"`
 	NewComponentHomes   []NewComponentHome          `json:"new_component_homes" yaml:"new_component_homes"`
@@ -486,7 +493,7 @@ var (
 
 func (snapshot Snapshot) HasDiagram(id string) bool {
 	parsed, err := uuid.Parse(id)
-	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
 		return false
 	}
 	for _, current := range snapshot.diagrams {
@@ -537,7 +544,7 @@ func (snapshot Snapshot) HasDetailLink(diagramID, componentID, detailDiagramID s
 
 func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool) {
 	parsed, err := uuid.Parse(componentID)
-	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
+	if err != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
 		return "", "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -559,7 +566,7 @@ func (snapshot Snapshot) ComponentHome(componentID string) (string, string, bool
 func (snapshot Snapshot) ComponentAppearanceRole(diagramID, componentID string) (string, bool) {
 	diagramUUID, diagramErr := uuid.Parse(diagramID)
 	componentUUID, componentErr := uuid.Parse(componentID)
-	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 4) {
+	if diagramErr != nil || componentErr != nil || (snapshot.formatVersion < 2 || snapshot.formatVersion > 5) {
 		return "", false
 	}
 	for _, current := range snapshot.diagrams {
@@ -943,7 +950,7 @@ func (manager *Manager) InitializeOrLoad(ctx context.Context, storeID, projectNa
 	rootDiagramID := uuid.NewString()
 	manifestBytes, err := marshalManifest(manifest{
 		Format:      "workbraid-architecture",
-		Version:     4,
+		Version:     5,
 		StoreID:     parsedStoreID.String(),
 		Project:     manifestProject{Name: projectName, Slug: projectSlug},
 		RootDiagram: rootDiagramID,
@@ -1198,7 +1205,12 @@ func (manager *Manager) loadDiagrams(ctx context.Context, storePath string, entr
 	homeCounts := make(map[uuid.UUID]int, len(components))
 	parentCounts := make(map[uuid.UUID]int, len(diagrams))
 	for _, current := range diagrams {
-		if version == 4 {
+		if version >= 5 {
+			if err := validateRoutes(current, components); err != nil {
+				return nil, uuid.Nil, err
+			}
+		}
+		if version >= 4 {
 			if err := validateSizes(current, components); err != nil {
 				return nil, uuid.Nil, err
 			}
@@ -1327,6 +1339,7 @@ func (manager *Manager) PrepareCandidate(ctx context.Context, base Snapshot, cha
 	input := *composition
 	input.NodePositions = append([]NodePositionChange(nil), composition.NodePositions...)
 	input.NodeSizes = append([]NodeSizeChange(nil), composition.NodeSizes...)
+	input.EdgeRoutes = append([]EdgeRouteChange(nil), composition.EdgeRoutes...)
 	candidate, err := manager.constructCandidate(ctx, base, changes, input, &prepared)
 	if err == nil {
 		*composition = prepared
@@ -1362,7 +1375,7 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 	if target == 0 {
 		target = base.formatVersion
 	}
-	if (target < 2 || target > 4) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) || (target < 4 && len(composition.NodeSizes) > 0) {
+	if (target < 2 || target > 5) || target < base.formatVersion || (target == 2 && len(composition.NodePositions) > 0) || (target < 4 && len(composition.NodeSizes) > 0) {
 		return Candidate{}, fmt.Errorf("%w: invalid target Architecture version", ErrInvalid)
 	}
 	if target != base.formatVersion {
@@ -1520,161 +1533,14 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 			diagrams[id] = current
 			changedDiagrams[id] = struct{}{}
 		}
-		seenHomes := make(map[string]struct{}, len(composition.NewComponentHomes))
-		for _, home := range composition.NewComponentHomes {
-			if _, duplicate := seenHomes[home.ComponentID]; duplicate {
-				return Candidate{}, fmt.Errorf("%w: new Component has more than one home", ErrInvalid)
-			}
-			seenHomes[home.ComponentID] = struct{}{}
-			componentID, componentErr := uuid.Parse(home.ComponentID)
-			diagramID, diagramErr := uuid.Parse(home.DiagramID)
-			if componentErr != nil || diagramErr != nil {
-				return Candidate{}, fmt.Errorf("%w: new Component home is invalid", ErrInvalid)
-			}
-			changeFound := false
-			for _, change := range changes {
-				if change.New && change.ID == home.ComponentID {
-					changeFound = true
-					break
-				}
-			}
-			if !changeFound {
-				return Candidate{}, fmt.Errorf("%w: home does not belong to a new Component", ErrInvalid)
-			}
-			current, exists := diagrams[diagramID]
-			if !exists {
-				return Candidate{}, fmt.Errorf("%w: home Diagram does not exist", ErrInvalid)
-			}
-			for _, appearance := range current.appearances {
-				if appearance.component == componentID {
-					return Candidate{}, fmt.Errorf("%w: new Component already appears in its home Diagram", ErrInvalid)
-				}
-			}
-			current.appearances = append(current.appearances, diagramAppearance{component: componentID, role: "home"})
-			diagrams[diagramID] = current
-			changedDiagrams[diagramID] = struct{}{}
-		}
-		for _, change := range changes {
-			if !change.New {
-				continue
-			}
-			if _, exists := seenHomes[change.ID]; !exists {
-				return Candidate{}, fmt.Errorf("%w: new Component is missing its home Diagram", ErrInvalid)
-			}
-		}
-		for _, move := range composition.HomeMoves {
-			componentID, componentErr := uuid.Parse(move.ComponentID)
-			destinationID, diagramErr := uuid.Parse(move.DiagramID)
-			if componentErr != nil || diagramErr != nil {
-				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
-			}
-			destination, destinationExists := diagrams[destinationID]
-			if !destinationExists {
-				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
-			}
-			var sourceID uuid.UUID
-			var home diagramAppearance
-			found := false
-			for id, current := range diagrams {
-				for _, appearance := range current.appearances {
-					if appearance.component == componentID && appearance.role == "home" {
-						sourceID, home, found = id, appearance, true
-						break
-					}
-				}
-				if found {
-					break
-				}
-			}
-			if !found {
-				return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
-			}
-			if sourceID == destinationID {
-				continue
-			}
-			source := diagrams[sourceID]
-			filtered := source.appearances[:0:0]
-			for _, appearance := range source.appearances {
-				if appearance.component != componentID || appearance.role != "home" {
-					filtered = append(filtered, appearance)
-				}
-			}
-			source.appearances = filtered
-			diagrams[sourceID] = source
-			changedDiagrams[sourceID] = struct{}{}
-
-			converted := false
-			for index := range destination.appearances {
-				if destination.appearances[index].component == componentID {
-					if destination.appearances[index].role != "reference" || destination.appearances[index].hasDetailLink {
-						return Candidate{}, &DiagramValidationError{ComponentID: move.ComponentID, DiagramID: move.DiagramID, Field: "home", Err: ErrDiagramHomeInvalid}
-					}
-					destination.appearances[index] = home
-					converted = true
-					break
-				}
-			}
-			if !converted {
-				destination.appearances = append(destination.appearances, home)
-			}
-			diagrams[destinationID] = destination
-			changedDiagrams[destinationID] = struct{}{}
+		if err := applyComponentHomes(changes, composition, diagrams, changedDiagrams); err != nil {
+			return Candidate{}, err
 		}
 		if err := applyDetailAssignments(base, composition, diagrams, changedDiagrams); err != nil {
 			return Candidate{}, err
 		}
-		seenReferences := make(map[string]struct{}, len(composition.References))
-		for _, change := range composition.References {
-			componentID, componentErr := uuid.Parse(change.ComponentID)
-			diagramID, diagramErr := uuid.Parse(change.DiagramID)
-			key := change.DiagramID + "\x00" + change.ComponentID
-			if componentErr != nil || diagramErr != nil {
-				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-			}
-			if _, duplicate := seenReferences[key]; duplicate {
-				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-			}
-			seenReferences[key] = struct{}{}
-			current, exists := diagrams[diagramID]
-			if !exists {
-				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-			}
-			if _, exists := candidateIDs[change.ComponentID]; !exists {
-				return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-			}
-			appearanceIndex := -1
-			for index, appearance := range current.appearances {
-				if appearance.component == componentID {
-					appearanceIndex = index
-					break
-				}
-			}
-			if change.Present {
-				if appearanceIndex >= 0 {
-					// A home subsumes any requested reference state. A reference is
-					// already the requested final state.
-					if current.appearances[appearanceIndex].role == "home" || current.appearances[appearanceIndex].role == "reference" {
-						continue
-					}
-					return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-				}
-				homeDiagram := uuid.Nil
-				for candidateDiagramID, candidateDiagram := range diagrams {
-					for _, appearance := range candidateDiagram.appearances {
-						if appearance.component == componentID && appearance.role == "home" {
-							homeDiagram = candidateDiagramID
-						}
-					}
-				}
-				if homeDiagram == uuid.Nil || homeDiagram == diagramID {
-					return Candidate{}, &DiagramValidationError{ComponentID: change.ComponentID, DiagramID: change.DiagramID, Field: "reference", Err: ErrDiagramHomeInvalid}
-				}
-				current.appearances = append(current.appearances, diagramAppearance{component: componentID, role: "reference"})
-			} else if appearanceIndex >= 0 && current.appearances[appearanceIndex].role == "reference" {
-				current.appearances = append(current.appearances[:appearanceIndex:appearanceIndex], current.appearances[appearanceIndex+1:]...)
-			}
-			diagrams[diagramID] = current
-			changedDiagrams[diagramID] = struct{}{}
+		if err := applyComponentReferences(composition, diagrams, changedDiagrams, candidateIDs); err != nil {
+			return Candidate{}, err
 		}
 		for _, move := range composition.HomeMoves {
 			componentID, componentErr := uuid.Parse(move.ComponentID)
@@ -1696,6 +1562,9 @@ func (manager *Manager) constructCandidate(ctx context.Context, base Snapshot, c
 			return Candidate{}, err
 		}
 		if err := applyNodePositions(base, &composition, diagrams, changedDiagrams, components, target, prepared != nil); err != nil {
+			return Candidate{}, err
+		}
+		if err := applyEdgeRoutes(base, composition, diagrams, changedDiagrams, components, target); err != nil {
 			return Candidate{}, err
 		}
 		if prepared != nil {
@@ -2367,7 +2236,7 @@ func parseManifest(contents []byte) (manifest, error) {
 	if err != nil {
 		return manifest{}, err
 	}
-	if version < 2 || version > 4 {
+	if version < 2 || version > 5 {
 		return manifest{}, fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if err := validateManifestYAML(document.Content[0], version); err != nil {
@@ -2491,7 +2360,7 @@ func validateManifest(value manifest) error {
 	if value.Format != "workbraid-architecture" {
 		return fmt.Errorf("%w: unsupported Architecture format", ErrUnsupported)
 	}
-	if value.Version < 2 || value.Version > 4 {
+	if value.Version < 2 || value.Version > 5 {
 		return fmt.Errorf("%w: unsupported Architecture format version", ErrUnsupported)
 	}
 	if _, err := uuid.Parse(value.StoreID); err != nil {
@@ -2536,6 +2405,7 @@ type diagramPositionYAML struct {
 }
 
 type diagramYAML struct {
+	Routes      []diagramRouteYAML      `yaml:"routes,omitempty"`
 	Sizes       []diagramSizeYAML       `yaml:"sizes,omitempty"`
 	ID          string                  `yaml:"id"`
 	Title       string                  `yaml:"title"`
@@ -2551,6 +2421,9 @@ type diagramAppearanceYAML struct {
 
 func marshalDiagram(value diagram) ([]byte, error) {
 	encoded := diagramYAML{ID: value.id.String(), Title: value.title, Appearances: make([]diagramAppearanceYAML, len(value.appearances))}
+	for _, r := range value.routes {
+		encoded.Routes = append(encoded.Routes, diagramRouteYAML{r.slot.source.String(), r.slot.target.String(), r.slot.label, r.slot.occurrence, r.route.Bend})
+	}
 	for _, s := range value.sizes {
 		encoded.Sizes = append(encoded.Sizes, diagramSizeYAML{s.component.String(), s.size.Width, s.size.Height})
 	}
@@ -2635,6 +2508,14 @@ func parseDiagram(path string, contents []byte, versions ...int) (diagram, error
 		seen[id] = true
 		result.positions = append(result.positions, diagramPosition{component: id, position: Position{p.X, p.Y}})
 	}
+	for _, r := range value.Routes {
+		s, se := uuid.Parse(r.Source)
+		t, te := uuid.Parse(r.Target)
+		if se != nil || te != nil {
+			return diagram{}, errors.New("invalid route UUID")
+		}
+		result.routes = append(result.routes, diagramRoute{routeSlot{s, t, r.Label, r.Occurrence}, Route{r.Bend}})
+	}
 	seenSizes := map[uuid.UUID]bool{}
 	for _, s := range value.Sizes {
 		id, err := uuid.Parse(s.Component)
@@ -2655,13 +2536,26 @@ func validateDiagramYAML(root *yaml.Node, version int) error {
 	seenAppearances := false
 	seenPositions := false
 	seenSizes := false
+	seenRoutes := false
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
 		value := root.Content[index+1]
 		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
 			return errors.New("Diagram field names must be strings")
 		}
-		if key.Value == "sizes" && version == 4 {
+		if key.Value == "routes" && version >= 5 {
+			if seenRoutes || value.Kind != yaml.SequenceNode || value.ShortTag() != "!!seq" {
+				return errors.New("routes must be one sequence")
+			}
+			seenRoutes = true
+			for _, item := range value.Content {
+				if err := validateRouteYAML(item, false); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if key.Value == "sizes" && version >= 4 {
 			if seenSizes {
 				return errors.New("Diagram contains duplicate sizes")
 			}

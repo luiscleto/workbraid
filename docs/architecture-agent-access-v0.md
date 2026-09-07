@@ -2,9 +2,27 @@
 
 Status: Approved living contract
 
+## Phase 3.3 routing surface
+
+Delegated root approval of routing proposal `d119baeb-1b2b-4451-8113-7f4fe05678ec` generation 8, reviewed state `595bab6de6933c7a047c70520f1830594f166fed`, authorizes these additive agent-v2 operations under the unchanged authority/envelope contract:
+
+| CLI | MCP | API suffix under `/api/agent/v2` |
+| --- | --- | --- |
+| `diagram routes` | `diagram_routes` | `/diagrams/routes` |
+| `diagram set-route` | `diagram_set_route` | `/diagrams/set-route` |
+| `diagram restore-default-route` | `diagram_restore_default_route` | `/diagrams/restore-default-route` |
+
+Inspect requires `--store-id --diagram-id`, with optional `--change-set-id` for an exact valid active/Applied proposal; omission selects Accepted. Return complete Diagram/source/target/exact-label/occurrence addresses, tuple counts, stored custom versus default, displayed bend, eligibility and reason. Reads write nothing. Set requires `--store-id --change-set-id --generation --diagram-id --source-id --target-id (--label|--label-file <path|->) --occurrence --bend`. Restore takes the same fields except bend. Every listed value is required; literal/file are mutually exclusive, `-` reads stdin, and valid UTF-8 label bytes remain exact. MCP uses matching snake_case identity/state fields and literal `label`; file transport is CLI-only. Reject missing/unknown/duplicate fields, nulls, wrong types, non-positive occurrences and bends outside integer −100000..100000.
+
+These addresses are presentation slots, never Relationship IDs or source-row/projection/boundary keys. The backend checks exact tokens and eligibility before no-op comparison. Self/coincident routing is `target_not_eligible`; changed node geometry may retain stored bends while displaying the specified fallback. [Placement §10](architecture-placement-amendment-v0.md#10-deliberate-link-routing-phase-33) governs signed control-point distance, default/custom continuity, conservative tuple resets, invalid-row retention, no resurrection and v5 upgrade/no-op behavior. Clients must expose these loss consequences without constructing candidates or changing acceptance authority.
+
+Reconciliation exposes the exact `route_value` and `route_loss` locators/choices in [Reconciliation](architecture-reconciliation-v0.md#phase-33-routing-reconciliation): manual bend/default, or acknowledged whole-tuple clear. Automatic count/visibility loss has no route-owned semantic override. Preserve exact S/B/A/P, residual replay and separate Review/Update. Existing invalid_request, target_not_found, target_not_eligible, validation_blocked and state/lifecycle errors retain their meaning. Help, embedded skill, MCP descriptions/closed schemas and HTTP behavior must agree, including exact label file/stdin fidelity and bounded fresh discovery evidence. No generic presentation endpoint or client-local authority is introduced.
+
 Browser, CLI and MCP are clients of one loopback WorkBraid authority. [Proposals and Reviews](architecture-proposals-v0.md) defines durable work and feedback; [Reconciliation](architecture-reconciliation-v0.md) defines exact preview/apply; [Placement](architecture-placement-amendment-v0.md) defines the approved corrected placement surface. This interface adds no separate domain, private-store client, daemon or acceptance authority.
 
 ## Runtime and connection
+
+Renderer-private intersection availability is browser-only state. Undefined/nonfinite intersections do not add backend eligibility restrictions or error codes: otherwise eligible noncoincident endpoints still allow numeric/CLI/MCP bend authoring. The browser retains scalars and reports canvas dragging/fallback limitations under Placement §10; it resumes rendering without a write when representable.
 
 One Go/UI process owns the selected project, loaded Accepted snapshot and authority knowledge, independently identified durable proposals, generation/review bindings, one candidate constructor and one synchronization/ref-CAS boundary. Different clients share that process; unsent editor collaboration is not implied. Project open changes process-wide selection; proposals are always addressed explicitly.
 

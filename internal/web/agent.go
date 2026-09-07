@@ -47,6 +47,7 @@ type agentValidationProjection struct {
 type agentChangeSetProjection struct {
 	ArchitectureVersion int                                      `json:"architecture_version"`
 	NodePositions       []architecture.NodePositionChange        `json:"node_positions"`
+	EdgeRoutes          []architecture.EdgeRouteChange           `json:"edge_routes"`
 	NodeSizes           []architecture.NodeSizeChange            `json:"node_sizes"`
 	StateObject         string                                   `json:"change_set_state"`
 	DetailReassignments []architecture.DetailReassignment        `json:"detail_reassignments"`
@@ -118,6 +119,9 @@ func (h *Handler) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/v2/diagrams/set-position", h.agentSetPosition)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/auto-layout", h.agentAutoLayout)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/sizes", h.agentPositions)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/routes", h.agentPositions)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/set-route", h.agentSetRoute)
+	mux.HandleFunc("POST /api/agent/v2/diagrams/restore-default-route", h.agentRestoreDefaultRoute)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/set-size", h.agentSetSize)
 	mux.HandleFunc("POST /api/agent/v2/diagrams/restore-default-size", h.agentRestoreDefaultSize)
 	mux.HandleFunc("POST /api/agent/v2/change-sets/reconcile-preview", h.agentReconciliationPreview)
@@ -167,6 +171,12 @@ func decodeAgentRequest[T any](h *Handler, response http.ResponseWriter, request
 		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
+	if strings.HasSuffix(request.URL.Path, "/set-route") || strings.HasSuffix(request.URL.Path, "/restore-default-route") {
+		if !validRoutingFields(contents, strings.HasSuffix(request.URL.Path, "/set-route"), false) {
+			h.writeAgentError(response, http.StatusBadRequest, "invalid_request", "Correct the route fields and try again.", nil)
+			return zero, false
+		}
+	}
 	decoder.DisallowUnknownFields()
 	var value T
 	if err := decoder.Decode(&value); err != nil || ensureJSONEnd(decoder) != nil {
@@ -463,6 +473,7 @@ func (h *Handler) agentChangeSetProjectionLocked(pending *pendingChangeSet) agen
 		ArchitectureVersion: max(pending.architectureVersion, pending.baseSnapshot.FormatVersion()),
 		NodePositions:       append([]architecture.NodePositionChange{}, pending.nodePositions...),
 		NodeSizes:           append([]architecture.NodeSizeChange{}, pending.nodeSizes...),
+		EdgeRoutes:          append([]architecture.EdgeRouteChange{}, pending.edgeRoutes...),
 		StateObject:         pending.refObject,
 		DetailReassignments: append([]architecture.DetailReassignment{}, pending.detailReassignments...),
 		ID:                  pending.id, Name: pending.name, Lifecycle: pending.lifecycle, Proposal: pending.proposal, AppliedRevision: pending.appliedRevision,

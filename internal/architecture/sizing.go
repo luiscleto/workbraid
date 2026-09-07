@@ -145,7 +145,7 @@ func diagramSizeFor(d diagram, id uuid.UUID) *Size {
 func sameSize(a, b *Size) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
 func sizeProjection(d diagram, id uuid.UUID, version int) (*Size, *Size, string) {
 	s := diagramSizeFor(d, id)
-	if version == 4 {
+	if version >= 4 {
 		return s, s, "stored"
 	}
 	v := defaultSize(boundaryNode(d, id), true)
@@ -343,6 +343,6 @@ func SetNodeSize(current Snapshot, composition CandidateComposition, d, c string
 		}
 	}
 	composition.NodeSizes = setSizeOverride(composition.NodeSizes, d, c, &s)
-	composition.ArchitectureVersion = 4
+	composition.ArchitectureVersion = max(4, current.FormatVersion())
 	return composition
 }

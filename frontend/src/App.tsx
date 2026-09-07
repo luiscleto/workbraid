@@ -2,6 +2,7 @@ import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback,
 import {
   ArchitectureMap,
   MapComponent,
+  RouteProjection,
   ReviewMapComponentChange,
   ReviewMapRelationshipChange,
   ReviewRelationshipSelection,
@@ -78,6 +79,7 @@ type DiagramBoundary = {
 }
 
 type DiagramRelationship = {
+  routing?: RouteProjection
   key: string
   source_node_key: string
   target_node_key: string
@@ -160,6 +162,17 @@ function SizeControls({size,busy,onDirty,onKeep}:{size:{width:number;height:numb
  </form></section>
 }
 
+function RouteControls({route,busy,onDirty,onKeep}:{route:RouteProjection;busy:boolean;onDirty:(v:boolean)=>void;onKeep:(r:{bend:number}|null)=>Promise<boolean>}){
+ const [bend,setBend]=useState(String(route.display_bend)),[dirty,setDirty]=useState(false)
+ useEffect(()=>()=>onDirty(false),[onDirty])
+ return <details className="position-controls" onToggle={e=>{if(dirty&&!e.currentTarget.open)e.currentTarget.open=true}}><summary>Route · {route.route?'Custom':'Default'}</summary>
+ <form onSubmit={async e=>{e.preventDefault();const n=Number(bend);if(!bend||!Number.isInteger(n)||Math.abs(n)>100000)return;if(await onKeep({bend:n})){setDirty(false);onDirty(false)}}}>
+ <label>Bend<input aria-label="Bend" type="number" min={-100000} max={100000} step={1} required value={bend} onChange={e=>{setBend(e.target.value);setDirty(true);onDirty(true)}}/></label>
+ <p className="field-hint">The diamond is the control point. Drag it to bend the link.</p>
+ <div className="size-actions"><button className="inline-action" type="submit" disabled={busy}>Keep route</button><button className="secondary-action" type="button" disabled={busy} onClick={async()=>{if(await onKeep(null)){setDirty(false);onDirty(false)}}}>Restore default</button><button className="text-action" type="button" onClick={()=>{setBend(String(route.display_bend));setDirty(false);onDirty(false)}}>Clear edits</button></div>
+ </form></details>
+}
+
 
 type RelationshipValue = { target_id: string; label: string }
 type RelationshipRow = RelationshipValue & { rowKey: string }
@@ -175,6 +188,7 @@ type ChangeReview = {
   comparison: {
 	  node_positions?: {diagram_id:string;component_id:string;before:{x:number;y:number}|null;with:{x:number;y:number}|null;before_source?:string;with_source?:string;path:string}[]
 	  node_sizes?: {diagram_id:string;component_id:string;before:{width:number;height:number}|null;with:{width:number;height:number}|null;before_source?:string;with_source?:string;path:string}[]
+	  edge_routes?: (Pick<RouteProjection,'diagram_id'|'source_id'|'target_id'|'label'|'occurrence'>&{before:{bend:number}|null;with:{bend:number}|null;before_state:string;with_state:string;path:string})[]
     components: ReviewMapComponentChange[]
     relationships: ReviewMapRelationshipChange[]
     diagrams?: { diagram_id: string; title: string; status: 'added' | 'title_changed'; path: string }[]
@@ -484,6 +498,7 @@ function mapComponentsForDiagram(result: Pick<ArchitectureResult, 'components'> 
       target_id: relationship.target_node_key,
       label: relationship.label,
       projection_key: relationship.key,
+      routing: relationship.routing,
     })
   }
   return [...nodes.values()]
@@ -666,6 +681,8 @@ export function App() {
   const [changeSetTextDirty, setChangeSetTextDirty] = useState(false)
   const [positionDirty, setPositionDirty] = useState(false)
   const [sizeDirty, setSizeDirty] = useState(false)
+  const [routeDirty,setRouteDirty]=useState(false)
+  const [selectedRouteKey,setSelectedRouteKey]=useState<string>()
   const [positionDraftEpoch, setPositionDraftEpoch] = useState(0)
   const [reviewCommentDirty, setReviewCommentDirty] = useState(false)
   const [reviewCommentTarget, setReviewCommentTarget] = useState<ReviewCommentTarget>()
@@ -839,7 +856,7 @@ export function App() {
     : diagramEditor.title !== diagramEditor.initialTitle)
   const newChangeSetNameDirty = creatingChangeSet && newChangeSetName.trim() !== ''
   const editorDirtyRef = useRef(editorDirty)
-  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
+  editorDirtyRef.current = editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -1304,6 +1321,48 @@ export function App() {
   }
 
 
+  async function keepRoute(result:ArchitectureResult,address:RouteProjection,route:{bend:number}|null):Promise<boolean> {
+	const diagramID=address.diagram_id
+	const requestedRoute=window.location.pathname
+	async function inspectAfterFailure() {
+	  setPlacementBlocked(true)
+	  try {
+	    const status = await fetch('/api/agent/v2/status').then(response => response.json())
+	    if (window.location.pathname !== requestedRoute || status.context?.project?.store_id !== result.store_id) return
+	    await openProject(result.project_slug, true, result.changes?.id)
+	    setSelectedDiagramID(diagramID)
+
+	  } catch { /* Keep placement blocked until the authority can be inspected. */ }
+	}
+	setArchitectureBusy(true)
+	setArchitectureNotice('')
+	try {
+	  const response=await postJSON(`/api/architecture/diagrams/${route?'set-route':'restore-default-route'}`,{
+	    project_slug:result.project_slug,store_id:result.store_id,expected_revision:result.revision,
+	    change_set_id:result.changes?.id,pending_generation_observed:true,expected_pending_generation:result.changes?.generation??null,
+	    diagram_id:diagramID,source_id:address.source_id,target_id:address.target_id,label:address.label,occurrence:address.occurrence,...(route??{}),
+	  })
+	  const payload=await response.json() as ArchitectureResult|ErrorPayload
+	  if(window.location.pathname!==requestedRoute)return false
+	  if(!response.ok||!('state' in payload)||payload.action_error){
+	    await inspectAfterFailure()
+	    setArchitectureNotice('That route was not kept. The current layout has been reopened where available; inspect it before making another route change.')
+	    return false
+	  }
+	  if(payload.action_change_set_id||result.changes){enterProposalResult(payload);setWorkspaceTask('documentation')}
+	  setSelectedDiagramID(diagramID)
+
+	  setChangeSetTextDirty(false);setRouteDirty(false)
+
+	  return true
+	} catch {
+	  await inspectAfterFailure()
+	  setArchitectureNotice('WorkBraid could not confirm that route. Inspect the current proposal list and layout before making another route change; the route change has not been retried.')
+	  return false
+	} finally {setArchitectureBusy(false)}
+  }
+
+
   async function updateArchitecture(result: ArchitectureResult) {
     const review = result.changes?.review
     if (!review) return
@@ -1420,7 +1479,7 @@ export function App() {
   const busy = state.kind === 'looking'
 
   function requestNavigation(intent: NavigationIntent) {
-    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
+    if (editorDirty || diagramEditorDirty || changeSetTextDirty || positionDirty || sizeDirty || routeDirty || reviewCommentDirty || newChangeSetNameDirty || reconciliationDirty) {
       setNavigationIntent(intent)
       return
     }
@@ -1438,6 +1497,8 @@ export function App() {
 
   async function performNavigation(intent: NavigationIntent) {
     setNavigationIntent(null)
+    setSelectedRouteKey(undefined)
+    setRouteDirty(false)
     setReconciliation(null)
     setReconciliationDirty(false)
     if (intent.kind === 'review-context-replacement') {
@@ -1446,7 +1507,7 @@ export function App() {
       intent.apply()
       return
     }
-    if (positionDirty || sizeDirty) {
+    if (positionDirty || sizeDirty || routeDirty) {
       setSizeDirty(false)
       setPositionDirty(false)
       setPositionDraftEpoch(epoch => epoch + 1)
@@ -1811,6 +1872,10 @@ export function App() {
       : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents: MapComponent[] = diagramMapComponents ?? activeComponents
+    const otherReviewSnapshot = review ? (reviewSide === 'with' ? review.before : review.with_changes) : undefined
+    const otherReviewDiagram = otherReviewSnapshot?.diagrams?.find(diagram => diagram.id === activeDiagram?.id)
+    const reviewOtherComponents = otherReviewSnapshot ? (otherReviewDiagram ? mapComponentsForDiagram(otherReviewSnapshot, otherReviewDiagram) : activeDiagram ? [] : otherReviewSnapshot.components) : undefined
+    const selectedRoute = !review && !editor && !diagramEditor && workspaceTask === 'documentation' ? activeDiagram?.relationships.find(r=>r.key===selectedRouteKey) : undefined
     const selectedBoundary = activeDiagram?.boundaries.find(b=>b.component_id===selectedComponentID)
     const selected = activeComponents.find((component) => component.id === selectedComponentID) ?? (selectedBoundary ? diagramProjection.components.find(c=>c.id===selectedComponentID) : undefined)
     const selectedAppearance = activeDiagram?.appearances.find((appearance) => appearance.component_id === selectedComponentID)
@@ -1837,6 +1902,7 @@ export function App() {
     }
 	for(const change of review?.comparison.node_positions??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
 	for(const change of review?.comparison.node_sizes??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
+	for(const change of review?.comparison.edge_routes??[]) {if(!diagramReviewStatus.has(change.diagram_id))diagramReviewStatus.set(change.diagram_id,'Changed')}
     const submittedReview = result.submitted_review
     const reviewAnnotationComments = submittedReview?.comments ?? localReviewComments
     const reviewPresentation = submittedReview ?? (review && result.changes
@@ -2323,13 +2389,16 @@ export function App() {
               <div className="workspace-empty invalid-proposal-map"><p className="eyebrow">Proposed Architecture</p><h2>Needs correction</h2><p>This proposal has no valid complete Architecture to display. Use its exact authored facts to repair the issue.</p></div>
             ) : (
               <ArchitectureMap
-				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}`}
+				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}:${review?.candidate_tree??'authoring'}`}
 				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
 				onResize={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,s)=>keepSize(result,activeDiagram.id,id,s):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
+                reviewOtherComponents={reviewOtherComponents}
                 selectedID={selectedBoundary?.key ?? selectedComponentID}
                 onSelect={selectMapNode}
+                onRoute={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current ? (route,bend)=>keepRoute(result,route,{bend}):undefined}
+                {...(!review ? {selectedRelationshipKey:selectedRoute?.key,onSelectRelationship:(edge:ReviewRelationshipSelection)=>requestNavigation({kind:'authoring-pane',apply:()=>{setSelectedRouteKey(edge.key);setWorkspaceTask('documentation')}})}:{})}
                 emptyMessage={activeDiagram ? 'This diagram has no components.' : undefined}
                 {...(review ? {
                   layoutComponentIDs,
@@ -2339,6 +2408,7 @@ export function App() {
                   reviewSizeIDs: review.comparison.node_sizes?.filter(p => p.diagram_id === activeDiagram?.id).map(p => p.component_id),
                   reviewRelationships: review.comparison.relationships,
                   reviewComposition: <>
+                    {review.comparison.edge_routes?.filter(r=>r.diagram_id===activeDiagram?.id).map(r=><li key={JSON.stringify([r.source_id,r.target_id,r.label,r.occurrence])}><button type="button" onClick={()=>focusReviewDiagram({kind:'diagram',key:JSON.stringify(r),title:activeDiagram?.title??'Diagram',status:'appearance_changed',description:'Route changed',reviewSide,diagramID:r.diagram_id,path:r.path})}>Route changed: {r.label} · occurrence {r.occurrence} · {r.before?`Bend ${r.before.bend}`:r.before_state==='not_applicable'?'Not visible':'Default'} → {r.with?`Bend ${r.with.bend}`:r.with_state==='not_applicable'?'Not visible':'Default'}</button></li>)}
                     {review.comparison.node_sizes?.filter(s=>s.diagram_id===activeDiagram?.id).map(s=><li key={`size:${s.component_id}`}><button type="button" onClick={()=>focusReviewDiagram({kind:'diagram',key:`size:${s.component_id}`,title:activeDiagram?.title??'Diagram',status:'appearance_changed',description:'Size changed',reviewSide,diagramID:s.diagram_id,path:s.path,componentID:s.component_id})}>Size changed: {diagramProjection.components.find(c=>c.id===s.component_id)?.title??'Component'} · {s.before?`${s.before.width} × ${s.before.height}`:'Not visible'} → {s.with?`${s.with.width} × ${s.with.height}`:'Not visible'}</button></li>)}
                     {[...mapComposition.entries()].map(([identity, item]) => <li key={identity}><button type="button" onClick={() => focusReviewDiagram(item.focus)}>Composition: {item.subject} {item.description}</button></li>)}
                     {review.comparison.node_positions?.filter(p => p.diagram_id === activeDiagram?.id).map(p => <li key={`position:${p.component_id}`}>
@@ -2400,7 +2470,7 @@ export function App() {
           </section>}
           <aside className="working-pane" aria-label="Architecture task" ref={workingPaneRef}>
             {result.changes && !review && !reconciliation && !creatingChangeSet && workspaceTask !== 'changes' && <nav className="proposal-task-navigation" aria-label="Proposal task"><button className="text-action" type="button" disabled={architectureBusy} onClick={() => requestNavigation({ kind: 'changes' })}>Back to proposal</button></nav>}
-            {reconciliation ? <ReconciliationTask
+            {selectedRoute?.routing ? <section aria-label="Link route"><p className="eyebrow">Link</p><h2>{selectedRoute.label}</h2><p>{diagramProjection.components.find(c=>c.id===selectedRoute.source_component_id)?.title} → {diagramProjection.components.find(c=>c.id===selectedRoute.target_component_id)?.title}</p><p>Occurrence {selectedRoute.routing.occurrence} of {selectedRoute.routing.count}</p><button className="text-action" type="button" onClick={()=>requestNavigation({kind:'authoring-pane',apply:()=>setSelectedRouteKey(undefined)})}>Clear selection</button>{selectedRoute.routing.eligible&&authoringAvailable ? <RouteControls key={`${positionDraftEpoch}:${selectedRoute.key}:${selectedRoute.routing.display_bend}:${Boolean(selectedRoute.routing.route)}`} route={selectedRoute.routing} busy={architectureBusy||placementBlocked} onDirty={setRouteDirty} onKeep={route=>keepRoute(result,selectedRoute.routing!,route)}/> : <p>{selectedRoute.routing.reason==='self_link'?'Self-links use their default route.':'These nodes share a center. Routing is unavailable; default rendering is used where possible until they separate.'}</p>}</section> : reconciliation ? <ReconciliationTask
               key={reconciliation.inputs.change_set_state}
               name={result.changes?.name ?? 'Proposal'}
               initial={reconciliation}

@@ -2,9 +2,15 @@ import cytoscape, { Core, ElementDefinition } from 'cytoscape'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 export type MapRelationship = {
+  routing?: RouteProjection
   target_id: string
   label: string
   projection_key?: string
+}
+
+export type RouteProjection = {
+  diagram_id: string; source_id: string; target_id: string; label: string; occurrence: number
+  count: number; route: {bend:number}|null; display_bend: number; eligible: boolean; reason?: string
 }
 
 export type MapComponent = {
@@ -55,11 +61,13 @@ export type ReviewRelationshipSelection = Omit<ReviewMapRelationshipChange, 'sta
 }
 
 type ArchitectureMapProps = {
+  onRoute?: (route:RouteProjection,bend:number)=>Promise<boolean>
 	onResize?: (id:string,size:{width:number;height:number})=>Promise<boolean>
 	viewKey?: string
 	onPlace?: (id:string,position:{x:number;y:number})=>Promise<boolean>
   revision: string
   components: MapComponent[]
+  reviewOtherComponents?: MapComponent[]
   selectedID?: string
   onSelect: (id: string) => void
   emptyMessage?: string
@@ -87,11 +95,13 @@ type ArchitectureMapProps = {
 type ProjectionOptions = Pick<ArchitectureMapProps, 'layoutComponentIDs' | 'reviewSide' | 'reviewComponents' | 'reviewPositionIDs' | 'reviewSizeIDs' | 'reviewRelationships' | 'reviewDiagramID' | 'annotationNodes' | 'annotationRelationships' | 'annotationAddNodeID' | 'annotationAddRelationshipKey'>
 
 export function ArchitectureMap({
+  onRoute,
 	onResize,
 	viewKey,
 	onPlace,
   revision,
   components,
+  reviewOtherComponents,
   selectedID,
   onSelect,
   emptyMessage,
@@ -119,6 +129,12 @@ export function ArchitectureMap({
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+  const reviewBounds = useRef<cytoscape.BoundingBox12 | undefined>(undefined)
+  const routeHandle=useRef<HTMLButtonElement>(null)
+  const routeGuide=useRef<SVGPathElement>(null)
+  const routeGesture=useRef<{edge:cytoscape.EdgeSingular;route:RouteProjection;start:number;x:number;y:number;zoom:number;normal:{x:number;y:number};submit:NonNullable<typeof onRoute>}|null>(null)
+  const routeCancel=useRef<()=>void>(()=>undefined)
+  routeCancel.current=()=>{const g=routeGesture.current;routeGesture.current=null;if(g&&!g.edge.cy().destroyed())g.edge.data('distance',g.start);syncOverlays.current()}
   const resizeHandle = useRef<HTMLButtonElement>(null)
   const resizeGesture = useRef<{node:cytoscape.NodeSingular; start:{width:number;height:number}; x:number;y:number;zoom:number;submit:NonNullable<typeof onResize>}|null>(null)
   const resizeCancel = useRef<()=>void>(()=>undefined)
@@ -137,6 +153,7 @@ export function ArchitectureMap({
   const nodeAnnotationHandler = useRef(onSelectNodeAnnotation)
   const relationshipAnnotationHandler = useRef(onSelectRelationshipAnnotation)
   const [renderFailed, setRenderFailed] = useState(false)
+  const [routeFallbacks, setRouteFallbacks] = useState<string[]>([])
   const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))].sort().join('\u0000')
   const annotationKey = JSON.stringify([annotationNodes, annotationRelationships, annotationAddNodeID, annotationAddRelationshipKey])
   // A revision-pinned projection intentionally ignores response-object churn
@@ -163,6 +180,8 @@ export function ArchitectureMap({
     if (!container.current) return
     setRenderFailed(false)
     let instance: Core | null = null
+    let otherInstance: Core | null = null
+    let otherContainer: HTMLDivElement | undefined
     try {
       instance = cytoscape({
         container: container.current,
@@ -172,13 +191,32 @@ export function ArchitectureMap({
         maxZoom: 2.5,
         style: mapStyles,
       })
+      reviewBounds.current = undefined
+      if (reviewOtherComponents && reviewSide) {
+        otherContainer = document.createElement('div')
+        Object.assign(otherContainer.style, {position:'fixed',left:'-10000px',width:`${container.current.clientWidth}px`,height:`${container.current.clientHeight}px`,visibility:'hidden'})
+        otherContainer.setAttribute('aria-hidden','true')
+        document.body.appendChild(otherContainer)
+        otherInstance = cytoscape({container:otherContainer,elements:projectionElements(reviewOtherComponents, {
+          layoutComponentIDs,reviewSide:reviewSide==='before'?'with':'before',reviewComponents,reviewPositionIDs,reviewSizeIDs,reviewRelationships,reviewDiagramID,
+        }),layout:{name:'preset',fit:false},style:mapStyles})
+        updateRouteFallbacks(otherInstance)
+        reviewBounds.current = diagramBounds(otherInstance)
+        // Measure the active exact side without selection/annotation styling as
+        // well. Both review sides then share one immutable renderer frame.
+        otherInstance.destroy()
+        otherInstance = cytoscape({container:otherContainer,elements,layout:{name:'preset',fit:false},style:mapStyles})
+        updateRouteFallbacks(otherInstance)
+        const activeBounds=diagramBounds(otherInstance),otherBounds=reviewBounds.current
+        reviewBounds.current={x1:Math.min(activeBounds.x1,otherBounds.x1),x2:Math.max(activeBounds.x2,otherBounds.x2),y1:Math.min(activeBounds.y1,otherBounds.y1),y2:Math.max(activeBounds.y2,otherBounds.y2)}
+      }
 	  if(viewport.current&&viewport.current.key===viewKey){instance.viewport({zoom:viewport.current.zoom,pan:viewport.current.pan})}
 	  instance.nodes().ungrabify()
 	  if(placementHandler.current&&!placementPending.current)instance.nodes('[!uiAnnotation]').grabify()
 	  let grabbed: {id:string;start:{x:number;y:number};submit:NonNullable<typeof onPlace>;cancelled:boolean}|null=null
 	  let suppressClickUntil=0
 	  const cancel=()=>{if(!grabbed||!instance)return;grabbed.cancelled=true;instance.getElementById(grabbed.id).position(grabbed.start)}
-	  const cancelResize=()=>resizeCancel.current()
+	  const cancelResize=()=>{resizeCancel.current();routeCancel.current()}
 	  const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){cancel();cancelResize()}}
 	  window.addEventListener('keydown',escape)
 	  window.addEventListener('pointercancel',cancel)
@@ -221,14 +259,14 @@ export function ArchitectureMap({
       })
       instance.on('tap', 'edge', (event) => {
         const data = event.target.data() as ReviewRelationshipSelection & { reviewStatus?: string; annotationCount?: number }
-        if (data.reviewStatus && relationshipHandler.current) {
+        if (relationshipHandler.current) {
           relationshipHandler.current({
             key: data.key,
             before_key: data.before_key,
             source_id: data.source_id,
             target_id: data.target_id,
             label: data.label,
-            status: data.status,
+            status: data.status || 'unchanged',
             path: data.path,
             occurrence: data.occurrence,
             review_side: data.review_side,
@@ -307,8 +345,25 @@ export function ArchitectureMap({
         })
       }
       const updateOverlays = () => {
+        if(instance){
+          const next=updateRouteFallbacks(instance)
+          setRouteFallbacks(previous=>JSON.stringify(previous)===JSON.stringify(next)?previous:next)
+        }
         updateBoundaryCaptions()
         updateAnnotationCards()
+        const rh=routeHandle.current,guide=routeGuide.current
+        if(rh&&instance){
+          const edge=instance.edges(':selected').first() as cytoscape.EdgeSingular
+          const geometry=edge.empty()?null:routeGeometry(edge)
+          rh.hidden=!geometry||!edge.data('routing')?.eligible
+          if(guide)guide.style.display=rh.hidden?'none':''
+          if(geometry&&!rh.hidden){
+            const z=instance.zoom(),p=instance.pan(),point=geometry.control
+            rh.style.left=`${point.x*z+p.x}px`;rh.style.top=`${point.y*z+p.y}px`
+            if(rh.parentElement)rh.parentElement.style.height=`${instance.height()}px`
+            guide?.setAttribute('d',`M ${geometry.start.x*z+p.x} ${geometry.start.y*z+p.y} L ${point.x*z+p.x} ${point.y*z+p.y} L ${geometry.end.x*z+p.x} ${geometry.end.y*z+p.y}`)
+          }
+        }
         const handle=resizeHandle.current
         if(handle&&instance){
           if(handle.parentElement)handle.parentElement.style.height=`${instance.height()}px`
@@ -331,7 +386,7 @@ export function ArchitectureMap({
       })
       resizeObserver?.observe(container.current)
       graph.current = instance
-      if(!viewport.current||viewport.current.key!==viewKey)fitDiagram(instance,fitPadding)
+      if(!viewport.current||viewport.current.key!==viewKey)fitDiagram(instance,fitPadding,reviewBounds.current)
       return () => {
 	    cancel()
 	    cancelResize()
@@ -346,6 +401,8 @@ export function ArchitectureMap({
         syncOverlays.current = () => undefined
         graph.current = null
         instance?.destroy()
+        otherInstance?.destroy()
+        otherContainer?.remove()
       }
     } catch {
       graph.current = null
@@ -355,8 +412,16 @@ export function ArchitectureMap({
       syncOverlays.current = () => undefined
       graph.current = null
       instance?.destroy()
+      otherInstance?.destroy()
+      otherContainer?.remove()
     }
   }, [elements, fitPadding,viewKey])
+
+  useEffect(()=>{
+    const g=routeGesture.current
+    if(g&&(!onRoute||g.edge.id()!==selectedRelationshipKey))routeCancel.current()
+    syncOverlays.current()
+  },[selectedRelationshipKey,Boolean(onRoute)])
 
   useEffect(()=>{
     const gesture=resizeGesture.current
@@ -482,6 +547,7 @@ export function ArchitectureMap({
 
   return (
     <section className={`map-surface ${bottomDock ? 'has-bottom-dock' : ''}`.trim()} aria-label={reviewSide ? `${reviewSide === 'with' ? 'With changes' : 'Before changes'} architecture map` : 'Architecture map'}>
+      {routeFallbacks.length>0&&<p className="map-route-fallback" role="status">Canvas bend dragging unavailable for {routeFallbacks.join('; ')}. The nodes share a center or their shape intersections are unavailable. Stored bends are retained; using default rendering where possible. A curve may be unavailable.</p>}
       {renderFailed ? (
         <div className="map-failure" role="alert">
           <strong>The architecture map could not be shown.</strong>
@@ -494,6 +560,15 @@ export function ArchitectureMap({
         </div>
       )}
       {!renderFailed && annotationOverlay && <div ref={annotationLayer} className="map-annotation-layer">{annotationOverlay}</div>}
+      {!renderFailed && onRoute && selectedRelationshipKey && <div className="map-resize-layer">
+        <svg className="route-guide" aria-hidden="true"><path ref={routeGuide}/></svg>
+        <button ref={routeHandle} type="button" className="map-route-handle" aria-label="Bend selected link" title="Drag the control point; the guide shows how it bends the link"
+          onPointerDown={event=>{event.preventDefault();event.stopPropagation();const edge=graph.current?.getElementById(selectedRelationshipKey) as cytoscape.EdgeSingular|undefined;const geometry=edge&&!edge.empty()?routeGeometry(edge):null;if(!edge||!geometry||!edge.data('routing')?.eligible)return;event.currentTarget.setPointerCapture(event.pointerId);routeGesture.current={edge,route:edge.data('routing'),start:Number(edge.data('distance')),x:event.clientX,y:event.clientY,zoom:edge.cy().zoom(),normal:geometry.normal,submit:onRoute}}}
+          onPointerMove={event=>{const g=routeGesture.current;if(!g)return;event.preventDefault();g.edge.data('distance',g.start+((event.clientX-g.x)*g.normal.x+(event.clientY-g.y)*g.normal.y)/g.zoom);syncOverlays.current()}}
+          onPointerCancel={()=>routeCancel.current()} onLostPointerCapture={()=>routeCancel.current()}
+          onPointerUp={async event=>{const g=routeGesture.current;routeGesture.current=null;if(!g)return;const bend=roundPosition(Number(g.edge.data('distance')));if(event.clientX===g.x&&event.clientY===g.y||bend===g.start){g.edge.data('distance',g.start);return}const kept=await g.submit(g.route,bend);if(!kept&&!g.edge.cy().destroyed())g.edge.data('distance',g.start)}}
+        />
+      </div>}
       {!renderFailed && onResize && selectedID && <div className="map-resize-layer"><button ref={resizeHandle} className="map-resize-handle" type="button" aria-label="Resize selected node" title="Drag to resize; use Width and Height for precise sizing"
         onPointerDown={event=>{
           event.preventDefault();event.stopPropagation()
@@ -531,7 +606,7 @@ export function ArchitectureMap({
           width?.focus()
         }}>↘</button></div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
-        if(graph.current)fitDiagram(graph.current,fitPadding)
+        if(graph.current)fitDiagram(graph.current,fitPadding,reviewBounds.current)
         syncOverlays.current()
       }}>Fit map</button>}
       {bottomDock}
@@ -685,7 +760,9 @@ export function projectionElements(components: MapComponent[], options: Projecti
           target_title: change?.target_title ?? titleByID.get(relationship.target_id) ?? 'Component',
           label: relationship.label,
           displayLabel: status === 'added' ? `Added — ${relationship.label}` : status === 'removed' ? `Removed — ${relationship.label}` : relationship.label,
-          distance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
+          routing: relationship.routing,
+          distance: relationship.routing?.display_bend ?? (count === 1 ? 0 : (index - (count - 1) / 2) * 52),
+          defaultDistance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
           reviewStatus: status,
           status,
           path: change?.path ?? (source.filename ? `components/${source.filename}` : ''),
@@ -764,6 +841,34 @@ export function roundPosition(value: number): number {
   return Math.sign(value) * Math.floor(Math.abs(value) + 0.5)
 }
 
+// These are the renderer's actual shape intersections, shared with its curve
+// calculation. Reading them does not create a second shape interpretation.
+export function routeGeometry(edge:cytoscape.EdgeSingular){
+ const a=edge.source().position(),b=edge.target().position(),length=Math.hypot(b.x-a.x,b.y-a.y)
+ if(!length)return null
+ const control=edge.controlPoints()?.[0]
+ const rs=(edge as unknown as {_private:{rscratch:{srcIntn?:number[];tgtIntn?:number[]}}})._private.rscratch
+ if(!control||!rs.srcIntn||!rs.tgtIntn||![...rs.srcIntn,...rs.tgtIntn,control.x,control.y].every(Number.isFinite))return null
+ return {control,start:{x:rs.srcIntn[0],y:rs.srcIntn[1]},end:{x:rs.tgtIntn[0],y:rs.tgtIntn[1]},normal:{x:-(b.y-a.y)/length,y:(b.x-a.x)/length}}
+}
+
+// Browser presentation only: neither eligibility nor the saved scalar changes.
+// Reuse renderer intersections and allow its existing fallback to remain absent
+// when it cannot draw finite geometry. Recovery requires no backend mutation.
+function updateRouteFallbacks(instance:Core){
+ const notices:string[]=[]
+ instance.edges().forEach(edge=>{
+  if(!edge.data('routing')||edge.source().id()===edge.target().id())return
+  const unavailable=!routeGeometry(edge)
+  const fallback=edge.scratch('routeFallback') as {distance:number}|undefined
+  if(unavailable){
+   notices.push(`${edge.data('label')} (occurrence ${edge.data('routing').occurrence})`)
+   if(!fallback){edge.scratch('routeFallback',{distance:Number(edge.data('routing').route?.bend??edge.data('distance'))});edge.data('distance',Number(edge.data('defaultDistance')))}
+  }else if(fallback){edge.removeScratch('routeFallback');edge.data('distance',fallback.distance)}
+ })
+ return notices
+}
+
 export function displayPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
   const seeds = deterministicPositions(layoutIDs ?? components.map(c => c.component_id ?? c.id))
   const result: Record<string, { x: number; y: number }> = {}
@@ -828,13 +933,17 @@ export function fittedTitle(title:string,size:{width:number;height:number},bound
 function applyDisplaySize(node:cytoscape.NodeSingular,size:{width:number;height:number}){
  node.data({...size,displayLabel:fittedTitle(String(node.data('label')),size,node.data('nodeKind')==='boundary')})
 }
-function fitDiagram(instance:Core,padding:number){
+function diagramBounds(instance:Core){
  const box=instance.elements().boundingBox()
  instance.nodes('[nodeKind = "boundary"]').forEach(node=>{
   const p=node.position(),w=Number(node.data('width')),h=Number(node.data('height'))
   box.x1=Math.min(box.x1,p.x-w/2);box.x2=Math.max(box.x2,p.x+w/2);box.y2=Math.max(box.y2,p.y+h/2+24)
  })
  box.w=box.x2-box.x1;box.h=box.y2-box.y1
+ return box
+}
+function fitDiagram(instance:Core,padding:number,other?:cytoscape.BoundingBox12){
+ const box=other?{...other,w:other.x2-other.x1,h:other.y2-other.y1}:diagramBounds(instance)
  const zoom=Math.max(instance.minZoom(),Math.min(instance.maxZoom(),(instance.width()-2*padding)/Math.max(1,box.w),(instance.height()-2*padding)/Math.max(1,box.h)))
  instance.viewport({zoom,pan:{x:instance.width()/2-zoom*(box.x1+box.x2)/2,y:instance.height()/2-zoom*(box.y1+box.y2)/2}})
 }
@@ -866,11 +975,11 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[positionChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[sizeChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3' } },
-  { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','border-width':4,'overlay-opacity':0.08 } },
-  { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
-  { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
-  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },
-  { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 5, 'border-style': 'dashed', opacity: 1 } },
+  { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','overlay-opacity':0.08 } },
+  { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'overlay-opacity':0.08, opacity: 1 } },
+  { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-style': 'dotted', opacity: 1 } },
+  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', shape: 'hexagon', opacity: 1 } },
+  { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-style': 'dashed', opacity: 1 } },
   { selector: 'node[uiAnnotation]', style: { width: 32, height: 20, shape: 'round-rectangle', label: 'data(displayLabel)', color: '#68470f', 'background-color': '#f2dea0', 'border-color': '#a77b25', 'border-width': 1, 'font-size': 9, 'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center', opacity: 1, 'z-index': 20 } },
   { selector: 'node[uiAnnotation][annotationAdd]', style: { opacity: 0.58, 'background-color': '#f8f0dc', 'border-style': 'dashed' } },
   {
@@ -883,6 +992,7 @@ const mapStyles: cytoscape.StylesheetJson = [
       'curve-style': 'unbundled-bezier',
       'control-point-distances': 'data(distance)',
       'control-point-weights': 0.5,
+      'edge-distances': 'intersection',
       label: 'data(displayLabel)',
       color: '#514c41',
       'font-family': 'IBM Plex Sans',

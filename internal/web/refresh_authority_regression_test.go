@@ -302,7 +302,7 @@ func TestRefreshConclusiveAndIndeterminateFailuresRemainDistinct(t *testing.T) {
 			replaceAcceptedManifest(t, f.storePath, f.base.Revision, func(value string) string { return strings.Replace(value, "slug: refresh-fixture", "slug: Invalid", 1) })
 		}},
 		{name: "unsupported", wantStatus: http.StatusUnprocessableEntity, wantError: errorRefreshUnsupported, stale: true, arrange: func(t *testing.T, f nativeRefreshFixture) {
-			replaceAcceptedManifest(t, f.storePath, f.base.Revision, func(value string) string { return strings.Replace(value, "version: 4", "version: 5", 1) })
+			replaceAcceptedManifest(t, f.storePath, f.base.Revision, func(value string) string { return strings.Replace(value, "version: 5", "version: 6", 1) })
 		}},
 		{name: "missing", wantStatus: http.StatusConflict, wantError: errorRefreshUnavailable, stale: true, arrange: func(t *testing.T, f nativeRefreshFixture) {
 			git(t, "--git-dir", f.storePath, "update-ref", "-d", "refs/heads/accepted", f.base.Revision)

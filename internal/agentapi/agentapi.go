@@ -96,6 +96,18 @@ type DiagramRestoreDefaultSizeRequest struct {
 	DiagramAutoLayoutRequest
 	ComponentID string `json:"component_id"`
 }
+type DiagramRestoreDefaultRouteRequest struct {
+	DiagramAutoLayoutRequest
+	SourceID   string `json:"source_id"`
+	TargetID   string `json:"target_id"`
+	Label      string `json:"label"`
+	Occurrence int    `json:"occurrence"`
+}
+type DiagramSetRouteRequest struct {
+	DiagramRestoreDefaultRouteRequest
+	Bend int `json:"bend"`
+}
+
 type DiagramSetSizeRequest struct {
 	DiagramRestoreDefaultSizeRequest
 	Width  int `json:"width" jsonschema:"Outer logical width, integer 80 through 1600."`
@@ -314,6 +326,9 @@ var operationPaths = map[string]string{
 	"diagram_positions":              "/api/agent/v2/diagrams/positions",
 	"diagram_set_position":           "/api/agent/v2/diagrams/set-position",
 	"diagram_auto_layout":            "/api/agent/v2/diagrams/auto-layout",
+	"diagram_routes":                 "/api/agent/v2/diagrams/routes",
+	"diagram_set_route":              "/api/agent/v2/diagrams/set-route",
+	"diagram_restore_default_route":  "/api/agent/v2/diagrams/restore-default-route",
 	"diagram_sizes":                  "/api/agent/v2/diagrams/sizes",
 	"diagram_set_size":               "/api/agent/v2/diagrams/set-size",
 	"diagram_restore_default_size":   "/api/agent/v2/diagrams/restore-default-size",

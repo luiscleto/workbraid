@@ -13,6 +13,26 @@ func reconciliationResidual(accepted, proposed Snapshot, original, final reconci
 	a, p := snapshotReconciliationFacts(accepted), snapshotReconciliationFacts(proposed)
 	changes := []ComponentChange{}
 	composition := CandidateComposition{ArchitectureVersion: final.version}
+	routeAddresses := map[RouteAddress]bool{}
+	for k := range a.routes {
+		routeAddresses[k] = true
+	}
+	for k := range final.routes {
+		routeAddresses[k] = true
+	}
+	for k := range routeAddresses {
+		before, bok := a.routes[k]
+		after, aok := final.routes[k]
+		if bok == aok && before == after {
+			continue
+		}
+		var r *Route
+		if aok {
+			r = &after
+		}
+		composition.EdgeRoutes = append(composition.EdgeRoutes, EdgeRouteChange{k, r})
+	}
+	sortRouteFacts(composition.EdgeRoutes)
 	pairs := map[reconciliationPair]bool{}
 	for k := range a.positions {
 		pairs[k] = true

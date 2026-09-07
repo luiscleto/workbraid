@@ -9,6 +9,63 @@ import (
 	"testing"
 )
 
+func TestRoutingInvalidWorkNullProvenanceOnWriteAndLoad(t *testing.T) {
+	m, b, ids, _ := placementFixture(t)
+	address := RouteAddress{ids.root, ids.worker, ids.records, "calls\nnext", 2}
+	base := reconciliationAccepted(t, m, b, nil, SetEdgeRoute(b, CandidateComposition{}, address, &Route{80}))
+	change, _ := base.ChangeForAcceptedComponent(ids.worker)
+	change.TitleChanged = true
+	change.Title = ""
+	id, name, err := m.NewChangeSet(nil, "Invalid work route provenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := ChangeSet{ID: id, Name: name, Lifecycle: "active", BaseRevision: base.Revision(), Generation: 1, BaseSnapshot: base, Changes: []ComponentChange{change}, Composition: CandidateComposition{ArchitectureVersion: 5, EdgeRoutes: []EdgeRouteChange{{address, nil}}}}
+	object, err := m.WriteActiveChangeSet(t.Context(), base.StoreID(), record, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, unavailable, err := m.LoadChangeSets(t.Context(), base.StoreID())
+	if err != nil || len(unavailable) != 0 || len(loaded) != 1 || loaded[0].Candidate != nil || len(loaded[0].Composition.EdgeRoutes) != 1 {
+		t.Fatalf("valid invalid-work removal lost on load: %v %+v", err, unavailable)
+	}
+	record.Composition.EdgeRoutes[0].SourceID = uuid.NewString()
+	record.Composition.EdgeRoutes[0].Occurrence = 999
+	if _, err = m.WriteActiveChangeSet(t.Context(), base.StoreID(), record, object); err == nil {
+		t.Fatal("unsupported null persisted behind invalid title")
+	}
+	// Install a deliberately malformed external operational fixture to verify
+	// loading rejects it too, without changing the supported historical archive.
+	storePath, _ := m.StorePath(base.StoreID())
+	entries, err := m.git.directTreeEntries(t.Context(), storePath, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]treeEntry{}
+	for _, entry := range entries {
+		byPath[entry.Path] = entry
+	}
+	raw, err := marshalChangeState(record.Changes, record.Composition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := m.git.writeBlob(t.Context(), storePath, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := byPath["changes.yaml"]
+	entry.Object = blob
+	byPath["changes.yaml"] = entry
+	replacement := replaceChangeSetEnvelope(t, m, t.Context(), storePath, base.Revision(), byPath)
+	if err = m.git.updateRef(t.Context(), storePath, activeChangeSetPrefix+id, replacement, object); err != nil {
+		t.Fatal(err)
+	}
+	loaded, unavailable, err = m.LoadChangeSets(t.Context(), base.StoreID())
+	if err != nil || len(loaded) != 0 || len(unavailable) != 1 {
+		t.Fatalf("unsupported null loaded behind invalid title: %v %+v", err, loaded)
+	}
+}
+
 func TestRoutingLegacyUpgradeAndStrictReplay(t *testing.T) {
 	for _, version := range []int{2, 3, 4} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {

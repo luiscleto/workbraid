@@ -4,7 +4,7 @@ Status: Approved living contract
 
 ## Phase 3.3 routing surface
 
-Delegated root approval of routing proposal `d119baeb-1b2b-4451-8113-7f4fe05678ec` generation 6, reviewed state `34820296f5af54ec7acddd5d9b2c8fc8fa7a4af8`, authorizes these additive agent-v2 operations under the unchanged authority/envelope contract:
+Delegated root approval of routing proposal `d119baeb-1b2b-4451-8113-7f4fe05678ec` generation 8, reviewed state `595bab6de6933c7a047c70520f1830594f166fed`, authorizes these additive agent-v2 operations under the unchanged authority/envelope contract:
 
 | CLI | MCP | API suffix under `/api/agent/v2` |
 | --- | --- | --- |
@@ -21,6 +21,8 @@ Reconciliation exposes the exact `route_value` and `route_loss` locators/choices
 Browser, CLI and MCP are clients of one loopback WorkBraid authority. [Proposals and Reviews](architecture-proposals-v0.md) defines durable work and feedback; [Reconciliation](architecture-reconciliation-v0.md) defines exact preview/apply; [Placement](architecture-placement-amendment-v0.md) defines the approved corrected placement surface. This interface adds no separate domain, private-store client, daemon or acceptance authority.
 
 ## Runtime and connection
+
+Renderer-private intersection availability is browser-only state. Undefined/nonfinite intersections do not add backend eligibility restrictions or error codes: otherwise eligible noncoincident endpoints still allow numeric/CLI/MCP bend authoring. The browser retains scalars and reports canvas dragging/fallback limitations under Placement §10; it resumes rendering without a write when representable.
 
 One Go/UI process owns the selected project, loaded Accepted snapshot and authority knowledge, independently identified durable proposals, generation/review bindings, one candidate constructor and one synchronization/ref-CAS boundary. Different clients share that process; unsent editor collaboration is not implied. Project open changes process-wide selection; proposals are always addressed explicitly.
 

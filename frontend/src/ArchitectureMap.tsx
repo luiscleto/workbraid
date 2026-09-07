@@ -67,6 +67,7 @@ type ArchitectureMapProps = {
 	onPlace?: (id:string,position:{x:number;y:number})=>Promise<boolean>
   revision: string
   components: MapComponent[]
+  reviewOtherComponents?: MapComponent[]
   selectedID?: string
   onSelect: (id: string) => void
   emptyMessage?: string
@@ -100,6 +101,7 @@ export function ArchitectureMap({
 	onPlace,
   revision,
   components,
+  reviewOtherComponents,
   selectedID,
   onSelect,
   emptyMessage,
@@ -127,6 +129,7 @@ export function ArchitectureMap({
   const boundaryCaptionLayer = useRef<HTMLDivElement>(null)
   const annotationLayer = useRef<HTMLDivElement>(null)
   const graph = useRef<Core | null>(null)
+  const reviewBounds = useRef<cytoscape.BoundingBox12 | undefined>(undefined)
   const routeHandle=useRef<HTMLButtonElement>(null)
   const routeGuide=useRef<SVGPathElement>(null)
   const routeGesture=useRef<{edge:cytoscape.EdgeSingular;route:RouteProjection;start:number;x:number;y:number;zoom:number;normal:{x:number;y:number};submit:NonNullable<typeof onRoute>}|null>(null)
@@ -150,6 +153,7 @@ export function ArchitectureMap({
   const nodeAnnotationHandler = useRef(onSelectNodeAnnotation)
   const relationshipAnnotationHandler = useRef(onSelectRelationshipAnnotation)
   const [renderFailed, setRenderFailed] = useState(false)
+  const [routeFallbacks, setRouteFallbacks] = useState<string[]>([])
   const layoutKey = [...(layoutComponentIDs ?? components.map((component) => component.component_id ?? component.id))].sort().join('\u0000')
   const annotationKey = JSON.stringify([annotationNodes, annotationRelationships, annotationAddNodeID, annotationAddRelationshipKey])
   // A revision-pinned projection intentionally ignores response-object churn
@@ -176,6 +180,8 @@ export function ArchitectureMap({
     if (!container.current) return
     setRenderFailed(false)
     let instance: Core | null = null
+    let otherInstance: Core | null = null
+    let otherContainer: HTMLDivElement | undefined
     try {
       instance = cytoscape({
         container: container.current,
@@ -185,6 +191,25 @@ export function ArchitectureMap({
         maxZoom: 2.5,
         style: mapStyles,
       })
+      reviewBounds.current = undefined
+      if (reviewOtherComponents && reviewSide) {
+        otherContainer = document.createElement('div')
+        Object.assign(otherContainer.style, {position:'fixed',left:'-10000px',width:`${container.current.clientWidth}px`,height:`${container.current.clientHeight}px`,visibility:'hidden'})
+        otherContainer.setAttribute('aria-hidden','true')
+        document.body.appendChild(otherContainer)
+        otherInstance = cytoscape({container:otherContainer,elements:projectionElements(reviewOtherComponents, {
+          layoutComponentIDs,reviewSide:reviewSide==='before'?'with':'before',reviewComponents,reviewPositionIDs,reviewSizeIDs,reviewRelationships,reviewDiagramID,
+        }),layout:{name:'preset',fit:false},style:mapStyles})
+        updateRouteFallbacks(otherInstance)
+        reviewBounds.current = diagramBounds(otherInstance)
+        // Measure the active exact side without selection/annotation styling as
+        // well. Both review sides then share one immutable renderer frame.
+        otherInstance.destroy()
+        otherInstance = cytoscape({container:otherContainer,elements,layout:{name:'preset',fit:false},style:mapStyles})
+        updateRouteFallbacks(otherInstance)
+        const activeBounds=diagramBounds(otherInstance),otherBounds=reviewBounds.current
+        reviewBounds.current={x1:Math.min(activeBounds.x1,otherBounds.x1),x2:Math.max(activeBounds.x2,otherBounds.x2),y1:Math.min(activeBounds.y1,otherBounds.y1),y2:Math.max(activeBounds.y2,otherBounds.y2)}
+      }
 	  if(viewport.current&&viewport.current.key===viewKey){instance.viewport({zoom:viewport.current.zoom,pan:viewport.current.pan})}
 	  instance.nodes().ungrabify()
 	  if(placementHandler.current&&!placementPending.current)instance.nodes('[!uiAnnotation]').grabify()
@@ -320,6 +345,10 @@ export function ArchitectureMap({
         })
       }
       const updateOverlays = () => {
+        if(instance){
+          const next=updateRouteFallbacks(instance)
+          setRouteFallbacks(previous=>JSON.stringify(previous)===JSON.stringify(next)?previous:next)
+        }
         updateBoundaryCaptions()
         updateAnnotationCards()
         const rh=routeHandle.current,guide=routeGuide.current
@@ -357,7 +386,7 @@ export function ArchitectureMap({
       })
       resizeObserver?.observe(container.current)
       graph.current = instance
-      if(!viewport.current||viewport.current.key!==viewKey)fitDiagram(instance,fitPadding)
+      if(!viewport.current||viewport.current.key!==viewKey)fitDiagram(instance,fitPadding,reviewBounds.current)
       return () => {
 	    cancel()
 	    cancelResize()
@@ -372,6 +401,8 @@ export function ArchitectureMap({
         syncOverlays.current = () => undefined
         graph.current = null
         instance?.destroy()
+        otherInstance?.destroy()
+        otherContainer?.remove()
       }
     } catch {
       graph.current = null
@@ -381,6 +412,8 @@ export function ArchitectureMap({
       syncOverlays.current = () => undefined
       graph.current = null
       instance?.destroy()
+      otherInstance?.destroy()
+      otherContainer?.remove()
     }
   }, [elements, fitPadding,viewKey])
 
@@ -514,6 +547,7 @@ export function ArchitectureMap({
 
   return (
     <section className={`map-surface ${bottomDock ? 'has-bottom-dock' : ''}`.trim()} aria-label={reviewSide ? `${reviewSide === 'with' ? 'With changes' : 'Before changes'} architecture map` : 'Architecture map'}>
+      {routeFallbacks.length>0&&<p className="map-route-fallback" role="status">Canvas bend dragging unavailable for {routeFallbacks.join('; ')}. The nodes share a center or their shape intersections are unavailable. Stored bends are retained; using default rendering where possible. A curve may be unavailable.</p>}
       {renderFailed ? (
         <div className="map-failure" role="alert">
           <strong>The architecture map could not be shown.</strong>
@@ -572,7 +606,7 @@ export function ArchitectureMap({
           width?.focus()
         }}>↘</button></div>}
       {!renderFailed && <button className="map-fit" type="button" onClick={() => {
-        if(graph.current)fitDiagram(graph.current,fitPadding)
+        if(graph.current)fitDiagram(graph.current,fitPadding,reviewBounds.current)
         syncOverlays.current()
       }}>Fit map</button>}
       {bottomDock}
@@ -728,6 +762,7 @@ export function projectionElements(components: MapComponent[], options: Projecti
           displayLabel: status === 'added' ? `Added — ${relationship.label}` : status === 'removed' ? `Removed — ${relationship.label}` : relationship.label,
           routing: relationship.routing,
           distance: relationship.routing?.display_bend ?? (count === 1 ? 0 : (index - (count - 1) / 2) * 52),
+          defaultDistance: count === 1 ? 0 : (index - (count - 1) / 2) * 52,
           reviewStatus: status,
           status,
           path: change?.path ?? (source.filename ? `components/${source.filename}` : ''),
@@ -817,6 +852,23 @@ export function routeGeometry(edge:cytoscape.EdgeSingular){
  return {control,start:{x:rs.srcIntn[0],y:rs.srcIntn[1]},end:{x:rs.tgtIntn[0],y:rs.tgtIntn[1]},normal:{x:-(b.y-a.y)/length,y:(b.x-a.x)/length}}
 }
 
+// Browser presentation only: neither eligibility nor the saved scalar changes.
+// Reuse renderer intersections and allow its existing fallback to remain absent
+// when it cannot draw finite geometry. Recovery requires no backend mutation.
+function updateRouteFallbacks(instance:Core){
+ const notices:string[]=[]
+ instance.edges().forEach(edge=>{
+  if(!edge.data('routing')||edge.source().id()===edge.target().id())return
+  const unavailable=!routeGeometry(edge)
+  const fallback=edge.scratch('routeFallback') as {distance:number}|undefined
+  if(unavailable){
+   notices.push(`${edge.data('label')} (occurrence ${edge.data('routing').occurrence})`)
+   if(!fallback){edge.scratch('routeFallback',{distance:Number(edge.data('distance'))});edge.data('distance',Number(edge.data('defaultDistance')))}
+  }else if(fallback){edge.removeScratch('routeFallback');edge.data('distance',fallback.distance)}
+ })
+ return notices
+}
+
 export function displayPositions(components: MapComponent[], layoutIDs?: string[]): Record<string, { x: number; y: number }> {
   const seeds = deterministicPositions(layoutIDs ?? components.map(c => c.component_id ?? c.id))
   const result: Record<string, { x: number; y: number }> = {}
@@ -881,13 +933,17 @@ export function fittedTitle(title:string,size:{width:number;height:number},bound
 function applyDisplaySize(node:cytoscape.NodeSingular,size:{width:number;height:number}){
  node.data({...size,displayLabel:fittedTitle(String(node.data('label')),size,node.data('nodeKind')==='boundary')})
 }
-function fitDiagram(instance:Core,padding:number){
+function diagramBounds(instance:Core){
  const box=instance.elements().boundingBox()
  instance.nodes('[nodeKind = "boundary"]').forEach(node=>{
   const p=node.position(),w=Number(node.data('width')),h=Number(node.data('height'))
   box.x1=Math.min(box.x1,p.x-w/2);box.x2=Math.max(box.x2,p.x+w/2);box.y2=Math.max(box.y2,p.y+h/2+24)
  })
  box.w=box.x2-box.x1;box.h=box.y2-box.y1
+ return box
+}
+function fitDiagram(instance:Core,padding:number,other?:cytoscape.BoundingBox12){
+ const box=other?{...other,w:other.x2-other.x1,h:other.y2-other.y1}:diagramBounds(instance)
  const zoom=Math.max(instance.minZoom(),Math.min(instance.maxZoom(),(instance.width()-2*padding)/Math.max(1,box.w),(instance.height()-2*padding)/Math.max(1,box.h)))
  instance.viewport({zoom,pan:{x:instance.width()/2-zoom*(box.x1+box.x2)/2,y:instance.height()/2-zoom*(box.y1+box.y2)/2}})
 }
@@ -919,11 +975,11 @@ const mapStyles: cytoscape.StylesheetJson = [
   { selector: 'node[positionChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[sizeChanged = "yes"]', style: { 'border-color': '#315e46', 'border-width': 3, opacity: 1, 'text-opacity': 1 } },
   { selector: 'node[nodeKind = "boundary"]', style: { shape: 'diamond', 'border-style': 'dotted', 'background-color': '#efe7d3' } },
-  { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','border-width':4,'overlay-opacity':0.08 } },
-  { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'border-width': 4, opacity: 1 } },
-  { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-width': 5, 'border-style': 'dotted', opacity: 1 } },
-  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', 'border-width': 5, shape: 'hexagon', opacity: 1 } },
-  { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-width': 5, 'border-style': 'dashed', opacity: 1 } },
+  { selector: 'node.placement-grabbed', style: { 'border-color':'#27251f','overlay-opacity':0.08 } },
+  { selector: 'node:selected', style: { 'background-color': '#e7dba9', 'border-color': '#18734f', 'overlay-opacity':0.08, opacity: 1 } },
+  { selector: 'node[reviewStatus = "unchanged"]:selected', style: { 'background-color': '#f8f0dc', 'border-color': '#27251f', 'border-style': 'dotted', opacity: 1 } },
+  { selector: 'node[reviewStatus = "added"]:selected', style: { 'background-color': '#d8eadf', 'border-color': '#126747', shape: 'hexagon', opacity: 1 } },
+  { selector: 'node[reviewStatus = "content_changed"]:selected', style: { 'background-color': '#f1dfad', 'border-color': '#8c5c12', 'border-style': 'dashed', opacity: 1 } },
   { selector: 'node[uiAnnotation]', style: { width: 32, height: 20, shape: 'round-rectangle', label: 'data(displayLabel)', color: '#68470f', 'background-color': '#f2dea0', 'border-color': '#a77b25', 'border-width': 1, 'font-size': 9, 'font-weight': 600, 'text-valign': 'center', 'text-halign': 'center', opacity: 1, 'z-index': 20 } },
   { selector: 'node[uiAnnotation][annotationAdd]', style: { opacity: 0.58, 'background-color': '#f8f0dc', 'border-style': 'dashed' } },
   {

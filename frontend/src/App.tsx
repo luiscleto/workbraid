@@ -1872,6 +1872,9 @@ export function App() {
       : activeProjection?.components ?? activeDiagramComponents ?? diagramProjection.components ?? []
     const diagramMapComponents = activeDiagram ? mapComponentsForDiagram(diagramProjection, activeDiagram) : undefined
     const mapComponents: MapComponent[] = diagramMapComponents ?? activeComponents
+    const otherReviewSnapshot = review ? (reviewSide === 'with' ? review.before : review.with_changes) : undefined
+    const otherReviewDiagram = otherReviewSnapshot?.diagrams?.find(diagram => diagram.id === activeDiagram?.id)
+    const reviewOtherComponents = otherReviewSnapshot ? (otherReviewDiagram ? mapComponentsForDiagram(otherReviewSnapshot, otherReviewDiagram) : activeDiagram ? [] : otherReviewSnapshot.components) : undefined
     const selectedRoute = !review && !editor && !diagramEditor && workspaceTask === 'documentation' ? activeDiagram?.relationships.find(r=>r.key===selectedRouteKey) : undefined
     const selectedBoundary = activeDiagram?.boundaries.find(b=>b.component_id===selectedComponentID)
     const selected = activeComponents.find((component) => component.id === selectedComponentID) ?? (selectedBoundary ? diagramProjection.components.find(c=>c.id===selectedComponentID) : undefined)
@@ -2386,11 +2389,12 @@ export function App() {
               <div className="workspace-empty invalid-proposal-map"><p className="eyebrow">Proposed Architecture</p><h2>Needs correction</h2><p>This proposal has no valid complete Architecture to display. Use its exact authored facts to repair the issue.</p></div>
             ) : (
               <ArchitectureMap
-				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}`}
+				viewKey={`${result.store_id}:${activeDiagram?.id??'root'}:${review?.candidate_tree??'authoring'}`}
 				onPlace={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,p)=>keepPosition(result,activeDiagram.id,id,p):undefined}
 				onResize={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current&&activeDiagram ? (id,s)=>keepSize(result,activeDiagram.id,id,s):undefined}
                 revision={`${activeProjection?.revision ?? diagramProjection.revision}${activeDiagram ? `:${activeDiagram.id}` : ''}`}
                 components={mapComponents}
+                reviewOtherComponents={reviewOtherComponents}
                 selectedID={selectedBoundary?.key ?? selectedComponentID}
                 onSelect={selectMapNode}
                 onRoute={!review&&authoringAvailable&&!architectureBusy&&!placementBlocked&&!editor&&!diagramEditor&&!editorDirtyRef.current ? (route,bend)=>keepRoute(result,route,{bend}):undefined}

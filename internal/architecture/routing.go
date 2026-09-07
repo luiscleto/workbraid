@@ -394,6 +394,60 @@ func removeRouteOverride(base Snapshot, values []EdgeRouteChange, a RouteAddress
 
 // Membership observation reuses the constructor steps and never validates or
 // publishes a partial Architecture canvas.
+// Null provenance is operational validity, so check it before candidate-wide
+// authored validation can stop reconstruction on an unrelated invalid field.
+func validateRouteRemovalProvenance(base Snapshot, changes []ComponentChange, c CandidateComposition) error {
+	rows := map[string][]AuthoringRelationship{}
+	for _, component := range base.AuthoringComponents() {
+		rows[component.ID] = component.Relationships
+	}
+	for _, change := range changes {
+		if change.New {
+			rows[change.ID] = change.Relationships
+		} else if _, exists := rows[change.ID]; exists && change.RelationshipsChanged {
+			rows[change.ID] = change.Relationships
+		}
+	}
+	for _, fact := range c.EdgeRoutes {
+		if fact.Route != nil || base.routeAt(fact.RouteAddress) != nil {
+			continue
+		}
+		fail := func() error { return fmt.Errorf("route removal does not name a visible or inherited slot") }
+		if fact.SourceID == fact.TargetID {
+			return fail()
+		}
+		sourceRows, sourceExists := rows[fact.SourceID]
+		_, targetExists := rows[fact.TargetID]
+		if !sourceExists || !targetExists {
+			return fail()
+		}
+		count := 0
+		for _, row := range sourceRows {
+			if row.TargetID == fact.TargetID && row.Label == fact.Label {
+				count++
+			}
+		}
+		if fact.Occurrence < 1 || fact.Occurrence > count {
+			return fail()
+		}
+		diagrams, err := routeMembership(base, changes, c)
+		if err != nil {
+			return fail()
+		}
+		visible := false
+		for _, appearance := range diagrams[uuid.MustParse(fact.DiagramID)].appearances {
+			if appearance.component.String() == fact.SourceID || appearance.component.String() == fact.TargetID {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			return fail()
+		}
+	}
+	return nil
+}
+
 func routeMembership(base Snapshot, changes []ComponentChange, c CandidateComposition) (map[uuid.UUID]diagram, error) {
 	ds := map[uuid.UUID]diagram{}
 	for _, d := range base.diagrams {

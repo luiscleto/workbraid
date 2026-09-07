@@ -394,9 +394,9 @@ func removeRouteOverride(base Snapshot, values []EdgeRouteChange, a RouteAddress
 
 // Membership observation reuses the constructor steps and never validates or
 // publishes a partial Architecture canvas.
-// Null provenance is operational validity, so check it before candidate-wide
+// Route provenance is operational validity, so check it before candidate-wide
 // authored validation can stop reconstruction on an unrelated invalid field.
-func validateRouteRemovalProvenance(base Snapshot, changes []ComponentChange, c CandidateComposition) error {
+func validateRouteFactProvenance(base Snapshot, changes []ComponentChange, c CandidateComposition) error {
 	rows := map[string][]AuthoringRelationship{}
 	for _, component := range base.AuthoringComponents() {
 		rows[component.ID] = component.Relationships
@@ -409,10 +409,12 @@ func validateRouteRemovalProvenance(base Snapshot, changes []ComponentChange, c 
 		}
 	}
 	for _, fact := range c.EdgeRoutes {
-		if fact.Route != nil || base.routeAt(fact.RouteAddress) != nil {
+		if fact.Route == nil && base.routeAt(fact.RouteAddress) != nil {
 			continue
 		}
-		fail := func() error { return fmt.Errorf("route removal does not name a visible or inherited slot") }
+		fail := func() error {
+			return fmt.Errorf("route fact does not name an eligible visible slot or inherited removal")
+		}
 		if fact.SourceID == fact.TargetID {
 			return fail()
 		}

@@ -39,6 +39,16 @@ for(const distance of [0,100])test(`fallback ${distance===0?'coincident':'undefi
  expect(await map.evaluate(el=>(el as any)._cyreg.cy.edges().first().data('distance'))).toBe(125)
  expect(await page.evaluate(()=>(window as any).routingSubmissions)).toEqual([])
 })
+test('initial coincident fallback recovers the stored scalar instead of its displayed default',async({page})=>{
+ await open(page,{bend:125,initialCoincident:true})
+ const map=page.getByTestId('architecture-map')
+ await expect(page.getByRole('status')).toBeVisible()
+ expect(await map.evaluate(el=>(el as any)._cyreg.cy.edges().first().data('distance'))).toBe(0)
+ await map.evaluate(el=>(el as any)._cyreg.cy.getElementById('b').position({x:600,y:0}))
+ await expect(page.getByRole('status')).toHaveCount(0)
+ expect(await map.evaluate(el=>(el as any)._cyreg.cy.edges().first().data('distance'))).toBe(125)
+ expect(await page.evaluate(()=>(window as any).routingSubmissions)).toEqual([])
+})
 test('opposing extreme Before With curves share initial and explicit Fit frame',async({page})=>{
  await open(page,{review:true,boundary:true})
  const map=page.getByTestId('architecture-map'),read=()=>map.evaluate(el=>{const cy=(el as any)._cyreg.cy;return {zoom:cy.zoom(),pan:cy.pan()}})

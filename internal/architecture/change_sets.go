@@ -375,7 +375,7 @@ func (manager *Manager) loadChangeSet(ctx context.Context, storePath, storeID, l
 	record.BaseSnapshot = base
 	record.Changes = changes
 	record.Composition = composition
-	if err := validateRouteRemovalProvenance(base, changes, composition); err != nil {
+	if err := validateRouteFactProvenance(base, changes, composition); err != nil {
 		return record, err
 	}
 	if metadata.Review != nil {
@@ -628,7 +628,7 @@ func (manager *Manager) validateChangeSetForWrite(ctx context.Context, storeID s
 	if err := validateChangeState(record.Changes, record.Composition); err != nil {
 		return err
 	}
-	if err := validateRouteRemovalProvenance(record.BaseSnapshot, record.Changes, record.Composition); err != nil {
+	if err := validateRouteFactProvenance(record.BaseSnapshot, record.Changes, record.Composition); err != nil {
 		return err
 	}
 	reconstructed, reconstructionErr := manager.ConstructCandidate(ctx, record.BaseSnapshot, record.Changes, record.Composition)

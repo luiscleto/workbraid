@@ -863,7 +863,7 @@ function updateRouteFallbacks(instance:Core){
   const fallback=edge.scratch('routeFallback') as {distance:number}|undefined
   if(unavailable){
    notices.push(`${edge.data('label')} (occurrence ${edge.data('routing').occurrence})`)
-   if(!fallback){edge.scratch('routeFallback',{distance:Number(edge.data('distance'))});edge.data('distance',Number(edge.data('defaultDistance')))}
+   if(!fallback){edge.scratch('routeFallback',{distance:Number(edge.data('routing').route?.bend??edge.data('distance'))});edge.data('distance',Number(edge.data('defaultDistance')))}
   }else if(fallback){edge.removeScratch('routeFallback');edge.data('distance',fallback.distance)}
  })
  return notices
